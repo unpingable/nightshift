@@ -342,6 +342,10 @@ ever fabricated for the second case.
 
 See [`docs/NQ_RELIANCE_SOURCE.md`](docs/NQ_RELIANCE_SOURCE.md).
 
+The first governed four-office pilot (Night Shift proposal → Docket preparation →
+AG authorization → Docket execution → NQ evaluation) is declared in
+[`docs/FOUR_OFFICE_PILOT_01.md`](docs/FOUR_OFFICE_PILOT_01.md).
+
 ## License
 
 Licensed under Apache-2.0.
