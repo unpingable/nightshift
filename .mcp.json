@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "continuity": {
+      "command": "/home/jbeck/git/continuity/.venv/bin/continuity-mcp",
+      "args": [],
+      "env": {
+        "CONTINUITY_WORKSPACE": "observatory-family",
+        "CONTINUITY_PRINCIPAL_ID": "claude:mcp:on-behalf-of:jbeck"
+      }
+    }
+  }
+}
