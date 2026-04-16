@@ -7,6 +7,28 @@ This document describes a deployment maturity curve common to the
 state/evidence projects in the constellation. It is not specific to
 Night Shift, but is hosted here until a shared location exists.
 
+## Role invariants — the constellation's immune system
+
+Before anything else: each project has one thing it must not become,
+no matter how tempting the product roadmap.
+
+```text
+NQ              must not become authority
+Night Shift     must not become autonomous command
+Continuity      must not become truth
+Governor        must not become cron
+MCP             must not become permission
+```
+
+A project that crosses its line becomes a different (worse) system
+wearing its old name.
+
+Every "future direction" section across the constellation should
+reference this list before proposing expansion. These are not style
+notes — they are what keeps the cluster from collapsing into one
+"agent ops platform" blob holding a Gartner quadrant like a cursed
+relic.
+
 ## The shared curve
 
 ```text
@@ -92,21 +114,32 @@ shape, hosting model — none of these may implicitly expand what the
 system is allowed to do. Authority stays local or becomes explicitly
 delegated; it does not become SaaS landlord theology.
 
-## Constellation discipline — what each project must not become
+## Adapter plurality vs backend plurality
 
-Each project has one thing it must resist, no matter how tempting the
-product roadmap becomes:
+A project may support *target plurality* (what it can observe or
+interact with) without supporting *backend plurality* (where it stores
+its own state). These are separate axes.
 
-```text
-NQ              must not become authority
-Night Shift     must not become autonomous command
-Continuity      must not become truth
-Governor        must not become cron
-MCP             must not become permission
-```
+Example from NQ: Prometheus-style exporters give target plurality for
+free — NQ monitors many target backends without sharing their
+metaphysics. That does not obligate NQ to make its own state store
+portable across databases.
 
-These are role invariants. A project that crosses its line becomes a
-different (worse) system wearing its old name.
+> Monitoring a system does not require the monitor to share that
+> system's storage substrate.
+
+Or bluntly:
+
+> NQ does not need to become database-portable in order to monitor
+> portable databases.
+
+This generalizes across the constellation: Night Shift's tool/evidence
+surface is pluralistic (NQ, git, fs, Continuity) without forcing
+Night Shift's own run-ledger store to be. Continuity's context sources
+are pluralistic without requiring Continuity's own memory store to be.
+
+Backend plurality is a real and costly choice. Adapter plurality
+usually isn't. Don't conflate them in roadmaps or gap specs.
 
 ## Governor is the oddball
 
