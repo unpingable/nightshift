@@ -58,7 +58,7 @@ detector: wal_bloat
 host: labelwatch-host
 subject: /var/lib/labelwatch.sqlite
 severity: warning                       # info | warning | critical
-status: active | pending | clear
+status: active | pending | resolving | clear
 domain: "Δg"                            # NQ failure domain
 regime_hint: accumulation               # optional
 
@@ -122,6 +122,7 @@ Eventually NQ should expose transitions as first-class events:
 new
 persisted
 escalated
+resolving
 recovered
 flapped
 stale
@@ -130,6 +131,37 @@ regime_shift
 
 MVP derives these by diffing consecutive snapshots. Push-based transitions
 are covered in `GAP-nq-activation.md`.
+
+## `resolving` status — temporal literacy
+
+NQ already exposes a `resolving` state: the condition is still part of
+the story but its trajectory has turned. This is not the same as
+`clear`, and Night Shift must not treat it that way.
+
+> `resolving` preserves the scar. It says: don't page, don't forget,
+> don't pretend nothing happened. Keep watching until the system earns
+> closure.
+
+Night Shift's default behavior when encountering `resolving`:
+
+```text
+Finding: labelwatch log source silent
+Status: resolving
+Action bias: observe / no escalation
+Packet: note trajectory, continue monitoring, do not propose repair
+        unless recovery stalls
+```
+
+This avoids both failure modes the alert surface is supposed to prevent:
+
+- **panic automation**: "bad, do thing"
+- **greenwashing**: "not currently bad, erase context"
+
+A `resolving` finding should not trigger `recurrence_after_repair`
+escalation, because the prior repair is the reason trajectory turned.
+If `resolving` stalls (no change over N generations while still
+non-clear), Night Shift may escalate with a *stall* trigger, distinct
+from recurrence.
 
 ## Cross-reference to NQ's own gap specs
 

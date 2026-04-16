@@ -76,6 +76,22 @@ remediation.
 
 → escalate. Our model of the problem is probably wrong.
 
+**Exception**: if NQ reports status `resolving`, the finding is still
+part of the story but trajectory has turned. That is not recurrence —
+that is convalescence. Do not trigger recurrence escalation on
+`resolving`. See `stall` trigger below.
+
+### 5b. Resolving stalled
+
+NQ status has been `resolving` for more than N generations without
+further improvement toward `clear`, and severity remains non-trivial.
+
+→ escalate with type `evidence` (trajectory stopped turning).
+
+This avoids the "greenwashing" failure mode: treating `resolving` as
+clear. It also avoids the "panic automation" failure mode: treating
+`resolving` as a new incident.
+
 ### 6. Repeated low-confidence loop
 
 Self-check / conference keeps producing the same blocked assumption,
