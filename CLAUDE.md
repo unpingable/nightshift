@@ -30,6 +30,8 @@ context bundles that revalidate their own premises before execution.
 9. Diagnostic review (self-check / conference) may reduce confidence, downgrade promotion, or require escalation. It may not raise the promotion ceiling or authorize force.
 10. Drive to resolution ends where standing begins. Night Shift pursues resolution only while the next step remains within evidence, authority, scope, and budget. Once any boundary is crossed, the run escalates.
 11. If the next diagnostic step changes the system, stop. Read-only disambiguation is fine; mutation as disambiguation is not.
+12. Backend choice must not change authority semantics. Scaling the store must not scale the trust assumptions. SQLite is v1 default; Postgres is v2 production; the storage contract is the boundary (see `GAP-storage.md`).
+13. A run transition must be atomic and exclusive. If the store cannot prove exclusive ownership of a run, Night Shift fails closed.
 
 ## Quick Start
 
@@ -52,6 +54,8 @@ context bundles that revalidate their own premises before execution.
   - `GAP-nq-activation.md` — push/pull semantics for NQ findings
   - `GAP-nq-nightshift-contract.md` — NQ finding snapshot contract (first artifact to stabilize)
   - `GAP-escalation.md` — drive-to-resolution gating, escalation triggers/types/destinations
+  - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
+  - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
 ## Conventions
 

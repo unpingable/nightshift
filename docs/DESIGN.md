@@ -655,6 +655,20 @@ NQ / Driftwatch / Labelwatch
   emit run ledger + authority receipts    [record]
 ```
 
+## Storage backend
+
+SQLite default for v1 (local / single-operator). Postgres for v2
+(shared control plane). Full stance, contract, and `Store` trait in
+`GAP-storage.md`.
+
+Two invariants:
+
+> Backend choice must not change authority semantics.
+> Scaling the store must not scale the trust assumptions.
+
+A run transition must be atomic and exclusive. If the backend cannot
+prove exclusive ownership of a run, Night Shift fails closed.
+
 ## Build order
 
 1. **Ops / Watchbill** — strongest Governor dogfood, simplest inference
