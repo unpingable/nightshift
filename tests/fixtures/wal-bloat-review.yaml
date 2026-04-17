@@ -1,0 +1,46 @@
+# Sample agenda fixture for v1 Watchbill dogfood.
+# Ops-mode, advise-only, observe-critical scope. No mutation.
+agenda_version: 0
+agenda_id: wal-bloat-review
+workflow_family: ops
+owner: operator@local
+cadence:
+  kind: scheduled
+  expr: "0 3 * * *"
+scope:
+  hosts:
+    - labelwatch-host
+  services: []
+  paths:
+    - /var/lib/labelwatch.sqlite
+  repos: []
+artifact_target: packet
+promotion_ceiling: advise
+reconciler:
+  required: true
+  invalidates_if:
+    - finding_absent_for_n_generations:1
+    - host_unreachable
+allowed_evidence_sources:
+  - nq
+  - continuity
+allowed_tool_classes:
+  - discover
+  - read
+  - propose
+budget:
+  max_wall_seconds: 600
+  max_tokens: 100000
+  max_mcp_calls: 50
+governor_binding:
+  required_above: observe
+  policy_id: nightshift.ops.propose_only
+criticality:
+  class: standard
+  re_alert_after: 4h
+  silence_max_duration: 72h
+  ack_due_by: 24h
+  handoff_required: false
+  business_hours_okay: true
+diagnosis:
+  mode: self_check

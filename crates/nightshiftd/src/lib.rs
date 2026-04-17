@@ -10,7 +10,10 @@ pub mod coordination;
 pub mod errors;
 pub mod finding;
 pub mod ledger;
+pub mod nq;
 pub mod packet;
+pub mod pipeline;
+pub mod reconciler;
 pub mod store;
 
 pub use errors::{NightShiftError, Result};

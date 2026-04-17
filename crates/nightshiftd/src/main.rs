@@ -1,6 +1,13 @@
 //! Night Shift daemon — `nightshift` CLI entry.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
+
+use nightshiftd::agenda::Agenda;
+use nightshiftd::finding::FindingKey;
+use nightshiftd::nq::FixtureNqSource;
+use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -16,7 +23,12 @@ struct Cli {
 
     /// Path to SQLite store (v1 default: ./nightshift.sqlite).
     #[arg(long, global = true, default_value = "nightshift.sqlite")]
-    store: std::path::PathBuf,
+    store: PathBuf,
+
+    /// Path to NQ fixture manifest (v1 uses a fixture source; real
+    /// NQ client comes in a later slice).
+    #[arg(long, global = true, default_value = "tests/fixtures/nq-manifest.json")]
+    nq_fixture: PathBuf,
 
     #[command(subcommand)]
     command: Command,
@@ -33,28 +45,60 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum WatchbillAction {
-    /// Run an agenda by id or path.
+    /// Run an agenda by path to its YAML definition.
     Run {
-        /// Path to an agenda YAML file, or an agenda_id already known to the store.
-        agenda: String,
+        /// Path to an agenda YAML file.
+        agenda_path: PathBuf,
+
+        /// Stable finding key to target: `<source>:<detector>:<subject>`.
+        #[arg(long)]
+        finding: String,
     },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    match &cli.command {
         Command::Watchbill { action } => match action {
-            WatchbillAction::Run { agenda } => {
-                println!(
-                    "nightshift watchbill run: agenda={} no_governor={} store={}",
-                    agenda,
-                    cli.no_governor,
-                    cli.store.display()
-                );
-                println!("(v1 pipeline not yet wired — commit A scaffolding only)");
-                Ok(())
-            }
+            WatchbillAction::Run {
+                agenda_path,
+                finding,
+            } => run_watchbill_cmd(&cli, agenda_path, finding),
         },
     }
+}
+
+fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyhow::Result<()> {
+    let agenda = Agenda::from_yaml_file(agenda_path)?;
+    let nq = FixtureNqSource::load(&cli.nq_fixture)?;
+    let target = parse_finding_arg(finding)?;
+
+    let opts = PipelineOptions {
+        no_governor: cli.no_governor,
+        run_id: new_run_id(),
+    };
+
+    let packet = run_watchbill(&agenda, &target, &nq, &opts)?;
+
+    // v1: emit packet to stdout as YAML.
+    let rendered = serde_yaml::to_string(&packet)?;
+    println!("{rendered}");
+    Ok(())
+}
+
+fn parse_finding_arg(s: &str) -> anyhow::Result<FindingKey> {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    match parts.as_slice() {
+        [source, detector, subject] => Ok(FindingKey {
+            source: (*source).into(),
+            detector: (*detector).into(),
+            subject: (*subject).into(),
+        }),
+        _ => anyhow::bail!("finding must be `<source>:<detector>:<subject>`, got: {s}"),
+    }
+}
+
+fn new_run_id() -> String {
+    format!("run_{}", chrono::Utc::now().format("%Y%m%d%H%M%S%f"))
 }

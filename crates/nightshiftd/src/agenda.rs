@@ -237,6 +237,68 @@ mod humantime_serde_duration_opt {
     }
 }
 
+impl Agenda {
+    /// Load and validate an agenda from a YAML file.
+    pub fn from_yaml_file(path: &std::path::Path) -> crate::Result<Self> {
+        let raw = std::fs::read_to_string(path)?;
+        Self::from_yaml_str(&raw)
+    }
+
+    /// Load and validate an agenda from a YAML string.
+    pub fn from_yaml_str(s: &str) -> crate::Result<Self> {
+        let agenda: Agenda = serde_yaml::from_str(s)?;
+        agenda.validate()?;
+        Ok(agenda)
+    }
+
+    /// Validate invariants enforced at capture time.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.agenda_id.is_empty() {
+            return Err(crate::NightShiftError::InvalidAgenda(
+                "agenda_id must be non-empty".into(),
+            ));
+        }
+        match self.cadence.kind {
+            CadenceKind::Scheduled if self.cadence.expr.is_none() => {
+                return Err(crate::NightShiftError::InvalidAgenda(
+                    "cadence.kind = scheduled requires cadence.expr".into(),
+                ));
+            }
+            CadenceKind::Event if self.cadence.triggers.is_empty() => {
+                return Err(crate::NightShiftError::InvalidAgenda(
+                    "cadence.kind = event requires at least one trigger".into(),
+                ));
+            }
+            _ => {}
+        }
+        // Ops and publication require non-empty scope
+        match self.workflow_family {
+            WorkflowFamily::Ops | WorkflowFamily::Publication if self.scope.is_empty() => {
+                return Err(crate::NightShiftError::InvalidAgenda(format!(
+                    "workflow_family = {:?} requires non-empty scope",
+                    self.workflow_family
+                )));
+            }
+            _ => {}
+        }
+        // promotion_ceiling above governor_binding.required_above implies Governor required
+        if self.promotion_ceiling > self.governor_binding.required_above
+            && self.governor_binding.required_above >= AuthorityLevel::Stage
+        {
+            // fine — Governor required above the listed level
+        }
+        // protected-class agendas must declare a protected_role
+        if self.criticality.class == CriticalityClass::Protected
+            && self.criticality.protected_role.is_none()
+        {
+            return Err(crate::NightShiftError::InvalidAgenda(
+                "criticality.class = protected requires protected_role".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn parse_duration(s: &str) -> Result<Duration, String> {
     let s = s.trim();
     if s.is_empty() {

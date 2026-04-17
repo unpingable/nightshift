@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "finding_key": {
+        "source": "nq",
+        "detector": "wal_bloat",
+        "subject": "labelwatch-host:/var/lib/labelwatch.sqlite"
+      },
+      "host": "labelwatch-host",
+      "severity": "warning",
+      "domain": "delta_g",
+      "persistence_generations": 6,
+      "first_seen_at": "2026-04-10T14:32:15Z",
+      "current_status": "active",
+      "snapshot_generation": 39532,
+      "captured_at": "2026-04-17T03:00:00Z",
+      "evidence_hash": ""
+    }
+  ]
+}
