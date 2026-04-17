@@ -246,6 +246,20 @@ actor may enter:
 - overlap = `shared_write` + a `protected` service in scope →
   require operator confirmation
 
+## Mode transitions require preflight
+
+Any session crossing mode boundaries — incident → remediation,
+remediation → architecture, or any pairing that changes the run's
+success condition — is a risky class of work per `GAP-parallel-ops.md`
+and triggers a Continuity preflight. The run cannot leave capture
+phase without a preflight outcome (`clear`, `hold_for_context`,
+`coordinate`, `contested`, or a named `operator_override`).
+
+Rationale: mode transitions are exactly where folklore forms.
+Ops-mode work that drifts into architecture-mode thinking without
+re-querying coordination state is the textbook case this doc exists
+to prevent.
+
 ## Interaction with Governor
 
 - Mode declaration lives in the bundle; Governor receives it with any

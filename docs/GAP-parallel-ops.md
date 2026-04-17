@@ -27,6 +27,32 @@ This is different from:
 This failure mode is specifically: *another actor's work has changed
 the scope, and nobody told us.*
 
+## Ritualized recall
+
+The failure mode this doc exists to prevent is not *forgetting*. It
+is *failing to ritualize recall*.
+
+Every NOC figured this out: channels, bridge notes, shift handoffs,
+incident commander handoffs. Those primitives existed because without
+them, locally-rational actors manufacture global incoherence.
+
+> The failure is not lack of intelligence. It is lack of ritualized
+> recall.
+
+Night Shift's job is not to make the substrate smarter. It is to
+make *consulting the substrate* a structural step, not an act of
+operator virtue.
+
+The motivating meta-irony is worth preserving explicitly:
+
+> The coordination channel existed; neither agent consulted it. The
+> framework that would have caught the incident was the framework
+> already in place. Memory was available; it was not queried.
+
+That is the failure mode. Memory availability does not imply memory
+consultation. Night Shift promotes consultation from habit to
+structure.
+
 ## Scope overlap types
 
 ```text
@@ -86,6 +112,56 @@ The reconciler classifies overlap and records it:
 ```
 
 The `decision` is not advisory. It gates promotion.
+
+## Risky classes of work
+
+Default-query-on-capture is sufficient for routine scope. Some
+classes of work require a stronger form — **preflight** — in which
+Continuity is a gate, not a background signal.
+
+Risky classes:
+
+- **Shared-infrastructure ops.** Scope includes any resource other
+  actors routinely touch (shared hosts, shared data paths, shared
+  publishers, shared collectors).
+- **Topology / config / publisher / source changes.** Anything that
+  rewrites where observers look or what they can see.
+- **Mode transitions.** A session crossing incident → remediation,
+  remediation → architecture, or any crossing that changes the
+  success condition. See `GAP-incident-modes.md`.
+- **Protected-class scope.** Observation-critical or control-plane-
+  critical services in read or write scope.
+- **Unresolved breadcrumb in scope.** Another actor has filed a
+  `run.surprise` or `run.partial` in this scope that has not been
+  closed within the freshness window.
+
+## Preflight check
+
+Triggered at the boundary between capture and reconcile, before any
+input is promoted from `observed` to `committed`. For risky classes
+the run cannot leave capture without one of:
+
+```text
+clear                no concurrent risky activity; proceed
+hold_for_context    concurrent activity exists; surface it, wait
+coordinate          named actor has overlapping scope; handoff required
+contested           mutually exclusive intent; escalate before proceeding
+operator_override   named operator explicitly acknowledges concurrent
+                    activity and continues
+```
+
+Invariants:
+
+- Missing Continuity in a risky class is treated as `hold_for_context`
+  at minimum; may be upgraded to `coordinate` if the agenda declares
+  `shared_infrastructure: true`.
+- `operator_override` must carry a named operator identity and a
+  reason. It is a receipt-generating event; no silent override.
+- Preflight outcome is audit material: `run.preflight_cleared`,
+  `run.preflight_hold`, `run.preflight_override` breadcrumbs are
+  emitted in all cases.
+- Preflight is pre-Governor. An `operator_override` at preflight
+  does not authorize mutation; Governor still gates force.
 
 ## Continuity-as-substrate invariant
 

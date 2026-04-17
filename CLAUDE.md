@@ -39,6 +39,7 @@ context bundles that revalidate their own premises before execution.
 15. Continuity availability is not Continuity use. The reconciler queries shared substrate for concurrent activity in declared scope by default; the run ledger writes observational breadcrumbs to Continuity at surprise / partial / escalation / completion events, not only at run end. Hooked in ≠ used. See `GAP-parallel-ops.md`.
 16. Incident modes (incident / remediation / architecture) are distinct and do not share a success condition. A run declares mode, objective, allowed actions, and exit criteria; crossing mode bounds is an invariant breach. Incident state, remediation state, and architectural-followup state are tracked separately. Stabilized ≠ remediated. Deployed ≠ verified. See `GAP-incident-modes.md`.
 17. Protected services (observation-critical, control-plane-critical) resist casual turn-down regardless of promotion ceiling or policy verdict. A proposed action that disables a `protected` service requires explicit operator confirmation in all modes. See `GAP-incident-modes.md`.
+18. Continuity is not purely advisory for risky classes of work. For scope that crosses shared infrastructure, touches topology / config / publishers / sources, bridges incident modes, or includes a `protected`-class service, a Continuity preflight is a guardrail — the run cannot leave capture phase without preflight clearance or a named, receipt-generating operator override. The failure mode is not forgetting; it is failing to ritualize recall. See `GAP-parallel-ops.md`.
 
 ## Quick Start
 
@@ -97,3 +98,4 @@ context bundles that revalidate their own premises before execution.
 - Don't assume Continuity is being used just because it's hooked in. The reconciler queries it for concurrent activity by default; the run ledger writes breadcrumbs by default. Availability ≠ use.
 - Don't mix incident modes. Stabilization is not a license for redesign; architectural insight is not a substitute for stabilization; shipped remediation is not closed remediation. Cross-mode work requires explicit operator override.
 - Don't treat `protected` services as a flag checked at the end. The reconciler resists casual turn-down throughout the run, not just at authorization.
+- Don't treat Continuity as advisory for risky work. For shared-infrastructure ops, topology/config/publisher/source changes, mode transitions, or protected-class scopes, preflight is a guardrail — a run that skips it is not a faster run, it is an unsafe run.
