@@ -5,11 +5,14 @@
 //!
 //! The store owns state, not intelligence.
 
+pub mod sqlite;
+
 use serde::{Deserialize, Serialize};
 
 use crate::agenda::Agenda;
 use crate::bundle::Bundle;
 use crate::errors::Result;
+use crate::finding::FindingKey;
 use crate::ledger::RunLedgerEvent;
 use crate::packet::Packet;
 
@@ -26,13 +29,15 @@ pub struct RunSummary {
     pub run_id: String,
     pub agenda_id: String,
     pub trigger: RunTrigger,
+    pub target_finding_key: Option<String>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RunFilter {
     pub agenda_id: Option<String>,
+    pub target_finding_key: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -40,7 +45,17 @@ pub trait Store: Send + Sync {
     fn create_agenda(&self, agenda: &Agenda) -> Result<String>;
     fn get_agenda(&self, agenda_id: &str) -> Result<Option<Agenda>>;
 
-    fn create_run(&self, agenda_id: &str, trigger: RunTrigger) -> Result<String>;
+    /// Create a new run record. `target` is the stable finding_key
+    /// this run is targeting; nullable for non-finding-driven runs.
+    fn create_run(
+        &self,
+        agenda_id: &str,
+        trigger: RunTrigger,
+        target: Option<&FindingKey>,
+    ) -> Result<String>;
+
+    /// Mark a run as completed (sets completed_at).
+    fn complete_run(&self, run_id: &str) -> Result<()>;
 
     fn append_run_event(&self, event: &RunLedgerEvent) -> Result<()>;
     fn list_events(&self, run_id: &str) -> Result<Vec<RunLedgerEvent>>;

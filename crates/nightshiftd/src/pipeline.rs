@@ -13,6 +13,7 @@ use crate::bundle::{
 use crate::coordination::scope_key;
 use crate::errors::{NightShiftError, Result};
 use crate::finding::{EvidenceState, FindingKey};
+use crate::ledger::{RunLedgerEvent, RunLedgerEventKind};
 use crate::nq::{evidence_hash, NqSource};
 use crate::packet::{
     AlternativeRegime, Attention, AttentionState, AuthorityResult, Confidence, Diagnosis,
@@ -20,25 +21,34 @@ use crate::packet::{
     ProposedAction, ProposedActionKind, ReceiptReferences,
 };
 use crate::reconciler;
+use crate::store::{RunTrigger, Store};
 
 /// Runtime options for a pipeline invocation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PipelineOptions {
     pub no_governor: bool,
-    pub run_id: String,
+    /// How this run was triggered. Recorded in the run row.
+    pub trigger: Option<RunTrigger>,
 }
 
 /// Execute the v1 Watchbill pipeline for a single finding target.
 ///
-/// The agenda must declare at least one target finding_key in its
-/// scope (v1: derived from `hosts` + detector hint in `cadence.triggers`
-/// or a fallback default). For commit B we take the target explicitly.
+/// Persists through the `Store`: creates the run record, saves the
+/// bundle and packet, emits `run.captured` / `run.reconciled` /
+/// `run.completed` ledger events. Attention keys on the stable
+/// `FindingKey` per GAP-attention-state.md.
 pub fn run_watchbill(
     agenda: &Agenda,
     target: &FindingKey,
     nq: &dyn NqSource,
+    store: &dyn Store,
     opts: &PipelineOptions,
 ) -> Result<Packet> {
+    // Ensure agenda persisted — the store is the durable record.
+    store.create_agenda(agenda)?;
+
+    let trigger = opts.trigger.unwrap_or(RunTrigger::Manual);
+    let run_id = store.create_run(&agenda.agenda_id, trigger, Some(target))?;
     // 1. Authority ceiling enforcement (pre-pipeline gate).
     //    Without Governor, ceiling cannot exceed advise.
     let effective_ceiling = effective_ceiling(agenda.promotion_ceiling, opts.no_governor);
@@ -75,7 +85,7 @@ pub fn run_watchbill(
     let bundle_pre_reconcile = Bundle {
         bundle_version: 0,
         agenda_id: agenda.agenda_id.clone(),
-        run_id: opts.run_id.clone(),
+        run_id: run_id.clone(),
         capture: CapturePhase {
             captured_at,
             captured_by: "scheduler".into(),
@@ -85,15 +95,33 @@ pub fn run_watchbill(
         reconciliation: None,
     };
 
+    store.append_run_event(&new_event(
+        &run_id,
+        RunLedgerEventKind::RunCaptured,
+        serde_json::json!({
+            "target_finding_key": target.as_string(),
+            "captured_hash": captured_hash,
+        }),
+    ))?;
+
     // 3. Reconcile — live source check for each NQ input.
     let reconciliation = reconciler::reconcile_bundle(&bundle_pre_reconcile, nq)?;
 
-    // The reconciled bundle is built here so persistence slices (commit C)
-    // can save it. For commit B, only `reconciliation` is consumed below.
-    let _reconciled_bundle = Bundle {
+    let reconciled_bundle = Bundle {
         reconciliation: Some(reconciliation.clone()),
         ..bundle_pre_reconcile
     };
+    store.save_bundle(&run_id, &reconciled_bundle)?;
+
+    store.append_run_event(&new_event(
+        &run_id,
+        RunLedgerEventKind::RunReconciled,
+        serde_json::json!({
+            "ok_to_proceed": reconciliation.summary.ok_to_proceed,
+            "blocked": reconciliation.summary.blocked,
+            "downgraded": reconciliation.summary.downgraded,
+        }),
+    ))?;
 
     // 4. Build the packet. v1 diagnosis is deterministic — no LLM.
     let nq_result = reconciliation
@@ -209,15 +237,15 @@ pub fn run_watchbill(
 
     let packet_id = format!(
         "pkt_{}_{}",
-        opts.run_id,
+        run_id,
         scope_key(&agenda.scope).chars().take(12).collect::<String>()
     );
 
-    Ok(Packet {
+    let packet = Packet {
         packet_version: 0,
         packet_id,
         agenda_id: agenda.agenda_id.clone(),
-        run_id: opts.run_id.clone(),
+        run_id: run_id.clone(),
         produced_at: Utc::now(),
         finding_summary,
         reconciliation_summary: reconciliation.summary.clone(),
@@ -227,11 +255,42 @@ pub fn run_watchbill(
         diagnosis_review,
         attention,
         receipt_references: ReceiptReferences {
-            run_ledger: Some(format!("ledger://nightshift/runs/{}", opts.run_id)),
+            run_ledger: Some(format!("ledger://nightshift/runs/{run_id}")),
             governor_receipts: vec![],
-            evidence_bundle: Some(format!("bundle://{}", opts.run_id)),
+            evidence_bundle: Some(format!("bundle://{run_id}")),
         },
-    })
+    };
+
+    store.save_packet(&run_id, &packet)?;
+
+    store.append_run_event(&new_event(
+        &run_id,
+        RunLedgerEventKind::RunCompleted,
+        serde_json::json!({
+            "packet_id": packet.packet_id,
+            "requested_authority_level": packet.proposed_action.requested_authority_level,
+            "effective_ceiling": effective_ceiling,
+        }),
+    ))?;
+
+    store.complete_run(&run_id)?;
+
+    Ok(packet)
+}
+
+/// Construct a ledger event with a fresh UUID-based id.
+fn new_event(
+    run_id: &str,
+    kind: RunLedgerEventKind,
+    payload: serde_json::Value,
+) -> RunLedgerEvent {
+    RunLedgerEvent {
+        event_id: format!("ev_{}", uuid::Uuid::new_v4().simple()),
+        run_id: run_id.to_string(),
+        kind,
+        at: Utc::now(),
+        payload,
+    }
 }
 
 /// The ceiling after applying --no-governor degradation.

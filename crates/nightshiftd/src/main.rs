@@ -8,6 +8,7 @@ use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
 use nightshiftd::nq::FixtureNqSource;
 use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
+use nightshiftd::store::sqlite::SqliteStore;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -72,14 +73,15 @@ fn main() -> anyhow::Result<()> {
 fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyhow::Result<()> {
     let agenda = Agenda::from_yaml_file(agenda_path)?;
     let nq = FixtureNqSource::load(&cli.nq_fixture)?;
+    let store = SqliteStore::open(&cli.store)?;
     let target = parse_finding_arg(finding)?;
 
     let opts = PipelineOptions {
         no_governor: cli.no_governor,
-        run_id: new_run_id(),
+        trigger: None,
     };
 
-    let packet = run_watchbill(&agenda, &target, &nq, &opts)?;
+    let packet = run_watchbill(&agenda, &target, &nq, &store, &opts)?;
 
     // v1: emit packet to stdout as YAML.
     let rendered = serde_yaml::to_string(&packet)?;
@@ -99,6 +101,3 @@ fn parse_finding_arg(s: &str) -> anyhow::Result<FindingKey> {
     }
 }
 
-fn new_run_id() -> String {
-    format!("run_{}", chrono::Utc::now().format("%Y%m%d%H%M%S%f"))
-}

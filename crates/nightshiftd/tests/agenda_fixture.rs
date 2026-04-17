@@ -7,6 +7,8 @@ use nightshiftd::agenda::{Agenda, AuthorityLevel, CriticalityClass, WorkflowFami
 use nightshiftd::finding::FindingKey;
 use nightshiftd::nq::FixtureNqSource;
 use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
+use nightshiftd::store::sqlite::SqliteStore;
+use nightshiftd::store::{RunFilter, Store};
 
 fn fixtures_dir() -> PathBuf {
     // Walk up to the repo root from the crate manifest dir.
@@ -54,6 +56,7 @@ fn v1_pipeline_produces_advise_packet_without_governor() {
     let manifest = fixtures_dir().join("nq-manifest.json");
     let agenda = Agenda::from_yaml_file(&agenda_path).unwrap();
     let nq = FixtureNqSource::load(&manifest).unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
 
     let target = FindingKey {
         source: "nq".into(),
@@ -63,30 +66,95 @@ fn v1_pipeline_produces_advise_packet_without_governor() {
 
     let opts = PipelineOptions {
         no_governor: true,
-        run_id: "run_test_001".into(),
+        trigger: None,
     };
 
-    let packet = run_watchbill(&agenda, &target, &nq, &opts).expect("pipeline must succeed");
+    let packet = run_watchbill(&agenda, &target, &nq, &store, &opts).expect("pipeline must succeed");
 
     assert_eq!(packet.agenda_id, "wal-bloat-review");
-    assert_eq!(packet.run_id, "run_test_001");
     assert_eq!(
         packet.proposed_action.requested_authority_level,
         AuthorityLevel::Advise
     );
-    // --no-governor must have lowered governor_present flag
     assert!(!packet.authority_result.governor_present);
-
-    // Attention key is the stable finding_key (per GAP-attention-state.md)
     assert_eq!(packet.attention.attention_key, target);
-
-    // Reconciliation should succeed: same finding in manifest ≡ captured.
     assert!(packet.reconciliation_summary.ok_to_proceed);
-
-    // Nothing mutated.
     assert!(matches!(
         packet.proposed_action.kind,
         nightshiftd::packet::ProposedActionKind::Advisory
     ));
     assert!(packet.proposed_action.reversible);
+}
+
+#[test]
+fn same_finding_across_two_runs_persists_and_is_queryable() {
+    let agenda_path = fixtures_dir().join("wal-bloat-review.yaml");
+    let manifest = fixtures_dir().join("nq-manifest.json");
+    let agenda = Agenda::from_yaml_file(&agenda_path).unwrap();
+    let nq = FixtureNqSource::load(&manifest).unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
+
+    let target = FindingKey {
+        source: "nq".into(),
+        detector: "wal_bloat".into(),
+        subject: "labelwatch-host:/var/lib/labelwatch.sqlite".into(),
+    };
+
+    let opts = PipelineOptions {
+        no_governor: true,
+        trigger: None,
+    };
+
+    let p1 = run_watchbill(&agenda, &target, &nq, &store, &opts).unwrap();
+    let p2 = run_watchbill(&agenda, &target, &nq, &store, &opts).unwrap();
+    assert_ne!(p1.run_id, p2.run_id, "each run must have a distinct run_id");
+
+    // Both runs are queryable by the same stable finding_key.
+    let runs_for_finding = store
+        .list_runs(RunFilter {
+            target_finding_key: Some(target.as_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(runs_for_finding.len(), 2);
+    assert_eq!(
+        runs_for_finding[0].target_finding_key,
+        runs_for_finding[1].target_finding_key,
+        "same finding_key persists across runs (per GAP-attention-state.md)"
+    );
+
+    // Each run produced the ledger events we expect.
+    for r in &runs_for_finding {
+        let events = store.list_events(&r.run_id).unwrap();
+        let kinds: Vec<_> = events.iter().map(|e| e.kind).collect();
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, nightshiftd::ledger::RunLedgerEventKind::RunCaptured)),
+            "missing RunCaptured event for {}",
+            r.run_id
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, nightshiftd::ledger::RunLedgerEventKind::RunReconciled)),
+            "missing RunReconciled event for {}",
+            r.run_id
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, nightshiftd::ledger::RunLedgerEventKind::RunCompleted)),
+            "missing RunCompleted event for {}",
+            r.run_id
+        );
+    }
+
+    // Bundles and packets round-trip out of the store.
+    for r in &runs_for_finding {
+        let b = store.get_bundle(&r.run_id).unwrap().unwrap();
+        assert_eq!(b.run_id, r.run_id);
+        let p = store.get_packet(&r.run_id).unwrap().unwrap();
+        assert_eq!(p.run_id, r.run_id);
+    }
 }
