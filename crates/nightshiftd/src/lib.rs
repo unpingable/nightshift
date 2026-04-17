@@ -13,6 +13,7 @@ pub mod ledger;
 pub mod nq;
 pub mod packet;
 pub mod pipeline;
+pub mod posture;
 pub mod reconciler;
 pub mod store;
 

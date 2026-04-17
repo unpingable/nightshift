@@ -8,6 +8,7 @@ use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
 use nightshiftd::nq::FixtureNqSource;
 use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
+use nightshiftd::posture::{list_postures, load_posture, render_list_row, render_show, PostureFilter};
 use nightshiftd::store::sqlite::SqliteStore;
 
 #[derive(Parser, Debug)]
@@ -48,6 +49,38 @@ enum Command {
         #[command(subcommand)]
         action: WatchbillAction,
     },
+    /// Query persisted runs: what happened, what held, and why.
+    Runs {
+        #[command(subcommand)]
+        action: RunsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RunsAction {
+    /// List recent runs with status and target finding_key.
+    List {
+        /// Filter to a single agenda.
+        #[arg(long)]
+        agenda: Option<String>,
+
+        /// Filter to a single target finding_key (`<source>:<detector>:<subject>`).
+        #[arg(long)]
+        finding: Option<String>,
+
+        /// Only show runs held before reconcile.
+        #[arg(long)]
+        held_only: bool,
+
+        /// Limit number of rows printed.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Show one run's posture: metadata, ceiling, hold reason, event timeline.
+    Show {
+        /// The run_id to display.
+        run_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -73,6 +106,51 @@ fn main() -> anyhow::Result<()> {
                 finding,
             } => run_watchbill_cmd(&cli, agenda_path, finding),
         },
+        Command::Runs { action } => match action {
+            RunsAction::List {
+                agenda,
+                finding,
+                held_only,
+                limit,
+            } => runs_list_cmd(&cli, agenda.clone(), finding.clone(), *held_only, *limit),
+            RunsAction::Show { run_id } => runs_show_cmd(&cli, run_id),
+        },
+    }
+}
+
+fn runs_list_cmd(
+    cli: &Cli,
+    agenda: Option<String>,
+    finding: Option<String>,
+    held_only: bool,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let store = SqliteStore::open(&cli.store)?;
+    let filter = PostureFilter {
+        agenda_id: agenda,
+        target_finding_key: finding,
+        held_only,
+        limit: Some(limit),
+    };
+    let postures = list_postures(&store, &filter)?;
+    if postures.is_empty() {
+        println!("(no runs match)");
+        return Ok(());
+    }
+    for p in &postures {
+        println!("{}", render_list_row(p));
+    }
+    Ok(())
+}
+
+fn runs_show_cmd(cli: &Cli, run_id: &str) -> anyhow::Result<()> {
+    let store = SqliteStore::open(&cli.store)?;
+    match load_posture(&store, run_id)? {
+        Some(p) => {
+            print!("{}", render_show(&p));
+            Ok(())
+        }
+        None => anyhow::bail!("run not found: {run_id}"),
     }
 }
 
