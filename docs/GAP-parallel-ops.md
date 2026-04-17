@@ -130,6 +130,68 @@ Breadcrumbs are observational, not authoritative. They live in
 Continuity as `observed` entries. Other actors' reconcilers may
 *admit* them as hints — never as authorization.
 
+## Breadcrumb latency
+
+The time between *surprise-landing* and *surprise-filed* is itself a
+signal. A well-behaved session files near the event. A session that
+only files at end-of-run has compressed every surprise into one
+retrospective blob, losing detail and losing the window where other
+actors could have benefited.
+
+Tracked per session:
+
+```text
+surprise_filed_latency_p50 / p95       for breadcrumbs of kind `run.surprise`
+filed_at_end_of_run_ratio              fraction of surprises only captured in terminal summary
+```
+
+Night Shift surfaces these in operator self-review. They are not
+punitive metrics; they are diagnostic — a rising latency is a signal
+that in-flight reflection is decaying, which tends to precede
+coordination failures.
+
+> The failure mode is not that breadcrumbs are missing. It is that
+> they are all stamped `end_of_run`.
+
+## Natural breakpoints
+
+Night Shift does not *require* operators to file breadcrumbs at
+arbitrary intervals. It prompts at structurally meaningful moments —
+natural breakpoints where capturing cost is low and recall is still
+sharp:
+
+```text
+surprise resolved               an unexpected finding has a disposition (fixed / deferred / escalated)
+service restart verified        a restart or re-point has confirmed post-condition
+quiesce window reached          a pause or cooldown gate has fired
+dependency interaction          an adjacent service has been touched or re-pointed
+authority transition            attention state changed (acked, investigating, handed_off)
+phase transition                incident state advanced (see GAP-incident-modes.md)
+```
+
+At each, Night Shift may emit a **breadcrumb prompt**: a low-friction
+suggestion to file a short observation, scoped to the just-completed
+event. The prompt is optional; the *prompt event* itself is logged so
+the not-filed case is visible.
+
+## Passive watching, active nudging
+
+Night Shift can operate as a passive substrate (reconciler queries
+Continuity; operator writes when they remember) or as an active
+partner (session-attached watcher that emits breadcrumb prompts at
+natural breakpoints). The active mode is opt-in per session, not
+default, because:
+
+- active nudging risks becoming interruption theatre
+- the operator's judgment about "major" still governs what's worth
+  capturing
+- the watcher's job is to *lower the friction of filing*, not to
+  enforce filing
+
+A nudged-but-not-filed event is still a useful signal. It tells
+Night Shift the operator saw the moment and declined, which is
+different from the operator never seeing it.
+
 ## Invariants
 
 - **Continuity availability is not Continuity use.** Hooked in ≠ used.
