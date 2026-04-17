@@ -41,6 +41,7 @@ context bundles that revalidate their own premises before execution.
 17. Protected services (observation-critical, control-plane-critical) resist casual turn-down regardless of promotion ceiling or policy verdict. A proposed action that disables a `protected` service requires explicit operator confirmation in all modes. See `GAP-incident-modes.md`.
 18. Coordination safety is distinct from authorization safety. Continuity is optional for authorization safety (missing Continuity never raises authority) but required for coordination safety in named risky classes — shared-infrastructure ops, topology/config/publisher/source changes, mode transitions, or protected-class scopes. For these classes, a Continuity preflight is a guardrail: the run cannot leave capture phase without preflight clearance or a named, receipt-generating operator override. The failure mode is not forgetting; it is failing to ritualize recall. See `DESIGN.md` (Continuity role) and `GAP-parallel-ops.md`.
 19. The coordination channel is narrowly authoritative. Overlap *existence* and *classification* may gate coordination; breadcrumb *contents* remain `observed` / `hint`. Continuity is authoritative about who else is here; Continuity is never authoritative about what is true.
+20. Backup and restore for continuity-bearing workloads are first-class operational truths, not operator folklore. Backup scope must be explicitly declared (never "the whole box"); off-host destinations are required for continuity protection; restore drills are required and non-live by default; SQLite captures must use a safe method. Continuity (cross-run state / coordination / memory) and backup (disaster survival of declared protected state) are related concerns but MUST NOT be collapsed. See `GAP-backup-restore.md`.
 
 ## Quick Start
 
@@ -66,6 +67,7 @@ context bundles that revalidate their own premises before execution.
   - `GAP-attention-state.md` — evidence vs attention vs criticality axes; anti-amnesia field kit
   - `GAP-parallel-ops.md` — cross-session coordination; scope overlap; Continuity-as-substrate invariant; breadcrumb cadence
   - `GAP-incident-modes.md` — incident / remediation / architecture modes; incident state ladder; change envelope; protected role class; NOC primitives
+  - `GAP-backup-restore.md` — operational backup / restore for continuity-bearing workloads; Backup Contract; capture methods; off-host destinations; verification and restore drills; integration with Governor / NQ / Continuity boundaries
   - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
@@ -99,4 +101,7 @@ context bundles that revalidate their own premises before execution.
 - Don't assume Continuity is being used just because it's hooked in. The reconciler queries it for concurrent activity by default; the run ledger writes breadcrumbs by default. Availability ≠ use.
 - Don't mix incident modes. Stabilization is not a license for redesign; architectural insight is not a substitute for stabilization; shipped remediation is not closed remediation. Cross-mode work requires explicit operator override.
 - Don't treat `protected` services as a flag checked at the end. The reconciler resists casual turn-down throughout the run, not just at authorization.
+- Don't collapse Continuity (cross-run state / coordination / memory) into backup (disaster survival of declared protected state). Related concerns, different failure modes. See `GAP-backup-restore.md`.
+- Don't treat "same host, different directory" as off-host. That is staging, not continuity protection. Off-host means out of the protected host's primary failure domain.
+- Don't let Nightshift become a universal archive substrate. Nightshift owns backup *orchestration and visibility*, not preservation theory. Evidentiary archive is a separate concern if it ever needs to exist.
 - Don't treat Continuity as advisory for risky work. For shared-infrastructure ops, topology/config/publisher/source changes, mode transitions, or protected-class scopes, preflight is a guardrail — a run that skips it is not a faster run, it is an unsafe run.
