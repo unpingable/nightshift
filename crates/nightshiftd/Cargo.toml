@@ -1,0 +1,27 @@
+[package]
+name = "nightshiftd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Night Shift daemon — deferred agent work with receipts, reconciliation, and governed promotion"
+
+[[bin]]
+name = "nightshift"
+path = "src/main.rs"
+
+[lib]
+name = "nightshiftd"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
