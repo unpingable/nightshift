@@ -10,7 +10,7 @@ use crate::agenda::{Agenda, AuthorityLevel, CriticalityClass};
 use crate::bundle::{
     Bundle, CaptureInput, CapturePhase, Freshness, InputStatus, InvalidationRule,
 };
-use crate::coordination::scope_key;
+use crate::coordination::{classify_risky, preflight, scope_key, CoordinationOutcome};
 use crate::errors::{NightShiftError, Result};
 use crate::finding::{EvidenceState, FindingKey};
 use crate::ledger::{RunLedgerEvent, RunLedgerEventKind};
@@ -27,6 +27,12 @@ use crate::store::{RunTrigger, Store};
 #[derive(Debug, Clone, Default)]
 pub struct PipelineOptions {
     pub no_governor: bool,
+    /// Whether a Continuity substrate is configured for this
+    /// deployment. v1 has no real Continuity integration yet; this
+    /// flag controls preflight behavior for risky-class runs so the
+    /// contract in `GAP-parallel-ops.md` can be exercised now.
+    /// Default: false (standalone).
+    pub continuity_configured: bool,
     /// How this run was triggered. Recorded in the run row.
     pub trigger: Option<RunTrigger>,
 }
@@ -103,6 +109,42 @@ pub fn run_watchbill(
             "captured_hash": captured_hash,
         }),
     ))?;
+
+    // 2a. Preflight — risky-class coordination gate per
+    //     GAP-parallel-ops.md. For non-risky agendas this is always
+    //     Clear; for risky agendas without Continuity configured it
+    //     holds the run, per CLAUDE.md invariant #18.
+    let preflight_outcome = preflight(agenda, opts.continuity_configured);
+    let risky = classify_risky(agenda);
+
+    match preflight_outcome {
+        CoordinationOutcome::Clear | CoordinationOutcome::OperatorOverride => {
+            store.append_run_event(&new_event(
+                &run_id,
+                RunLedgerEventKind::RunPreflightCleared,
+                serde_json::json!({
+                    "outcome": "clear",
+                    "risky": risky.is_risky(),
+                    "reasons": risky.reasons(),
+                }),
+            ))?;
+        }
+        _ => {
+            // Hold path — the run stops before reconcile.
+            return hold_for_preflight(
+                agenda,
+                target,
+                &captured_snapshot,
+                &bundle_pre_reconcile,
+                preflight_outcome,
+                &risky,
+                store,
+                opts,
+                effective_ceiling,
+                &run_id,
+            );
+        }
+    }
 
     // 3. Reconcile — live source check for each NQ input.
     let reconciliation = reconciler::reconcile_bundle(&bundle_pre_reconcile, nq)?;
@@ -274,6 +316,188 @@ pub fn run_watchbill(
     ))?;
 
     store.complete_run(&run_id)?;
+
+    Ok(packet)
+}
+
+/// Handle a preflight hold — emit the appropriate event, save a
+/// bundle with no reconciliation, build a packet that documents the
+/// hold, and finalize the run. Returns the packet so the caller can
+/// render it.
+#[allow(clippy::too_many_arguments)]
+fn hold_for_preflight(
+    agenda: &Agenda,
+    target: &FindingKey,
+    captured_snapshot: &crate::finding::FindingSnapshot,
+    bundle: &Bundle,
+    outcome: CoordinationOutcome,
+    risk: &crate::coordination::RiskyClassification,
+    store: &dyn Store,
+    opts: &PipelineOptions,
+    effective_ceiling: AuthorityLevel,
+    run_id: &str,
+) -> Result<Packet> {
+    let (event_kind, outcome_label) = match outcome {
+        CoordinationOutcome::HoldForContext => {
+            (RunLedgerEventKind::RunPreflightHold, "hold_for_context")
+        }
+        CoordinationOutcome::Coordinate => {
+            (RunLedgerEventKind::RunPreflightCoordinate, "coordinate")
+        }
+        CoordinationOutcome::BlockForResolution => {
+            (RunLedgerEventKind::RunPreflightBlocked, "block_for_resolution")
+        }
+        // Clear and OperatorOverride are handled on the main path and
+        // do not enter this function. Treat as a bug if they do.
+        other => {
+            return Err(NightShiftError::PreflightBlocked(format!(
+                "hold_for_preflight called with non-hold outcome: {other:?}"
+            )));
+        }
+    };
+
+    store.save_bundle(run_id, bundle)?;
+    store.append_run_event(&new_event(
+        run_id,
+        event_kind,
+        serde_json::json!({
+            "outcome": outcome_label,
+            "risky": risk.is_risky(),
+            "reasons": risk.reasons(),
+            "continuity_configured": opts.continuity_configured,
+        }),
+    ))?;
+
+    let hold_reason = format!(
+        "preflight {outcome_label}: {}",
+        risk.reasons().join(", ")
+    );
+
+    let finding_summary = FindingSummary {
+        source: captured_snapshot.finding_key.source.clone(),
+        detector: captured_snapshot.finding_key.detector.clone(),
+        host: captured_snapshot.host.clone(),
+        subject: captured_snapshot.finding_key.subject.clone(),
+        severity: captured_snapshot.severity,
+        domain: captured_snapshot.domain.clone(),
+        persistence_generations: captured_snapshot.persistence_generations,
+        first_seen_at: captured_snapshot.first_seen_at,
+        current_status: captured_snapshot.current_status,
+    };
+
+    let reconciliation_summary = crate::bundle::ReconciliationSummary {
+        ok_to_proceed: false,
+        blocked: vec![hold_reason.clone()],
+        ..Default::default()
+    };
+
+    let diagnosis = Diagnosis {
+        regime: "held — coordination preflight did not clear".into(),
+        evidence: vec![format!(
+            "risky-class reasons: {}",
+            if risk.reasons().is_empty() {
+                "(none declared)".to_string()
+            } else {
+                risk.reasons().join(", ")
+            }
+        )],
+        confidence: Confidence::Low,
+        alternatives_considered: vec![],
+    };
+
+    let proposed_action = ProposedAction {
+        kind: ProposedActionKind::Advisory,
+        steps: vec![
+            "coordinate with overlapping actor(s) via Continuity".into(),
+            "or invoke operator_override with a named reason".into(),
+            "no pipeline action taken; run halted before reconcile".into(),
+        ],
+        risk_notes: vec![hold_reason.clone()],
+        reversible: true,
+        blast_radius: "none — run halted".into(),
+        requested_authority_level: AuthorityLevel::Observe,
+    };
+
+    let authority_result = AuthorityResult {
+        requested: AuthorityLevel::Observe,
+        governor_present: !opts.no_governor,
+        governor_verdict: Some("not consulted — preflight halted the run".into()),
+        authority_receipts: vec![],
+        ceiling_note: Some(format!(
+            "ceiling {:?} → held at observe by preflight",
+            effective_ceiling
+        )),
+    };
+
+    let diagnosis_review = DiagnosisReview {
+        mode: DiagnosisReviewMode::SelfCheck,
+        unsafe_assumptions: vec![],
+        stale_context_risks: vec![
+            "no reconciliation performed — captured evidence not verified against current state"
+                .into(),
+        ],
+        promotion_overreach: vec![],
+        missing_verification: vec![hold_reason.clone()],
+        recommended_downgrade: None,
+    };
+
+    let attention = Attention {
+        attention_key: target.clone(),
+        evidence_state: captured_snapshot.current_status,
+        attention_state: AttentionState::Unowned,
+        operational_urgency: urgency_from(
+            captured_snapshot.severity,
+            agenda.criticality.class,
+            InputStatus::Observed,
+        ),
+        owner: None,
+        last_touched_by: None,
+        last_touched_at: None,
+        acknowledged_at: None,
+        ack_expires_at: None,
+        follow_up_by: None,
+        handoff_note: None,
+        re_alert_after: None,
+        silence_reason: Some(hold_reason),
+    };
+
+    let packet_id = format!(
+        "pkt_{}_{}",
+        run_id,
+        scope_key(&agenda.scope).chars().take(12).collect::<String>()
+    );
+
+    let packet = Packet {
+        packet_version: 0,
+        packet_id,
+        agenda_id: agenda.agenda_id.clone(),
+        run_id: run_id.to_string(),
+        produced_at: Utc::now(),
+        finding_summary,
+        reconciliation_summary,
+        diagnosis,
+        proposed_action,
+        authority_result,
+        diagnosis_review,
+        attention,
+        receipt_references: ReceiptReferences {
+            run_ledger: Some(format!("ledger://nightshift/runs/{run_id}")),
+            governor_receipts: vec![],
+            evidence_bundle: Some(format!("bundle://{run_id}")),
+        },
+    };
+
+    store.save_packet(run_id, &packet)?;
+    store.append_run_event(&new_event(
+        run_id,
+        RunLedgerEventKind::RunCompleted,
+        serde_json::json!({
+            "packet_id": packet.packet_id,
+            "held": true,
+            "outcome": outcome_label,
+        }),
+    ))?;
+    store.complete_run(run_id)?;
 
     Ok(packet)
 }

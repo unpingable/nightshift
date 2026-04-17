@@ -66,6 +66,7 @@ fn v1_pipeline_produces_advise_packet_without_governor() {
 
     let opts = PipelineOptions {
         no_governor: true,
+        continuity_configured: false,
         trigger: None,
     };
 
@@ -87,6 +88,112 @@ fn v1_pipeline_produces_advise_packet_without_governor() {
 }
 
 #[test]
+fn protected_class_agenda_without_continuity_holds_at_preflight() {
+    // Load-bearing proof for commit D:
+    //
+    //   A protected-class agenda (observation-critical or
+    //   control-plane-critical service in scope) is a risky class of
+    //   work per GAP-parallel-ops.md. Without Continuity configured,
+    //   preflight *must* hold the run before reconcile. This is the
+    //   structural guarantee of CLAUDE.md invariant #18: coordination
+    //   safety is not optional for risky classes.
+    //
+    // The packet must document the hold. No reconciliation happens.
+    // No proposed action requests anything above `observe`.
+    let agenda_path = fixtures_dir().join("nq-publisher-protected.yaml");
+    let manifest = fixtures_dir().join("nq-manifest.json");
+    let agenda = Agenda::from_yaml_file(&agenda_path).unwrap();
+    let nq = FixtureNqSource::load(&manifest).unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
+
+    let target = FindingKey {
+        source: "nq".into(),
+        detector: "publisher_stale".into(),
+        subject: "observatory-host:nq-publisher".into(),
+    };
+
+    let opts = PipelineOptions {
+        no_governor: true,
+        continuity_configured: false, // <— the condition that triggers hold
+        trigger: None,
+    };
+
+    let packet = run_watchbill(&agenda, &target, &nq, &store, &opts).expect("hold path returns a packet");
+
+    // Reconciliation did NOT succeed — the run was held.
+    assert!(!packet.reconciliation_summary.ok_to_proceed);
+    assert!(!packet.reconciliation_summary.blocked.is_empty());
+
+    // Nothing was proposed above observe; nothing mutated.
+    assert_eq!(
+        packet.proposed_action.requested_authority_level,
+        AuthorityLevel::Observe
+    );
+    assert!(matches!(
+        packet.proposed_action.kind,
+        nightshiftd::packet::ProposedActionKind::Advisory
+    ));
+    assert!(packet.proposed_action.reversible);
+    assert!(packet.attention.silence_reason.is_some());
+
+    // Ledger shows captured → preflight_hold → completed, in order,
+    // with NO reconciled event.
+    let runs = store.list_runs(RunFilter::default()).unwrap();
+    assert_eq!(runs.len(), 1);
+    let events = store.list_events(&runs[0].run_id).unwrap();
+    let kinds: Vec<_> = events.iter().map(|e| e.kind).collect();
+
+    use nightshiftd::ledger::RunLedgerEventKind::*;
+    assert!(kinds.iter().any(|k| matches!(k, RunCaptured)));
+    assert!(
+        kinds.iter().any(|k| matches!(k, RunPreflightHold)),
+        "RunPreflightHold event missing; kinds were {:?}",
+        kinds
+    );
+    assert!(
+        !kinds.iter().any(|k| matches!(k, RunReconciled)),
+        "a held run must not emit RunReconciled; kinds were {:?}",
+        kinds
+    );
+    assert!(kinds.iter().any(|k| matches!(k, RunCompleted)));
+}
+
+#[test]
+fn protected_class_agenda_with_continuity_clears_preflight() {
+    // Mirror of the above: once Continuity is "configured" (v1 stub),
+    // the risky agenda clears preflight and reconciliation proceeds.
+    // Proves the hold is caused by the coordination substrate state,
+    // not by the class itself.
+    let agenda_path = fixtures_dir().join("nq-publisher-protected.yaml");
+    let manifest = fixtures_dir().join("nq-manifest.json");
+    let agenda = Agenda::from_yaml_file(&agenda_path).unwrap();
+    let nq = FixtureNqSource::load(&manifest).unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
+
+    let target = FindingKey {
+        source: "nq".into(),
+        detector: "publisher_stale".into(),
+        subject: "observatory-host:nq-publisher".into(),
+    };
+
+    let opts = PipelineOptions {
+        no_governor: true,
+        continuity_configured: true,
+        trigger: None,
+    };
+
+    let packet = run_watchbill(&agenda, &target, &nq, &store, &opts).unwrap();
+    assert!(packet.reconciliation_summary.ok_to_proceed);
+
+    let runs = store.list_runs(RunFilter::default()).unwrap();
+    let events = store.list_events(&runs[0].run_id).unwrap();
+    let kinds: Vec<_> = events.iter().map(|e| e.kind).collect();
+    use nightshiftd::ledger::RunLedgerEventKind::*;
+    assert!(kinds.iter().any(|k| matches!(k, RunPreflightCleared)));
+    assert!(kinds.iter().any(|k| matches!(k, RunReconciled)));
+}
+
+#[test]
 fn same_finding_across_two_runs_persists_and_is_queryable() {
     let agenda_path = fixtures_dir().join("wal-bloat-review.yaml");
     let manifest = fixtures_dir().join("nq-manifest.json");
@@ -102,6 +209,7 @@ fn same_finding_across_two_runs_persists_and_is_queryable() {
 
     let opts = PipelineOptions {
         no_governor: true,
+        continuity_configured: false,
         trigger: None,
     };
 

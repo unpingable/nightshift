@@ -1,0 +1,51 @@
+# Sample protected-class agenda fixture.
+#
+# The target service is observation-critical (an NQ publisher). Under
+# v1 Watchbill rules, a protected-class agenda is a "risky class of
+# work" per GAP-parallel-ops.md. Without a configured Continuity
+# substrate, preflight must hold the run before reconcile.
+#
+# This fixture is the test surface for proving commit D's claim:
+# coordination posture can stop a run before it gets clever.
+agenda_version: 0
+agenda_id: nq-publisher-watch
+workflow_family: ops
+owner: operator@local
+cadence:
+  kind: scheduled
+  expr: "*/15 * * * *"
+scope:
+  hosts:
+    - observatory-host
+  services:
+    - nq-publisher
+  paths: []
+  repos: []
+artifact_target: packet
+promotion_ceiling: advise
+reconciler:
+  required: true
+allowed_evidence_sources:
+  - nq
+  - continuity
+allowed_tool_classes:
+  - discover
+  - read
+  - propose
+budget:
+  max_wall_seconds: 300
+  max_tokens: 50000
+  max_mcp_calls: 20
+governor_binding:
+  required_above: observe
+  policy_id: nightshift.ops.observe_only
+criticality:
+  class: protected
+  protected_role: observation_critical
+  re_alert_after: 30m
+  silence_max_duration: 2h
+  ack_due_by: 1h
+  handoff_required: true
+  business_hours_okay: false
+diagnosis:
+  mode: self_check

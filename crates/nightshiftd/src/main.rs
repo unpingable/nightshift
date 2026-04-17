@@ -31,6 +31,12 @@ struct Cli {
     #[arg(long, global = true, default_value = "tests/fixtures/nq-manifest.json")]
     nq_fixture: PathBuf,
 
+    /// Treat Continuity as configured for this deployment. v1 does
+    /// not yet query Continuity; this flag controls preflight
+    /// behavior for risky-class agendas (see GAP-parallel-ops.md).
+    #[arg(long, global = true)]
+    continuity_configured: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -78,6 +84,7 @@ fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) ->
 
     let opts = PipelineOptions {
         no_governor: cli.no_governor,
+        continuity_configured: cli.continuity_configured,
         trigger: None,
     };
 
