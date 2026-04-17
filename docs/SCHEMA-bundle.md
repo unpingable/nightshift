@@ -18,6 +18,11 @@ This is what prevents the 3am agent from acting on 11pm vibes.
 - **`committed` is scoped, not permanent.** A committed input is
   accepted for *this run, under this scope, after reconciliation*. It
   does not become a fossilized fact oracle.
+- **Concurrent-activity check is structural.** Every bundle includes a
+  `concurrent_scope_activity` input queried from Continuity by default;
+  the reconciler classifies scope overlap before any proposal. Missing
+  Continuity is a soft dependency (lowers ceiling; never raises
+  authority). See `GAP-parallel-ops.md`.
 
 ## Shape
 
@@ -83,6 +88,17 @@ capture:
         invalidates_if:
           - policy_hash_changed
 
+    - input_id: continuity:concurrent_activity:scope:labelwatch-host
+      source: continuity
+      kind: concurrent_scope_activity        # see GAP-parallel-ops.md
+      status: observed
+      evidence_hash: sha256:...
+      freshness:
+        invalidates_if:
+          - concurrent_actor_transitioned_state
+          - concurrent_actor_opened_new_scope_overlap
+      payload_ref: continuity://query:scope=labelwatch-host,window=24h
+
 reconciliation:
   reconciled_at: 2026-04-17T03:00:00Z
   reconciled_by: scheduler
@@ -127,6 +143,22 @@ reconciliation:
       scope:
         run_id: run_2026041603000000
         valid_for: [authorization]
+
+    - input_id: continuity:concurrent_activity:scope:labelwatch-host
+      status: committed
+      reliance_class: authoritative
+      scope:
+        run_id: run_2026041603000000
+        valid_for: [authorization, diagnosis, packet_context]
+      concurrent_activity:
+        overlap_class: shared_write         # disjoint | shared_read | shared_write | contested
+        decision: hold_for_context          # proceed | downgrade | hold_for_context | escalate
+        actors:
+          - actor_id: labelwatch-claude/mem_c1a452f0
+            session: case:volume-migration-2026-04-17
+            touched_at: 2026-04-17T13:42:00Z
+            scope_overlap: shared_write
+            last_breadcrumb: "nq-publish turned down; pending nq-claude"
 
   summary:
     admissible_for_authorization: [governor:policy:nightshift.ops.propose_only]
@@ -177,6 +209,11 @@ run uses committed/changed    →  under declared scope
   does not invalidate unless scope includes code mode)
 - `policy_hash_changed` — Governor policy version changed since capture
 - `expires_at: <timestamp>` — absolute deadline
+- `concurrent_actor_transitioned_state` — another actor in overlapping
+  scope changed state (attention transition, breadcrumb, run start/end)
+  since capture. See `GAP-parallel-ops.md`.
+- `concurrent_actor_opened_new_scope_overlap` — a new actor entered the
+  declared scope after capture.
 
 Agendas may declare additional project-specific rules.
 

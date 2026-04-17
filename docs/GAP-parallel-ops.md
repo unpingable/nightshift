@@ -1,0 +1,211 @@
+# GAP: Parallel Operations / Cross-Session Coordination
+
+> Status: identified. Directly motivated by live and past experience:
+> two agents (or humans, or mixed) acting on overlapping scope
+> without shared view — even when a shared substrate exists.
+
+## Core problem
+
+Classic Night Shift failure mode:
+
+> Claude executes a double live migration, updates zero memories,
+> user has to audit him mid-flight.
+
+Generalized: multiple actors (sessions, agents, operators, cron jobs)
+work on overlapping scope. Each has local context. None has the
+others'. A shared substrate (Continuity) may be *hooked in* and still
+not be *used*. Scope changes don't propagate. Reconciliation runs
+against a world that already moved.
+
+This is different from:
+
+- **Attention state** (`GAP-attention-state.md`): a single operator's
+  intent decays without a half-life.
+- **Staleness** (`GAP-escalation.md` trigger 4): captured inputs are
+  no longer current against an external source of truth.
+
+This failure mode is specifically: *another actor's work has changed
+the scope, and nobody told us.*
+
+## Scope overlap types
+
+```text
+disjoint          no shared hosts / services / paths — no coordination required
+shared_read      overlapping read scope, no mutation — coordination nice-to-have
+shared_write     overlapping mutation surface — coordination required
+contested        two actors attempting mutually-exclusive actions — must resolve before proceeding
+```
+
+The reconciler must classify; actors do not get to self-declare
+`disjoint`.
+
+## Reconciler protocol extension
+
+Capture and reconciliation both grow a concurrent-activity check.
+
+### At capture
+
+The bundle gains an input:
+
+```yaml
+- input_id: continuity:concurrent_activity:scope:<scope_key>
+  source: continuity
+  kind: concurrent_scope_activity
+  status: observed
+  evidence_hash: sha256:...
+  freshness:
+    invalidates_if:
+      - concurrent_actor_transitioned_state
+      - concurrent_actor_opened_new_scope_overlap
+  payload_ref: continuity://query:scope=<scope_key>,window=<T>
+```
+
+`<scope_key>` derives deterministically from the agenda's declared
+scope (hosts × services × paths × repos).
+
+### At reconciliation
+
+The reconciler classifies overlap and records it:
+
+```yaml
+- input_id: continuity:concurrent_activity:scope:<scope_key>
+  status: committed
+  reliance_class: authoritative
+  scope:
+    run_id: run_...
+    valid_for: [authorization, diagnosis, packet_context]
+  concurrent_activity:
+    actors:
+      - actor_id: labelwatch-claude/mem_c1a452f0
+        session: case:volume-migration-2026-04-17
+        touched_at: 2026-04-17T13:42:00Z
+        scope_overlap: shared_write
+        last_breadcrumb: "nq-publish turned down; pending nq-claude"
+    overlap_class: shared_write
+    decision: hold_for_context | downgrade | proceed | escalate
+```
+
+The `decision` is not advisory. It gates promotion.
+
+## Continuity-as-substrate invariant
+
+> Continuity availability is not Continuity use.
+
+Parallel to *"MCP is transport, not authority."* A hooked-in substrate
+that isn't queried is a silent hazard. Night Shift does not trust
+workflow authors to remember to ask; the reconciler queries Continuity
+for concurrent activity in the declared scope **by default**, and the
+run ledger writes observational breadcrumbs to Continuity **by default**.
+
+Practically:
+
+- **Read**: reconciler queries Continuity for concurrent activity
+  keyed on scope. Missing Continuity is handled per standard soft-
+  dependency rules (never raises authority; may require advise-only).
+- **Write**: run ledger emits breadcrumbs on key transitions
+  (capture, surprise, partial completion, escalation, terminal
+  result), not only on run completion.
+
+## Breadcrumb cadence
+
+> File a memory after each major surprise, not just at the end.
+
+*— labelwatch-claude, self-reflecting after the fact*
+
+End-of-run receipts are inadequate for parallel ops. If another actor
+is mid-flight, they need to see your scope change *now*, not when
+your run terminates. Required breadcrumb events:
+
+```text
+run.captured              scope + agenda + intent
+run.surprise              anything not in the bundle happened (layout changed,
+                          service is down, a dependency moved)
+run.partial               mutation attempted and partially succeeded
+run.escalated             run stopped with operator-required next step
+run.completed             terminal state + summary
+run.attention_changed     operator touched attention state for any finding in scope
+```
+
+Breadcrumbs are observational, not authoritative. They live in
+Continuity as `observed` entries. Other actors' reconcilers may
+*admit* them as hints — never as authorization.
+
+## Invariants
+
+- **Continuity availability is not Continuity use.** Hooked in ≠ used.
+  The reconciler queries by default; the run ledger writes by default.
+- **No `disjoint` self-declaration.** Overlap classification is the
+  reconciler's job, grounded in declared scope.
+- **`contested` is terminal until resolved.** If two actors hold
+  overlapping mutation intent in the same scope, Night Shift escalates
+  rather than racing.
+- **Breadcrumbs are observations, not authority.** Another actor's
+  run log may inform this run's proposal; it may not authorize it.
+- **Missing Continuity is a soft dependency.** Follows standard rule:
+  may lower promotion ceiling; never raises authority; never
+  fabricates authorization.
+
+## Failure modes this prevents
+
+- Two sessions silently racing a migration
+- One session's "this is handled" invisible to another session
+- Reconciliation passing because the bundle's inputs matched, while
+  the world changed between runs via a different actor
+- Continuity hooked in but only written to at end-of-run, when it's
+  too late to warn anyone
+
+## Failure modes this does NOT prevent
+
+- Actors not on Continuity at all (outside the substrate entirely)
+- Actors writing breadcrumbs to Continuity but lying in them
+- Operators acting directly against a host outside any Night Shift run
+
+Those are out-of-band. Coordination only covers the actors inside the
+substrate. Anyone outside it is a scope-overlap risk the reconciler
+cannot see.
+
+## Interaction with attention-state
+
+Another actor's recent transition of attention state for a shared
+finding shows up in the concurrent-activity check. If labelwatch-
+claude marked `investigating` on a shared finding, nq-claude's next
+Night Shift run must see that and decide: defer, coordinate, or
+escalate `contested`.
+
+Attention state in Continuity is subject to the same TTLs and ack
+expiry rules as local attention state. An expired-ack breadcrumb does
+not suppress re-alert.
+
+## Interaction with Governor
+
+Governor authorizes force in a single run. Parallel-ops coordination
+is *pre*-Governor: the reconciler's scope-overlap classification
+happens before any authorization request. If the overlap class is
+`contested`, Night Shift does not ask Governor for authorization;
+it escalates for operator resolution first.
+
+Governor may still be asked to *log* the escalation as a receipt.
+
+## Interaction with `--no-governor` degraded mode
+
+Parallel-ops check is orthogonal to Governor. Without Governor,
+Night Shift still queries Continuity for concurrent activity and
+still writes breadcrumbs. Degradation lowers authority, not
+coordination.
+
+## Open questions
+
+- What defines the scope key? (Canonicalized scope tuple: hosts ×
+  services × paths × repos. Deterministic hash so different actors
+  hash the same scope identically.)
+- How long is the concurrent-activity window? (Probably agenda-
+  declared, default 24h; longer for `safety`-class agendas.)
+- What if Continuity disagrees with NQ about what's happening in
+  scope? (Reconciler treats them as separate sources; evidence-conflict
+  trigger in `GAP-escalation.md` applies.)
+- Do breadcrumbs need receipts? (Probably not individually; the run
+  ledger's emission of the breadcrumb is the receipt. But the ledger
+  event itself must be receiptable.)
+- How does this interact with multi-tenant v3 deployments? (Scope
+  keys must include a tenant boundary; cross-tenant concurrent-activity
+  check is a trust decision, not a coordination one.)

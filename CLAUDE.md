@@ -36,6 +36,7 @@ context bundles that revalidate their own premises before execution.
     - Silence is not handling.
     - Ack is not closure.
     - Suppression needs an expiry or a reason.
+15. Continuity availability is not Continuity use. The reconciler queries shared substrate for concurrent activity in declared scope by default; the run ledger writes observational breadcrumbs to Continuity at surprise / partial / escalation / completion events, not only at run end. Hooked in ≠ used. See `GAP-parallel-ops.md`.
 
 ## Quick Start
 
@@ -59,6 +60,7 @@ context bundles that revalidate their own premises before execution.
   - `GAP-nq-nightshift-contract.md` — NQ finding snapshot contract (first artifact to stabilize)
   - `GAP-escalation.md` — drive-to-resolution gating, escalation triggers/types/destinations
   - `GAP-attention-state.md` — evidence vs attention vs criticality axes; anti-amnesia field kit
+  - `GAP-parallel-ops.md` — cross-session coordination; scope overlap; Continuity-as-substrate invariant; breadcrumb cadence
   - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
@@ -89,3 +91,4 @@ context bundles that revalidate their own premises before execution.
 - Don't let a smarter model unlock higher authority. Intelligence dependencies improve quality, never permission.
 - Don't treat `committed` as "true forever." It means "accepted for this run under this scope, after reconciliation."
 - Don't treat acknowledgment as closure. Ack needs a TTL; silence needs a reason or a timestamp. Attention state without a half-life is a graveyard.
+- Don't assume Continuity is being used just because it's hooked in. The reconciler queries it for concurrent activity by default; the run ledger writes breadcrumbs by default. Availability ≠ use.
