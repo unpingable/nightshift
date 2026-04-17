@@ -117,6 +117,26 @@ artifact. They are not interchangeable.
 
 A declared deferred intention. See `SCHEMA-agenda.md`.
 
+Every agenda carries a **criticality class** that shapes urgency and
+coordination behavior. The class is not authority; it is structural
+role:
+
+```text
+standard              normal operations
+business_critical     elevated urgency / tighter TTLs
+safety                safety-class policy / elevated urgency
+protected             observation-critical or control-plane-critical
+                      — resists casual turn-down in all modes
+```
+
+`protected` is load-bearing and belongs in the main agenda story,
+not buried as a nuance. Observation-critical services (publishers,
+collectors, witnesses) and control-plane-critical services
+(authority planes, shared-context substrates, schedulers) require
+explicit operator confirmation for any proposed action that would
+disable them — regardless of promotion ceiling or policy verdict.
+See `GAP-incident-modes.md`.
+
 ```text
 agenda_id: wal-bloat-review
 workflow_family: ops                 # ops | code | publication — see SCHEMA-agenda.md
@@ -765,6 +785,88 @@ Run ledger: ledger://nightshift/runs/...
 ```
 
 No mutation. No sudo. No cowboy shit.
+
+### v1 MVP field budget
+
+The docs describe a rich conceptual surface — workflow family,
+incident mode, incident state, attention state, overlap class,
+coordination outcome, preflight, breadcrumb cadence, change
+envelope, protected roles, criticality class, diagnostic review
+modes, and so on. Almost none of this is required for v1.
+
+**v1 Watchbill carries only these active fields.** Everything else
+is written down so it doesn't have to be rediscovered — not as
+required paperwork.
+
+Agenda (active in v1):
+
+```text
+agenda_id, workflow_family = ops, cadence, owner
+scope: hosts, services   (paths/repos are v2+ for Watchbill)
+promotion_ceiling = advise
+reconciler.required = true
+allowed_evidence_sources: [nq, continuity]
+allowed_tool_classes: [discover, read, propose]
+budget
+governor_binding
+criticality.class: standard | protected
+criticality.re_alert_after
+criticality.silence_max_duration
+diagnosis.mode: self_check
+```
+
+Bundle (active in v1):
+
+```text
+capture inputs:
+  - nq_finding_snapshot
+  - governor policy_binding (if Governor present)
+  - concurrent_scope_activity (query, degraded if Continuity absent)
+reconciliation.results with status + reliance_class + scope.valid_for
+reconciliation.summary + ok_to_proceed
+```
+
+Packet (active in v1):
+
+```text
+finding_summary
+reconciliation_summary
+diagnosis (self_check only)
+proposed_action (advise only; no stage/apply)
+authority_result (governor_verdict or n/a)
+diagnosis_review (self_check objections)
+attention: evidence_state + attention_state + operational_urgency
+```
+
+Run ledger (active in v1):
+
+```text
+run.captured
+run.reconciled
+run.completed
+run.preflight_cleared | run.preflight_hold | run.preflight_override
+  (only when risky class applies)
+run.surprise (when it actually happens)
+run.scope_expanded (when material scope changes)
+```
+
+**v1 explicitly defers:**
+
+- `incident_mode` beyond default `incident` for Watchbill
+- `incident_anchor.incident_state` progression across runs (v1 is
+  single-run scope)
+- `change_envelope` (remediation / architecture modes are v2+)
+- Conference diagnostic mode
+- Active nudging, breadcrumb-latency metrics, natural-breakpoint
+  prompts (all v2 per `GAP-parallel-ops.md`)
+- Multi-runner leases (single daemon assumption)
+- Handoff / investigating attention states (v1 supports
+  unowned / acknowledged / silenced only)
+- Postgres backend (v1 is SQLite per `GAP-storage.md`)
+
+This field budget is what `nightshift watchbill run …` actually
+needs to exercise. If v1 code finds itself growing fields beyond
+this list, re-read this section before adding them.
 
 ## Neighboring projects
 

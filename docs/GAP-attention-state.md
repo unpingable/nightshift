@@ -87,11 +87,43 @@ re-surfaces. An `investigating` state untouched for hours past
 `re_alert_after` decays back toward `unowned` and the finding
 re-surfaces at higher urgency.
 
-## Anti-amnesia field kit
+## Attention is keyed to stable finding identity
 
-Minimum fields carried per-finding (in run ledger + packet):
+Attention state lives on the **stable finding identity** supplied by
+the evidence adapter, not on a run-local packet object or dashboard
+row. For NQ-sourced findings, this is the `finding_key` defined in
+`GAP-nq-nightshift-contract.md` — the durable identity that survives
+regeneration, snapshot refresh, and status transitions
+(`active → resolving → recovered`).
 
 ```text
+attention_key = finding_key  (for NQ findings)
+              | <source>:<stable_id>  (for other evidence adapters)
+```
+
+If attention were keyed to a run or packet, acks would become
+haunted — "why did this ack disappear?" — the moment NQ emitted the
+same finding in a new generation or a new snapshot. Binding to
+finding identity prevents that.
+
+Consequences:
+
+- An `acknowledged` attention state carries across regenerations of
+  the same finding. The ack is on the finding, not on the run that
+  saw it.
+- `recovered` followed by recurrence within the recurrence window
+  (see `GAP-escalation.md`) does **not** create a new attention
+  state — it re-surfaces the existing one with the scar preserved.
+- Deleting / rotating the finding_key is a deliberate operator
+  action with a receipt; attention state is archived, not lost.
+
+## Anti-amnesia field kit
+
+Minimum fields carried per-finding (in run ledger + packet), keyed
+on stable finding identity:
+
+```text
+attention_key          stable finding identity (e.g. NQ finding_key)
 owner                  who owns attention right now
 last_touched_by        who moved the attention state last
 last_touched_at        when

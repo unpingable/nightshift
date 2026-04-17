@@ -304,6 +304,12 @@ more.
 
 ## Breadcrumb latency
 
+> **v2 concept.** v1 Watchbill emits breadcrumbs at fixed events
+> (`run.captured`, `run.surprise`, `run.completed`, preflight
+> variants) and does not track latency. The metrics and self-review
+> affordances below are v2+; they are recorded here so they don't
+> have to be rediscovered.
+
 The time between *surprise-landing* and *surprise-filed* is itself a
 signal. A well-behaved session files near the event. A session that
 only files at end-of-run has compressed every surprise into one
@@ -327,6 +333,10 @@ coordination failures.
 
 ## Natural breakpoints
 
+> **v2 concept.** v1 does not emit breadcrumb prompts. The natural-
+> breakpoint list below is specification for the active-nudging
+> watcher introduced in v2.
+
 Night Shift does not *require* operators to file breadcrumbs at
 arbitrary intervals. It prompts at structurally meaningful moments —
 natural breakpoints where capturing cost is low and recall is still
@@ -347,6 +357,13 @@ event. The prompt is optional; the *prompt event* itself is logged so
 the not-filed case is visible.
 
 ## Passive watching, active nudging
+
+> **v1 is passive-only.** Active nudging (session-attached watcher
+> that emits breadcrumb prompts at natural breakpoints) is v2+.
+> v1 Watchbill relies entirely on the passive substrate — reconciler
+> queries Continuity, run ledger writes breadcrumbs at fixed events,
+> operator writes when they choose. The active mode's opt-in
+> semantics below are forward-looking.
 
 Night Shift can operate as a passive substrate (reconciler queries
 Continuity; operator writes when they remember) or as an active
