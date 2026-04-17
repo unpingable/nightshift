@@ -96,10 +96,10 @@ The reconciler classifies overlap and records it:
 ```yaml
 - input_id: continuity:concurrent_activity:scope:<scope_key>
   status: committed
-  reliance_class: authoritative
+  reliance_class: authoritative_for_coordination   # narrow — see two-layer model below
   scope:
     run_id: run_...
-    valid_for: [authorization, diagnosis, packet_context]
+    valid_for: [coordination_gating, diagnosis, packet_context]
   concurrent_activity:
     actors:
       - actor_id: labelwatch-claude/mem_c1a452f0
@@ -112,6 +112,43 @@ The reconciler classifies overlap and records it:
 ```
 
 The `decision` is not advisory. It gates promotion.
+
+## Two-layer authority model
+
+The concurrent-activity check is narrowly authoritative and must be
+encoded carefully. Continuity cannot become a truth oracle via the
+coordination channel.
+
+Split the reliance story into two layers:
+
+- **Coordination-gating authority (narrow):** the *fact* that
+  overlapping activity exists in a given scope, and its
+  *classification* (`disjoint / shared_read / shared_write /
+  contested`), are authoritative **for coordination decisions only**.
+  They gate whether the run may leave capture. They do not
+  authorize policy, mutation, or ground truth claims.
+- **Breadcrumb content (hint):** the payload of any individual
+  breadcrumb — another actor's note, disposition, summary — is
+  `observed` / `hint` material. It may *inform* a proposal or a
+  packet but may not ground authorization or substitute for current
+  evidence.
+
+In schema terms this maps to:
+
+```text
+reliance_class: authoritative_for_coordination    # overlap existence + classification
+valid_for:      [coordination_gating, diagnosis, packet_context]
+
+breadcrumb payloads:   reliance_class: hint
+                       valid_for: [diagnosis, packet_context]
+```
+
+> Continuity is authoritative about who else is here.
+> Continuity is not authoritative about what is true.
+
+Without this split, the coordination channel would smuggle
+authority through the side door — exactly the failure mode
+`DESIGN.md`'s Continuity rules are written to prevent.
 
 ## Risky classes of work
 
@@ -173,14 +210,29 @@ workflow authors to remember to ask; the reconciler queries Continuity
 for concurrent activity in the declared scope **by default**, and the
 run ledger writes observational breadcrumbs to Continuity **by default**.
 
-Practically:
+Practically (when Continuity is configured):
 
 - **Read**: reconciler queries Continuity for concurrent activity
   keyed on scope. Missing Continuity is handled per standard soft-
-  dependency rules (never raises authority; may require advise-only).
+  dependency rules for ordinary runs (never raises authority; may
+  require advise-only). For risky classes, missing Continuity
+  triggers `hold_for_context` — see preflight rules below.
 - **Write**: run ledger emits breadcrumbs on key transitions
   (capture, surprise, partial completion, escalation, terminal
   result), not only on run completion.
+
+When Continuity is **not** configured (standalone / Core-tier
+deployments per `DESIGN.md`):
+
+- The run ledger mirrors breadcrumbs locally. Ordinary runs proceed
+  with degraded coordination posture surfaced in the packet.
+- Risky-class runs cannot clear preflight without Continuity; they
+  hold or downgrade unless an `operator_override` is issued.
+
+The "by default" defaults apply only where the substrate exists.
+Saying Night Shift "writes to Continuity by default" does not
+retroactively make Continuity mandatory for Core-tier standalone
+operation.
 
 ## Breadcrumb cadence
 

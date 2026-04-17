@@ -146,10 +146,10 @@ reconciliation:
 
     - input_id: continuity:concurrent_activity:scope:labelwatch-host
       status: committed
-      reliance_class: authoritative
+      reliance_class: authoritative_for_coordination   # narrow — see reliance classes
       scope:
         run_id: run_2026041603000000
-        valid_for: [authorization, diagnosis, packet_context]
+        valid_for: [coordination_gating, diagnosis, packet_context]
       concurrent_activity:
         overlap_class: shared_write         # disjoint | shared_read | shared_write | contested
         decision: hold_for_context          # proceed | downgrade | hold_for_context | escalate
@@ -182,6 +182,13 @@ run uses committed/changed    →  under declared scope
 
 - **authoritative**: verified by receipt, Governor policy, NQ current
   state, or equivalent. May ground proposals and authorization.
+- **authoritative_for_coordination**: narrow authority — may gate
+  coordination (hold / proceed / coordinate / contested classification)
+  but may not authorize policy decisions or ground state mutation.
+  Used exclusively for `concurrent_scope_activity` inputs. See
+  `GAP-parallel-ops.md`. Continuity never becomes truth through this
+  class; it only becomes *a source of record about who else is in
+  scope*.
 - **hint**: operator input or Continuity recall accepted for this run
   but not independently verified. May inform proposals, never grounds
   them alone, never grounds authorization.
@@ -225,6 +232,11 @@ A `valid_for` scope enumerates what the committed input may ground:
 - `proposal` — may ground a proposed action
 - `diagnosis` — may inform the diagnostic explanation
 - `packet_context` — may appear in the human-facing packet as context
+- `coordination_gating` — may determine whether the run proceeds
+  through capture → reconcile based on concurrent-actor state. This
+  is narrow: coordination gating is not authorization. A
+  `coordination_gating` input can block or hold a run but cannot
+  authorize one. See `GAP-parallel-ops.md`.
 
 An input committed for `packet_context` cannot be used to authorize
 mutation, even if the workflow tries to do so. Scope is enforcement,

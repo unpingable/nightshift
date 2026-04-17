@@ -252,9 +252,16 @@ No Governor:
   receipts: local run-ledger only, explicitly non-authoritative
 
 No Continuity:
-  allowed: all safety-preserving modes
-  degraded: poorer context, fewer prior decisions, less cross-run memory
-  required: use current evidence + local run ledger only
+  ordinary runs:
+    allowed: all authorization-safety-preserving modes
+    degraded: poorer context, fewer prior decisions, less cross-run memory
+    required: use current evidence + local run ledger only
+  risky classes (shared infra, topology/config/publisher/source change,
+                 mode transition, protected-class scope):
+    preflight cannot clear
+    default: hold_for_context
+    may proceed only with named, receipt-generating operator_override
+    (see GAP-parallel-ops.md)
 
 No NQ (ops mode):
   blocked unless another evidence adapter is configured
@@ -404,6 +411,30 @@ Governor.
 This preserves the constellation metaphor without making the first MVP
 depend on every other piece of the empire. The empire has enough moving
 parts; it does not need a ceremonial dependency kraken.
+
+### Coordination safety ≠ authorization safety
+
+"Safety must not depend on Continuity" refers specifically to
+**authorization safety**: Governor gates force whether or not
+Continuity is present. A separate concept, **coordination safety**,
+*does* depend on Continuity for named risky classes — shared
+infrastructure, topology / config / publisher / source change, mode
+transition, or protected-class scope.
+
+For these classes, a Continuity preflight is a gating requirement
+for leaving capture phase. This does not grant authority; it prevents
+silent coordination failure.
+
+The distinction is load-bearing:
+
+- Continuity **never grants authority.** Missing Continuity never lets
+  a run do something it otherwise could not.
+- Continuity **does gate coordination** for risky classes. Missing
+  Continuity in a risky class holds or downgrades the run, per
+  `GAP-parallel-ops.md`.
+
+> Optional for authorization safety. Required for coordination safety
+> in named classes.
 
 ### Vocabulary alignment
 
