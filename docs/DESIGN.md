@@ -80,7 +80,20 @@ observe → advise → stage → request → apply → publish → escalate
 - **request**: ask operator for approval
 - **apply**: execute approved action
 - **publish**: expose artifact to external audience
-- **escalate**: page human because standing/confidence/scope failed
+- **escalate**: terminal / interrupt posture — standing failed
+
+**Note on `escalate`.** Escalate is a **terminal run posture**, not
+a peer action of `apply` or `publish`. A run "reaches escalate" when
+drive-to-resolution fails within evidence, authority, scope, or
+budget. It is the exit condition, not another verb in the ladder.
+
+Destinations that realize an escalation (`packet_note`,
+`hold_for_review`, `create_ticket`, `notify`, `request_approval`,
+`page`, `block_and_record`) are **implementations**, not authority
+levels. An MCP call class like `page` is the *transport* for a page
+destination; it is separate from the authority posture that caused
+the page. See `GAP-escalation.md` (posture + destinations) and
+`GAP-mcp-authority.md` (transport).
 
 ### Artifact kinds
 
@@ -106,19 +119,25 @@ A declared deferred intention. See `SCHEMA-agenda.md`.
 
 ```text
 agenda_id: wal-bloat-review
-mode: ops
+workflow_family: ops                 # ops | code | publication — see SCHEMA-agenda.md
 cadence: scheduled | event | manual
 owner: operator identity
 scope:
   hosts: [...]
-  repos: [...]
   services: [...]
+  paths: [...]                       # filesystem / publication paths
+  repos: [...]
 artifact_target: repair_proposal | diff | report | static_site_update
 promotion_ceiling: observe | advise | stage | request | apply | publish
 reconciler: required
 allowed_evidence_sources: [nq, git, fs, continuity]
 allowed_tool_classes: [discover, read, propose]
 ```
+
+The `scope` tuple `(hosts, services, paths, repos)` is what the
+reconciler canonicalizes into a scope key for concurrent-activity
+checks (see `GAP-parallel-ops.md`). All four axes matter — scope
+overlap is derived from the full tuple, not from hosts alone.
 
 ### Bundle (Context Bundle)
 

@@ -70,10 +70,11 @@ invariant violation, not a thoughtful bonus.
 - **Not allowed**: using architectural musing as a substitute for
   stabilization or remediation.
 
-Shape in the bundle / packet:
+Shape in the bundle / packet (field name is `incident_mode` to
+disambiguate from `workflow_family`):
 
 ```yaml
-mode:
+incident_mode:
   kind: incident | remediation | architecture
   objective: ...
   allowed_actions: [...]

@@ -107,11 +107,12 @@ The reconciler classifies overlap and records it:
         touched_at: 2026-04-17T13:42:00Z
         scope_overlap: shared_write
         last_breadcrumb: "nq-publish turned down; pending nq-claude"
-    overlap_class: shared_write
-    decision: hold_for_context | downgrade | proceed | escalate
+    overlap_class: shared_write              # disjoint | shared_read | shared_write | contested
+    coordination_outcome: hold_for_context   # clear | hold_for_context | coordinate |
+                                             # block_for_resolution | operator_override
 ```
 
-The `decision` is not advisory. It gates promotion.
+The `coordination_outcome` is not advisory. It gates promotion.
 
 ## Two-layer authority model
 
@@ -176,26 +177,47 @@ Risky classes:
 
 Triggered at the boundary between capture and reconcile, before any
 input is promoted from `observed` to `committed`. For risky classes
-the run cannot leave capture without one of:
+the run cannot leave capture without one of the following
+`coordination_outcome` values:
 
 ```text
-clear                no concurrent risky activity; proceed
-hold_for_context    concurrent activity exists; surface it, wait
-coordinate          named actor has overlapping scope; handoff required
-contested           mutually exclusive intent; escalate before proceeding
-operator_override   named operator explicitly acknowledges concurrent
-                    activity and continues
+clear                   no risky concurrent activity; proceed
+hold_for_context        overlap exists; surface and wait for clarity
+coordinate              named actor has overlapping scope; handoff required
+block_for_resolution    overlap_class = contested; cannot proceed until
+                        scope is no longer contested (other actor stands
+                        down, completes, or is removed)
+operator_override       named operator explicitly accepts a hold_for_context
+                        or coordinate outcome and continues
+```
+
+`coordination_outcome` is the single shared vocabulary used by both
+reconciliation (for all runs) and preflight (the strong form for
+risky classes). They are not separate enums.
+
+Mapping from overlap class to outcome:
+
+```text
+disjoint              → clear
+shared_read           → clear (ordinary) | hold_for_context (risky class)
+shared_write          → hold_for_context | coordinate
+contested             → block_for_resolution
 ```
 
 Invariants:
 
-- Missing Continuity in a risky class is treated as `hold_for_context`
-  at minimum; may be upgraded to `coordinate` if the agenda declares
-  `shared_infrastructure: true`.
+- `operator_override` may override `hold_for_context` or `coordinate`.
+  It **may not** override `block_for_resolution`. Contested scope is
+  terminal until the contest resolves — an override cannot un-contest
+  the world.
 - `operator_override` must carry a named operator identity and a
   reason. It is a receipt-generating event; no silent override.
+- Missing Continuity in a risky class yields `hold_for_context` at
+  minimum; may be upgraded to `coordinate` if the agenda declares
+  `shared_infrastructure: true`.
 - Preflight outcome is audit material: `run.preflight_cleared`,
-  `run.preflight_hold`, `run.preflight_override` breadcrumbs are
+  `run.preflight_hold`, `run.preflight_coordinate`,
+  `run.preflight_blocked`, `run.preflight_override` breadcrumbs are
   emitted in all cases.
 - Preflight is pre-Governor. An `operator_override` at preflight
   does not authorize mutation; Governor still gates force.
@@ -257,6 +279,28 @@ run.attention_changed     operator touched attention state for any finding in sc
 Breadcrumbs are observational, not authoritative. They live in
 Continuity as `observed` entries. Other actors' reconcilers may
 *admit* them as hints — never as authorization.
+
+### Scope expansion on `run.surprise`
+
+A `run.surprise` that changes **material scope** (the run discovers
+it has touched or will touch a host, service, path, or repo not in
+the declared scope) triggers more than a breadcrumb:
+
+1. Recompute the scope key from the expanded scope tuple.
+2. Re-run the concurrent-activity check against the new key.
+3. Re-classify overlap and re-evaluate `coordination_outcome`.
+4. If the new outcome is weaker than `clear` (for ordinary runs) or
+   fails preflight (for risky classes), the run holds or escalates
+   at the boundary.
+5. Emit `run.scope_expanded` breadcrumb with both old and new
+   scope keys.
+
+A run must not continue under the old scope key after material
+scope expansion. Otherwise the coordination substrate still thinks
+it's watching the smaller footprint while the run is quietly touching
+more.
+
+> A surprise that changes scope is not a note. It is a re-capture.
 
 ## Breadcrumb latency
 

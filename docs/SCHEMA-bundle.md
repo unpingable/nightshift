@@ -151,8 +151,9 @@ reconciliation:
         run_id: run_2026041603000000
         valid_for: [coordination_gating, diagnosis, packet_context]
       concurrent_activity:
-        overlap_class: shared_write         # disjoint | shared_read | shared_write | contested
-        decision: hold_for_context          # proceed | downgrade | hold_for_context | escalate
+        overlap_class: shared_write           # disjoint | shared_read | shared_write | contested
+        coordination_outcome: hold_for_context # clear | hold_for_context | coordinate |
+                                               # block_for_resolution | operator_override
         actors:
           - actor_id: labelwatch-claude/mem_c1a452f0
             session: case:volume-migration-2026-04-17

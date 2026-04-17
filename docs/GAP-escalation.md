@@ -139,6 +139,13 @@ incident_escalation       live probe suggests active incident
 
 ## Destinations (severity × urgency)
 
+Escalation is a **run posture**, not a peer action of `apply` or
+`publish`. A run reaches escalate when standing fails. Destinations
+below are **implementations** that realize an escalation outcome;
+they are not authority levels. `page` as an MCP call class
+(`GAP-mcp-authority.md`) is the *transport* for a page destination —
+distinct from the escalation posture itself.
+
 HITL escalation does not always mean "wake human." It means **human
 standing required**. Destinations vary:
 

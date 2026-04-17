@@ -11,7 +11,7 @@ artifact it is supposed to produce.
 ```yaml
 agenda_version: 0
 agenda_id: wal-bloat-review            # stable slug, human-readable
-mode: ops                              # ops | code | publication
+workflow_family: ops                   # ops | code | publication — what the packet is about
 owner: operator@local                  # identity for audit
 cadence:
   kind: scheduled | event | manual
@@ -97,8 +97,11 @@ escalation:
 ## Field rules
 
 - **agenda_id** — stable slug. Used to dedupe runs and key the run ledger.
-- **mode** — ops | code | publication. Determines which workflow family
-  runs and which Governor policy applies.
+- **workflow_family** — `ops | code | publication`. Determines which
+  workflow family runs and which Governor policy applies. This is the
+  "what the packet is about" axis. Distinct from `incident_mode` on
+  the packet (the "what the work is trying to accomplish" axis). See
+  `GAP-incident-modes.md`.
 - **cadence.kind = scheduled** — requires `expr` (cron).
 - **cadence.kind = event** — requires one or more `triggers`.
 - **cadence.kind = manual** — no automatic activation; run only on

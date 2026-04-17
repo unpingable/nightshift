@@ -23,7 +23,7 @@ context bundles that revalidate their own premises before execution.
    - Lifecycle: `capture → reconcile → plan → review → run → verify → record`
    - Authority: `observe → advise → stage → request → apply → publish → escalate`
    - Artifact: `receipt | packet | diff | report | page | publication_update`
-   A run moves through lifecycle phases but cannot exceed its authority ceiling.
+   A run moves through lifecycle phases but cannot exceed its authority ceiling. `escalate` is a **terminal run posture**, not a peer action of `apply`/`publish`; destinations that realize an escalation (`page`, `notify`, `request_approval`, etc.) are implementations, not authority levels. `page` as an MCP call class is transport, not posture. See `GAP-escalation.md`.
 6. MCP is tool transport, not authority. Tool availability is not permission.
 7. Continuity is optional context, never authority. Inputs enter as `observed`; the Reconciler may grant `committed` status for a declared scope. `committed` means "accepted for this run under this scope," not "true forever."
 8. Missing intelligence dependencies (Continuity, MCP, LLM) must never increase authority. Missing safety dependencies (Governor, evidence adapter, run ledger) lower the promotion ceiling or fail closed.

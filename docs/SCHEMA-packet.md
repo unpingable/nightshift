@@ -103,7 +103,7 @@ diagnosis_review:
   # disagreement: [...]
   # operator_question: [...]
 
-mode:                                 # incident mode for this run — see GAP-incident-modes.md
+incident_mode:                        # operational phase of incident response — see GAP-incident-modes.md
   kind: incident                      # incident | remediation | architecture
   objective: "restore evidence path freshness from new topology"
   allowed_actions:
@@ -185,14 +185,14 @@ receipt_references:
   doing so hides the failure mode attention-state exists to prevent.
 - Attention state never raises `requested_authority_level`. An
   `investigating` marker is operator memory, not promotion.
-- `mode.kind` is declared at run start from the agenda's
+- `incident_mode.kind` is declared at run start from the agenda's
   `incident_modes_allowed`. A packet whose `proposed_action` crosses
   the declared mode's `allowed_actions` is rejected; the run must
   escalate or split into a new-mode run.
 - `incident_anchor.incident_state` may advance per run but does not
   jump phases (e.g., `active → verified_closed` is invalid in a
   single transition). The state machine is in `GAP-incident-modes.md`.
-- A `remediation` or `architecture` mode packet requires
+- A `remediation` or `architecture` incident_mode packet requires
   `change_envelope_ref` to be populated. `incident`-mode packets may
   include a minimal change envelope (see `GAP-incident-modes.md`).
 
