@@ -37,6 +37,8 @@ context bundles that revalidate their own premises before execution.
     - Ack is not closure.
     - Suppression needs an expiry or a reason.
 15. Continuity availability is not Continuity use. The reconciler queries shared substrate for concurrent activity in declared scope by default; the run ledger writes observational breadcrumbs to Continuity at surprise / partial / escalation / completion events, not only at run end. Hooked in ≠ used. See `GAP-parallel-ops.md`.
+16. Incident modes (incident / remediation / architecture) are distinct and do not share a success condition. A run declares mode, objective, allowed actions, and exit criteria; crossing mode bounds is an invariant breach. Incident state, remediation state, and architectural-followup state are tracked separately. Stabilized ≠ remediated. Deployed ≠ verified. See `GAP-incident-modes.md`.
+17. Protected services (observation-critical, control-plane-critical) resist casual turn-down regardless of promotion ceiling or policy verdict. A proposed action that disables a `protected` service requires explicit operator confirmation in all modes. See `GAP-incident-modes.md`.
 
 ## Quick Start
 
@@ -61,6 +63,7 @@ context bundles that revalidate their own premises before execution.
   - `GAP-escalation.md` — drive-to-resolution gating, escalation triggers/types/destinations
   - `GAP-attention-state.md` — evidence vs attention vs criticality axes; anti-amnesia field kit
   - `GAP-parallel-ops.md` — cross-session coordination; scope overlap; Continuity-as-substrate invariant; breadcrumb cadence
+  - `GAP-incident-modes.md` — incident / remediation / architecture modes; incident state ladder; change envelope; protected role class; NOC primitives
   - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
@@ -92,3 +95,5 @@ context bundles that revalidate their own premises before execution.
 - Don't treat `committed` as "true forever." It means "accepted for this run under this scope, after reconciliation."
 - Don't treat acknowledgment as closure. Ack needs a TTL; silence needs a reason or a timestamp. Attention state without a half-life is a graveyard.
 - Don't assume Continuity is being used just because it's hooked in. The reconciler queries it for concurrent activity by default; the run ledger writes breadcrumbs by default. Availability ≠ use.
+- Don't mix incident modes. Stabilization is not a license for redesign; architectural insight is not a substitute for stabilization; shipped remediation is not closed remediation. Cross-mode work requires explicit operator override.
+- Don't treat `protected` services as a flag checked at the end. The reconciler resists casual turn-down throughout the run, not just at authorization.

@@ -59,12 +59,17 @@ diagnosis:
     evidence_conflict: true
 
 criticality:
-  class: standard                       # standard | business_critical | safety
+  class: standard                       # standard | business_critical | safety | protected
   re_alert_after: "4h"                  # ack expiry — finding re-surfaces after
   ack_due_by: "24h"                     # unowned findings must be acked within
   handoff_required: false               # true → leaving attention state requires named transfer
   business_hours_okay: true             # false → urgency ignores quiet hours
   silence_max_duration: "72h"           # hard cap on any single silence window
+  protected_role: null                  # when class=protected: observation_critical | control_plane_critical
+
+incident_modes_allowed:                 # which incident modes this agenda may drive runs in
+  - incident                            # incident | remediation | architecture
+  - remediation
 
 escalation:
   on_authority_ceiling: request_approval
@@ -134,6 +139,13 @@ downgrade a declared conference agenda.
 - Criticality never raises `promotion_ceiling`. A `safety`-class agenda
   is not automatically allowed to mutate; it just surfaces more
   urgently.
+- `class: protected` requires `protected_role` to be set
+  (`observation_critical` | `control_plane_critical`). Agendas
+  targeting protected-class services must declare this explicitly.
+  See `GAP-incident-modes.md`.
+- `incident_modes_allowed` declares which incident modes this agenda
+  may operate in. A run proposing an incident-mode transition outside
+  this list is rejected at validation. See `GAP-incident-modes.md`.
 
 ## Escalation policy rules
 
