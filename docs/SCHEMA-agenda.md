@@ -58,6 +58,14 @@ diagnosis:
     recurrence_after_repair: true
     evidence_conflict: true
 
+criticality:
+  class: standard                       # standard | business_critical | safety
+  re_alert_after: "4h"                  # ack expiry — finding re-surfaces after
+  ack_due_by: "24h"                     # unowned findings must be acked within
+  handoff_required: false               # true → leaving attention state requires named transfer
+  business_hours_okay: true             # false → urgency ignores quiet hours
+  silence_max_duration: "72h"           # hard cap on any single silence window
+
 escalation:
   on_authority_ceiling: request_approval
   on_confidence_threshold:
@@ -112,6 +120,20 @@ escalation:
 Conference triggers override the declared `mode` upward (a `singleton`
 run may be upgraded to `conference` if triggers fire). Triggers cannot
 downgrade a declared conference agenda.
+
+## Criticality rules
+
+- **class** — `standard | business_critical | safety`. Shapes default
+  urgency weightings. Not authority; urgency only.
+- **re_alert_after** — required if promotion_ceiling > observe. Ack
+  cannot be open-ended.
+- **silence_max_duration** — required. No agenda may declare an
+  unbounded silence window.
+- Criticality policy is captured into the bundle at run time;
+  post-capture edits do not affect the in-flight run.
+- Criticality never raises `promotion_ceiling`. A `safety`-class agenda
+  is not automatically allowed to mutate; it just surfaces more
+  urgently.
 
 ## Escalation policy rules
 

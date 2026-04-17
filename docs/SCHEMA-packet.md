@@ -103,6 +103,20 @@ diagnosis_review:
   # disagreement: [...]
   # operator_question: [...]
 
+attention:
+  evidence_state: active              # active | worsening | resolving | recovered | stale
+  attention_state: unowned            # unowned | acknowledged | investigating | handed_off | watch_until | silenced
+  operational_urgency: medium         # derived: low | medium | high | critical
+  owner: null                         # who currently owns attention
+  last_touched_by: null               # who last moved the attention state
+  last_touched_at: null
+  acknowledged_at: null
+  ack_expires_at: null                # required if attention_state = acknowledged
+  follow_up_by: null
+  handoff_note: null                  # required if attention_state = handed_off
+  silence_reason: null                # required if attention_state = silenced
+  re_alert_after: null                # policy-derived, from agenda.criticality
+
 escalation:                           # present only when run escalated
   escalated: false
   type: null                          # authority | context | risk | evidence |
@@ -139,6 +153,18 @@ receipt_references:
 - If `escalation.escalated = true`, the packet is a **terminal artifact**
   for the run. No apply/publish may follow without a new operator
   action.
+- `attention.attention_state = silenced` requires `silence_reason`
+  AND either `ack_expires_at` or an explicit condition. No
+  open-ended silence.
+- `attention.attention_state = acknowledged` requires `ack_expires_at`
+  derived from agenda `criticality.re_alert_after`.
+- `attention.attention_state = handed_off` requires `handoff_note`
+  and a named recipient in `owner`.
+- `attention.operational_urgency` is derived, not authored. Clients
+  must not render `attention_state` without the derived urgency —
+  doing so hides the failure mode attention-state exists to prevent.
+- Attention state never raises `requested_authority_level`. An
+  `investigating` marker is operator memory, not promotion.
 
 ## Intended reader
 

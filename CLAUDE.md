@@ -32,6 +32,10 @@ context bundles that revalidate their own premises before execution.
 11. If the next diagnostic step changes the system, stop. Read-only disambiguation is fine; mutation as disambiguation is not.
 12. Backend choice must not change authority semantics. Scaling the store must not scale the trust assumptions. SQLite is v1 default; Postgres is v2 production; the storage contract is the boundary (see `GAP-storage.md`).
 13. A run transition must be atomic and exclusive. If the store cannot prove exclusive ownership of a run, Night Shift fails closed.
+14. Operator intent has a half-life. Attention state (acknowledged, investigating, silenced) is distinct from evidence state and must carry a TTL or an explicit reason. Attention state never raises authority. See `GAP-attention-state.md`.
+    - Silence is not handling.
+    - Ack is not closure.
+    - Suppression needs an expiry or a reason.
 
 ## Quick Start
 
@@ -54,6 +58,7 @@ context bundles that revalidate their own premises before execution.
   - `GAP-nq-activation.md` — push/pull semantics for NQ findings
   - `GAP-nq-nightshift-contract.md` — NQ finding snapshot contract (first artifact to stabilize)
   - `GAP-escalation.md` — drive-to-resolution gating, escalation triggers/types/destinations
+  - `GAP-attention-state.md` — evidence vs attention vs criticality axes; anti-amnesia field kit
   - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
@@ -83,3 +88,4 @@ context bundles that revalidate their own premises before execution.
 - Don't add per-input `requires_recheck` flags. Recheck is the gate, not metadata.
 - Don't let a smarter model unlock higher authority. Intelligence dependencies improve quality, never permission.
 - Don't treat `committed` as "true forever." It means "accepted for this run under this scope, after reconciliation."
+- Don't treat acknowledgment as closure. Ack needs a TTL; silence needs a reason or a timestamp. Attention state without a half-life is a graveyard.
