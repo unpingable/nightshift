@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
-use nightshiftd::nq::FixtureNqSource;
+use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqSource};
 use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
 use nightshiftd::posture::{list_postures, load_posture, render_list_row, render_show, PostureFilter};
 use nightshiftd::store::sqlite::SqliteStore;
@@ -27,10 +27,21 @@ struct Cli {
     #[arg(long, global = true, default_value = "nightshift.sqlite")]
     store: PathBuf,
 
-    /// Path to NQ fixture manifest (v1 uses a fixture source; real
-    /// NQ client comes in a later slice).
+    /// Path to NQ fixture manifest. Used when `--nq-db` is not set.
     #[arg(long, global = true, default_value = "tests/fixtures/nq-manifest.json")]
     nq_fixture: PathBuf,
+
+    /// Path to a real NQ SQLite database. When set, Night Shift
+    /// shells out to `nq findings export --db <path>` and consumes
+    /// the canonical snapshot contract (schema nq.finding_snapshot.v1).
+    /// Overrides --nq-fixture.
+    #[arg(long, global = true)]
+    nq_db: Option<PathBuf>,
+
+    /// Override the `nq` binary location. Otherwise resolved via
+    /// NIGHTSHIFT_NQ_BIN env var, then PATH.
+    #[arg(long, global = true)]
+    nq_bin: Option<PathBuf>,
 
     /// Treat Continuity as configured for this deployment. v1 does
     /// not yet query Continuity; this flag controls preflight
@@ -154,9 +165,21 @@ fn runs_show_cmd(cli: &Cli, run_id: &str) -> anyhow::Result<()> {
     }
 }
 
+fn build_nq_source(cli: &Cli) -> anyhow::Result<Box<dyn NqSource>> {
+    if let Some(db) = &cli.nq_db {
+        let mut src = CliNqSource::new(db.clone());
+        if let Some(bin) = &cli.nq_bin {
+            src = src.with_nq_bin(bin.clone());
+        }
+        Ok(Box::new(src))
+    } else {
+        Ok(Box::new(FixtureNqSource::load(&cli.nq_fixture)?))
+    }
+}
+
 fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyhow::Result<()> {
     let agenda = Agenda::from_yaml_file(agenda_path)?;
-    let nq = FixtureNqSource::load(&cli.nq_fixture)?;
+    let nq = build_nq_source(cli)?;
     let store = SqliteStore::open(&cli.store)?;
     let target = parse_finding_arg(finding)?;
 
@@ -166,7 +189,7 @@ fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) ->
         trigger: None,
     };
 
-    let packet = run_watchbill(&agenda, &target, &nq, &store, &opts)?;
+    let packet = run_watchbill(&agenda, &target, nq.as_ref(), &store, &opts)?;
 
     // v1: emit packet to stdout as YAML.
     let rendered = serde_yaml::to_string(&packet)?;
