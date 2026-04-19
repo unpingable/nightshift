@@ -385,6 +385,92 @@ impl NqSource for CliNqSource {
     }
 }
 
+/// Filter knobs for `CliNqSource::list_findings`. All fields are
+/// optional; an all-`None` filter returns whatever NQ defaults emit
+/// (suppressed and cleared findings excluded by NQ unless its own
+/// flags say otherwise).
+#[derive(Debug, Default, Clone)]
+pub struct NqListFilter {
+    pub detector: Option<String>,
+    pub host: Option<String>,
+    pub finding_key: Option<String>,
+}
+
+/// One element of a list-findings result.
+///
+/// `raw_line` is the original JSONL line from `nq findings export`,
+/// preserved verbatim so callers can render NQ's full output even
+/// for fields Night Shift doesn't translate (regime, observations,
+/// diagnosis, etc.). `translated` is the Night-Shift-internal
+/// projection used by the reconciler.
+#[derive(Debug, Clone)]
+pub struct ListedFinding {
+    pub raw_line: String,
+    pub translated: FindingSnapshot,
+}
+
+impl CliNqSource {
+    /// List all findings matching the filter, in the order NQ
+    /// returned them. Both raw DTO and translated snapshot are kept
+    /// so callers (e.g. `nq peek`) can render either or both.
+    pub fn list_findings(&self, filter: &NqListFilter) -> Result<Vec<ListedFinding>> {
+        let argv = self.resolved_argv();
+        let (bin, leading) = argv.split_first().expect("resolved_argv guarantees non-empty");
+
+        let mut cmd = Command::new(bin);
+        cmd.args(leading)
+            .arg("findings")
+            .arg("export")
+            .arg("--db")
+            .arg(&self.db_path)
+            .arg("--format")
+            .arg("jsonl");
+        if let Some(d) = &filter.detector {
+            cmd.arg("--detector").arg(d);
+        }
+        if let Some(h) = &filter.host {
+            cmd.arg("--host").arg(h);
+        }
+        if let Some(k) = &filter.finding_key {
+            cmd.arg("--finding-key").arg(k);
+        }
+
+        let output = cmd.output().map_err(|e| {
+            NightShiftError::Store(format!(
+                "invoking {}: {e}",
+                std::path::Path::new(bin).display()
+            ))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(NightShiftError::Store(format!(
+                "nq findings export failed (status={}): {stderr}",
+                output.status
+            )));
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|e| NightShiftError::Store(format!("non-utf8 nq output: {e}")))?;
+
+        let mut out = Vec::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let dto = parse_nq_line(line)?;
+            let mut snap = translate_nq(&dto)?;
+            snap.evidence_hash = evidence_hash(&snap);
+            out.push(ListedFinding {
+                raw_line: line.to_string(),
+                translated: snap,
+            });
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

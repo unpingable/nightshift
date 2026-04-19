@@ -11,6 +11,7 @@ pub mod errors;
 pub mod finding;
 pub mod ledger;
 pub mod nq;
+pub mod nq_peek;
 pub mod packet;
 pub mod pipeline;
 pub mod posture;

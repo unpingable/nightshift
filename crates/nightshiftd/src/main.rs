@@ -6,7 +6,8 @@ use clap::{Parser, Subcommand};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
-use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqSource};
+use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqListFilter, NqSource};
+use nightshiftd::nq_peek::{render_peek_text, PeekDocument};
 use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
 use nightshiftd::posture::{list_postures, load_posture, render_list_row, render_show, PostureFilter};
 use nightshiftd::store::sqlite::SqliteStore;
@@ -64,6 +65,40 @@ enum Command {
     Runs {
         #[command(subcommand)]
         action: RunsAction,
+    },
+    /// Inspection surface for a live NQ database.
+    Nq {
+        #[command(subcommand)]
+        action: NqAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum NqAction {
+    /// Translation-only listing of NQ findings as Night Shift would
+    /// consume them. Use `--format json` for diff-friendly output.
+    Peek {
+        /// Restrict to a specific detector kind (e.g. `wal_bloat`).
+        #[arg(long)]
+        detector: Option<String>,
+
+        /// Restrict to a specific host.
+        #[arg(long)]
+        host: Option<String>,
+
+        /// Exact-match on NQ's canonical finding_key
+        /// (e.g. `local/host/detector/subject`, URL-encoded).
+        #[arg(long)]
+        finding_key: Option<String>,
+
+        /// Output format: `text` (default) or `json`.
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Include NQ's full raw JSONL payload alongside the
+        /// translated view (for cross-checking).
+        #[arg(long)]
+        show_raw: bool,
     },
 }
 
@@ -126,7 +161,53 @@ fn main() -> anyhow::Result<()> {
             } => runs_list_cmd(&cli, agenda.clone(), finding.clone(), *held_only, *limit),
             RunsAction::Show { run_id } => runs_show_cmd(&cli, run_id),
         },
+        Command::Nq { action } => match action {
+            NqAction::Peek {
+                detector,
+                host,
+                finding_key,
+                format,
+                show_raw,
+            } => nq_peek_cmd(
+                &cli,
+                detector.clone(),
+                host.clone(),
+                finding_key.clone(),
+                format,
+                *show_raw,
+            ),
+        },
     }
+}
+
+fn nq_peek_cmd(
+    cli: &Cli,
+    detector: Option<String>,
+    host: Option<String>,
+    finding_key: Option<String>,
+    format: &str,
+    show_raw: bool,
+) -> anyhow::Result<()> {
+    let db = cli
+        .nq_db
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("nq peek requires --nq-db <path>"))?;
+    let mut src = CliNqSource::new(db.clone());
+    if let Some(bin) = &cli.nq_bin {
+        src = src.with_nq_bin(bin.clone());
+    }
+    let filter = NqListFilter {
+        detector,
+        host,
+        finding_key,
+    };
+    let items = src.list_findings(&filter)?;
+    let doc = PeekDocument::build(&items, show_raw);
+    match format {
+        "json" => println!("{}", doc.to_json_pretty()),
+        _ => print!("{}", render_peek_text(&doc, show_raw)),
+    }
+    Ok(())
 }
 
 fn runs_list_cmd(
