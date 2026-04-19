@@ -265,36 +265,66 @@ fn nq_canonical_key(key: &FindingKey) -> Result<String> {
 /// `--finding-key` set to the canonical NQ key reconstructed from the
 /// target `FindingKey`. Output is JSONL; we expect zero or one line.
 ///
-/// The `nq` binary is located via:
-/// 1. the `nq_bin` field if set
-/// 2. the `NIGHTSHIFT_NQ_BIN` env var
-/// 3. `nq` on PATH
+/// `nq_argv` is the invocation preamble: by default `["nq"]`, so the
+/// final command is `nq findings export --db ... --format jsonl
+/// --finding-key ...`. Tests can replace it with e.g.
+/// `["/bin/sh", "-c", "<script>", "--"]` to inject controlled
+/// failure modes without needing a real `nq` binary on disk.
+///
+/// The leading binary in `nq_argv` is resolved via:
+/// 1. the explicit value set by `with_nq_bin` / `with_nq_argv`
+/// 2. the `NIGHTSHIFT_NQ_BIN` env var (replaces argv[0] only)
+/// 3. `nq` on PATH (default)
 pub struct CliNqSource {
     pub db_path: PathBuf,
-    pub nq_bin: Option<PathBuf>,
+    nq_argv: Vec<std::ffi::OsString>,
 }
 
 impl CliNqSource {
     pub fn new<P: Into<PathBuf>>(db_path: P) -> Self {
         Self {
             db_path: db_path.into(),
-            nq_bin: None,
+            nq_argv: vec!["nq".into()],
         }
     }
 
+    /// Override just the binary (argv[0]). Leaves any leading args
+    /// previously set by `with_nq_argv` in place if `nq_argv.len() > 1`,
+    /// otherwise replaces the single-element default.
     pub fn with_nq_bin<P: Into<PathBuf>>(mut self, nq_bin: P) -> Self {
-        self.nq_bin = Some(nq_bin.into());
+        let bin: std::ffi::OsString = nq_bin.into().into_os_string();
+        if self.nq_argv.is_empty() {
+            self.nq_argv = vec![bin];
+        } else {
+            self.nq_argv[0] = bin;
+        }
         self
     }
 
-    fn resolve_bin(&self) -> PathBuf {
-        if let Some(p) = &self.nq_bin {
-            return p.clone();
+    /// Override the entire invocation preamble (`argv[0..]` before the
+    /// `findings export ...` args). Mainly for tests.
+    pub fn with_nq_argv<I, S>(mut self, argv: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<std::ffi::OsString>,
+    {
+        self.nq_argv = argv.into_iter().map(Into::into).collect();
+        if self.nq_argv.is_empty() {
+            self.nq_argv = vec!["nq".into()];
         }
-        if let Ok(p) = std::env::var("NIGHTSHIFT_NQ_BIN") {
-            return PathBuf::from(p);
+        self
+    }
+
+    fn resolved_argv(&self) -> Vec<std::ffi::OsString> {
+        let mut argv = self.nq_argv.clone();
+        // Env override only applies when argv hasn't been customized
+        // (i.e., still the default single "nq" entry).
+        if argv.len() == 1 && argv[0] == "nq" {
+            if let Ok(p) = std::env::var("NIGHTSHIFT_NQ_BIN") {
+                argv[0] = p.into();
+            }
         }
-        PathBuf::from("nq")
+        argv
     }
 }
 
@@ -304,8 +334,10 @@ impl NqSource for CliNqSource {
             return Ok(None);
         }
         let canonical = nq_canonical_key(key)?;
-        let bin = self.resolve_bin();
-        let output = Command::new(&bin)
+        let argv = self.resolved_argv();
+        let (bin, leading) = argv.split_first().expect("resolved_argv guarantees non-empty");
+        let output = Command::new(bin)
+            .args(leading)
             .arg("findings")
             .arg("export")
             .arg("--db")
@@ -318,7 +350,7 @@ impl NqSource for CliNqSource {
             .map_err(|e| {
                 NightShiftError::Store(format!(
                     "invoking {}: {e}",
-                    bin.display()
+                    std::path::Path::new(bin).display()
                 ))
             })?;
 
