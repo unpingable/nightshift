@@ -207,17 +207,94 @@ Mutation blocked.
 
 Not "restart the service because SQLITE_BUSY looks scary."
 
+## Reconciliation axes: identity, churn, semantic state
+
+A finding snapshot exposes three independent axes. The reconciler
+treats them differently. Conflating them is the most reliable way to
+make reconciliation operationally useless.
+
+**1. Identity** — `finding_key` (`source + detector + host + subject`).
+Stable across generations. Identity drift means a different finding,
+or NQ's encoding changed under us; either way, the captured evidence
+no longer applies. Reconciler verdict on identity drift: `invalidated`.
+
+**2. Churn** — `snapshot_generation`, `last_seen_at`,
+`persistence_generations`, and `evidence_hash`. Advances every NQ
+scan cycle that resurfaces the finding. Churn is *evidence the
+finding is still live*; it is not evidence its meaning changed. In
+steady-state observation against a long-lived finding, churn fields
+move every minute (matching NQ's scan cadence) and `evidence_hash`
+flips with them.
+
+**3. Semantic state** — `severity`, `evidence_state`, `status`,
+`regime_hint`, and the detector-specific evidence rows. These are
+the fields that answer "did the meaning of this finding change?"
+The reconciler's `changed` verdict reads only this axis.
+
+### What this means for `evidence_hash`
+
+`evidence_hash` is **strict payload integrity**, not semantic-change
+detection. It proves the exported byte stream changed; it does not
+prove the finding's meaning changed. Because the hash covers the
+churn axis as well, it flips on every NQ scan tick (~1/min) for
+every long-lived finding. That is correct for an integrity hash
+and operationally useless as a standalone `changed` predicate.
+
+Validated against the live `/opt/notquery/nq.db` on 2026-04-20: 8
+long-lived findings; back-to-back snapshots ~15 minutes apart showed
+every finding's `evidence_hash` flip in lockstep with
+`snapshot_generation` advancing exactly 15 ticks, while identity
+fields and lifecycle anchors (`first_seen_at`, `severity`,
+`evidence_state`) stayed stable. Exactly the shape the three-axis
+split predicts.
+
+### Reconciler verdict semantics
+
+Given the three axes, the reconciler emits one of four verdicts per
+captured input:
+
+- **`committed`** — same `finding_key`, current snapshot retrieved,
+  semantic axis unchanged. Churn may have advanced; that's expected
+  and not by itself a reason to escalate.
+- **`changed`** — same `finding_key`, current snapshot retrieved,
+  **semantic axis** differs from the captured snapshot. The diff
+  records which fields moved.
+- **`stale`** — current snapshot retrieval failed (NQ unreachable,
+  schema mismatch, transport error, query timeout). Capture-time
+  evidence is preserved but no longer revalidated; promotion ceiling
+  drops to advise.
+- **`invalidated`** — finding absent from NQ at current generation,
+  `finding_key` no longer present, NQ's identity scheme changed
+  under us, or a declared scope assumption no longer holds.
+
+`evidence_hash` participates as a *cheap inequality check*: if it
+matches the captured value, the finding is trivially `committed`
+without reading the semantic axis. If it differs, the reconciler
+must read the semantic axis explicitly to choose between
+`committed` (churn-only) and `changed` (real semantic movement).
+
+### Future: a dedicated semantic fingerprint
+
+A `semantic_fingerprint` — a hash over only the semantic-axis fields
+— would let the reconciler skip the explicit field comparison when
+nothing semantic changed. Not required for the first reconciler
+slice; a documented comparison set is enough to start. If introduced
+later, it lives alongside `evidence_hash`, never replacing it. They
+answer different questions.
+
 ## What Night Shift does with the contract
 
 Given a finding snapshot, Night Shift:
 
-1. Reads it into the bundle as `authoritative`
-2. Stores the `generation` and `source_db_hash` for reconciliation
+1. Reads it into the bundle as `observed`
+2. Stores the captured snapshot (including `evidence_hash` and the
+   semantic-axis fields) for reconciliation
 3. At run time, re-pulls the current snapshot for the same `finding_key`
-4. Compares `generation`, `persistence_count`, `severity`, `status`
-5. Marks the input `current` | `changed` | `stale` | `invalidated`
-6. Produces a packet that quotes the evidence, notes what changed, and
-   proposes next steps within the agenda's promotion ceiling
+4. Applies the three-axis comparison above
+5. Marks the input `committed` | `changed` | `stale` | `invalidated`
+6. Produces a packet that quotes the evidence, notes what changed on
+   the semantic axis (and what merely churned), and proposes next
+   steps within the agenda's promotion ceiling
 
 No mutation. No direct action on NQ's data.
 
