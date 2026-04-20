@@ -24,6 +24,13 @@ pub enum RunLedgerEventKind {
     RunPreflightBlocked,
     RunPreflightOverride,
     RunAttentionChanged,
+    /// The NQ liveness gate refused to clear before capture (witness
+    /// stale, skewed, or unreachable). The run terminated as Stale
+    /// per the slice-5 contract; no findings were captured.
+    RunLivenessGateFailed,
+    /// The NQ liveness gate cleared. Recorded so the operator can
+    /// inspect what age/verdict was observed at gate time.
+    RunLivenessGateCleared,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

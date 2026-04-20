@@ -10,6 +10,7 @@ pub mod coordination;
 pub mod errors;
 pub mod finding;
 pub mod ledger;
+pub mod liveness;
 pub mod nq;
 pub mod nq_peek;
 pub mod packet;

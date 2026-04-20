@@ -6,9 +6,10 @@ use clap::{Parser, Subcommand};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
+use nightshiftd::liveness::{CliLivenessSource, LivenessSource};
 use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqListFilter, NqSource};
 use nightshiftd::nq_peek::{render_peek_text, PeekDocument};
-use nightshiftd::pipeline::{run_watchbill, PipelineOptions};
+use nightshiftd::pipeline::{run_watchbill_with_liveness, PipelineOptions};
 use nightshiftd::posture::{list_postures, load_posture, render_list_row, render_show, PostureFilter};
 use nightshiftd::store::sqlite::SqliteStore;
 
@@ -49,6 +50,21 @@ struct Cli {
     /// behavior for risky-class agendas (see GAP-parallel-ops.md).
     #[arg(long, global = true)]
     continuity_configured: bool,
+
+    /// Path to NQ's liveness artifact (typically liveness.json
+    /// alongside the NQ database). When set, Night Shift consults
+    /// `nq liveness export` before capturing finding evidence; a
+    /// stale or skewed witness halts the run with a Stale-shape
+    /// packet (revalidate-only proposal). Optional — when omitted,
+    /// no liveness gating is performed.
+    #[arg(long, global = true)]
+    nq_liveness: Option<PathBuf>,
+
+    /// Liveness staleness threshold in seconds. Applies only when
+    /// `--nq-liveness` is set. Default: 90s (~1.5x typical NQ scan
+    /// cadence).
+    #[arg(long, global = true)]
+    nq_liveness_threshold_secs: Option<u64>,
 
     #[command(subcommand)]
     command: Command,
@@ -258,9 +274,19 @@ fn build_nq_source(cli: &Cli) -> anyhow::Result<Box<dyn NqSource>> {
     }
 }
 
+fn build_liveness_source(cli: &Cli) -> Option<Box<dyn LivenessSource>> {
+    let path = cli.nq_liveness.as_ref()?;
+    let mut src = CliLivenessSource::new(path);
+    if let Some(bin) = &cli.nq_bin {
+        src = src.with_nq_bin(bin);
+    }
+    Some(Box::new(src))
+}
+
 fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyhow::Result<()> {
     let agenda = Agenda::from_yaml_file(agenda_path)?;
     let nq = build_nq_source(cli)?;
+    let liveness = build_liveness_source(cli);
     let store = SqliteStore::open(&cli.store)?;
     let target = parse_finding_arg(finding)?;
 
@@ -268,9 +294,17 @@ fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) ->
         no_governor: cli.no_governor,
         continuity_configured: cli.continuity_configured,
         trigger: None,
+        liveness_threshold_seconds: cli.nq_liveness_threshold_secs,
     };
 
-    let packet = run_watchbill(&agenda, &target, nq.as_ref(), &store, &opts)?;
+    let packet = run_watchbill_with_liveness(
+        &agenda,
+        &target,
+        nq.as_ref(),
+        liveness.as_deref(),
+        &store,
+        &opts,
+    )?;
 
     // v1: emit packet to stdout as YAML.
     let rendered = serde_yaml::to_string(&packet)?;

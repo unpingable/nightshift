@@ -102,6 +102,7 @@ fn opts() -> PipelineOptions {
         no_governor: true,
         continuity_configured: false,
         trigger: None,
+        liveness_threshold_seconds: None,
     }
 }
 

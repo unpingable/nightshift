@@ -14,6 +14,7 @@ use crate::coordination::{classify_risky, preflight, scope_key, CoordinationOutc
 use crate::errors::{NightShiftError, Result};
 use crate::finding::{EvidenceState, FindingKey};
 use crate::ledger::{RunLedgerEvent, RunLedgerEventKind};
+use crate::liveness::{verdict_for, LivenessSource, LivenessVerdict, DEFAULT_STALENESS_THRESHOLD_SECONDS};
 use crate::nq::{evidence_hash, NqSource};
 use crate::packet::{
     AlternativeRegime, Attention, AttentionState, AuthorityResult, Confidence, Diagnosis,
@@ -35,6 +36,12 @@ pub struct PipelineOptions {
     pub continuity_configured: bool,
     /// How this run was triggered. Recorded in the run row.
     pub trigger: Option<RunTrigger>,
+    /// Liveness staleness threshold in seconds. Applied by the
+    /// pipeline gate against `freshness.age_seconds` from the
+    /// liveness DTO. Only consulted when a `LivenessSource` is
+    /// supplied to `run_watchbill`. `None` ⇒ default
+    /// `DEFAULT_STALENESS_THRESHOLD_SECONDS`. See `liveness.rs`.
+    pub liveness_threshold_seconds: Option<u64>,
 }
 
 /// Execute the v1 Watchbill pipeline for a single finding target.
@@ -50,6 +57,29 @@ pub fn run_watchbill(
     store: &dyn Store,
     opts: &PipelineOptions,
 ) -> Result<Packet> {
+    run_watchbill_with_liveness(agenda, target, nq, None, store, opts)
+}
+
+/// Variant of `run_watchbill` that consults a `LivenessSource` before
+/// capture. If the witness is stale or skewed per the operator's
+/// threshold, the pipeline emits a Stale-shape packet (revalidate-
+/// only proposal per slice-5 contract) and does not consult the NQ
+/// finding source. When `liveness` is `None`, behavior is identical
+/// to `run_watchbill`.
+///
+/// Liveness is an *intelligence dependency*, not an authority
+/// dependency: missing it never raises authority. A successful gate
+/// permits the run to continue at the agenda's promotion ceiling; a
+/// failed gate caps the run at advise (Stale verdict). See CLAUDE.md
+/// invariants 6 and 8.
+pub fn run_watchbill_with_liveness(
+    agenda: &Agenda,
+    target: &FindingKey,
+    nq: &dyn NqSource,
+    liveness: Option<&dyn LivenessSource>,
+    store: &dyn Store,
+    opts: &PipelineOptions,
+) -> Result<Packet> {
     // Ensure agenda persisted — the store is the durable record.
     store.create_agenda(agenda)?;
 
@@ -58,6 +88,40 @@ pub fn run_watchbill(
     // 1. Authority ceiling enforcement (pre-pipeline gate).
     //    Without Governor, ceiling cannot exceed advise.
     let effective_ceiling = effective_ceiling(agenda.promotion_ceiling, opts.no_governor);
+
+    // 1a. Liveness gate (if configured). Before consulting the
+    //     finding source at all, ask whether the witness is alive
+    //     enough to trust further evidence. A stale or skewed
+    //     witness terminates the run as Stale.
+    if let Some(liveness_src) = liveness {
+        let threshold = opts
+            .liveness_threshold_seconds
+            .unwrap_or(DEFAULT_STALENESS_THRESHOLD_SECONDS);
+        let snapshot = liveness_src.current()?;
+        let verdict = verdict_for(&snapshot, threshold);
+        if !verdict.is_fresh() {
+            return liveness_gate_failed(
+                agenda,
+                target,
+                &snapshot,
+                &verdict,
+                store,
+                opts,
+                effective_ceiling,
+                &run_id,
+            );
+        }
+        store.append_run_event(&new_event(
+            &run_id,
+            RunLedgerEventKind::RunLivenessGateCleared,
+            serde_json::json!({
+                "instance_id": snapshot.instance_id,
+                "witness_generation": snapshot.witness.generation_id,
+                "age_seconds": snapshot.freshness.age_seconds,
+                "threshold_seconds": threshold,
+            }),
+        ))?;
+    }
 
     // 2. Capture phase — pull the current NQ snapshot to seed the bundle.
     let captured_snapshot = nq.snapshot(target)?.ok_or_else(|| {
@@ -485,6 +549,167 @@ fn hold_for_preflight(
             "packet_id": packet.packet_id,
             "held": true,
             "outcome": outcome_label,
+        }),
+    ))?;
+    store.complete_run(run_id)?;
+
+    Ok(packet)
+}
+
+/// Terminate a run that failed the NQ liveness gate. No NQ snapshot
+/// is captured; no reconciliation is run. Emits a Stale-shape packet
+/// per the slice-5 contract (`GAP-nq-nightshift-contract.md`):
+/// revalidate-only proposal, no remediation. The packet exists so
+/// the operator sees what was attempted and why it stopped.
+#[allow(clippy::too_many_arguments)]
+fn liveness_gate_failed(
+    agenda: &Agenda,
+    target: &FindingKey,
+    snapshot: &crate::liveness::LivenessSnapshot,
+    verdict: &LivenessVerdict,
+    store: &dyn Store,
+    opts: &PipelineOptions,
+    effective_ceiling: AuthorityLevel,
+    run_id: &str,
+) -> Result<Packet> {
+    store.append_run_event(&new_event(
+        run_id,
+        RunLedgerEventKind::RunLivenessGateFailed,
+        serde_json::json!({
+            "instance_id": snapshot.instance_id,
+            "witness_generation": snapshot.witness.generation_id,
+            "age_seconds": snapshot.freshness.age_seconds,
+            "verdict": verdict.explain(),
+        }),
+    ))?;
+
+    // No bundle gets persisted: nothing was captured. The packet is
+    // the operator-facing record of the gate failure.
+
+    let finding_summary = FindingSummary {
+        source: target.source.clone(),
+        detector: target.detector.clone(),
+        host: snapshot.instance_id.clone(),
+        subject: target.subject.clone(),
+        severity: crate::finding::Severity::Warning,
+        domain: None,
+        persistence_generations: 0,
+        first_seen_at: snapshot.export.exported_at,
+        current_status: EvidenceState::Stale,
+    };
+
+    let reconciliation_summary = crate::bundle::ReconciliationSummary {
+        ok_to_proceed: false,
+        blocked: vec![format!("liveness_gate: {}", verdict.explain())],
+        ..Default::default()
+    };
+
+    let diagnosis = Diagnosis {
+        regime: "stale: NQ liveness gate did not clear; no findings consulted".into(),
+        evidence: vec![
+            verdict.explain(),
+            format!(
+                "witness instance_id={} generation_id={} generated_at={}",
+                snapshot.instance_id,
+                snapshot.witness.generation_id,
+                snapshot.witness.generated_at.to_rfc3339()
+            ),
+        ],
+        confidence: Confidence::Low,
+        alternatives_considered: vec![],
+    };
+
+    let proposed_action = ProposedAction {
+        kind: ProposedActionKind::Advisory,
+        // Revalidate-only — same shape as the slice-5 Stale path.
+        steps: vec![
+            "revalidate the NQ liveness artifact: confirm the publisher/aggregator is healthy and the artifact path is reachable"
+                .into(),
+            "if witness clock is skewed, resolve clock sync before retrying"
+                .into(),
+            "rerun this watchbill once liveness is current"
+                .into(),
+        ],
+        risk_notes: vec![
+            "no remediation proposed: liveness gate failure is not a basis for action".into(),
+            "no NQ findings were consulted on this run".into(),
+        ],
+        reversible: true,
+        blast_radius: "none — gate halted before capture".into(),
+        requested_authority_level: AuthorityLevel::Advise,
+    };
+
+    let authority_result = AuthorityResult {
+        requested: AuthorityLevel::Advise,
+        governor_present: !opts.no_governor,
+        governor_verdict: Some("not consulted — liveness gate halted the run".into()),
+        authority_receipts: vec![],
+        ceiling_note: Some(format!(
+            "ceiling {effective_ceiling:?} → held at advise by liveness gate",
+        )),
+    };
+
+    let diagnosis_review = DiagnosisReview {
+        mode: DiagnosisReviewMode::SelfCheck,
+        unsafe_assumptions: vec![],
+        stale_context_risks: vec![
+            "no reconciliation performed — finding source not consulted".into(),
+        ],
+        promotion_overreach: vec![],
+        missing_verification: vec![verdict.explain()],
+        recommended_downgrade: None,
+    };
+
+    let attention = Attention {
+        attention_key: target.clone(),
+        evidence_state: EvidenceState::Stale,
+        attention_state: AttentionState::Unowned,
+        operational_urgency: OperationalUrgency::Medium,
+        owner: None,
+        last_touched_by: None,
+        last_touched_at: None,
+        acknowledged_at: None,
+        ack_expires_at: None,
+        follow_up_by: None,
+        handoff_note: None,
+        re_alert_after: None,
+        silence_reason: Some(verdict.explain()),
+    };
+
+    let packet_id = format!(
+        "pkt_{}_{}",
+        run_id,
+        scope_key(&agenda.scope).chars().take(12).collect::<String>()
+    );
+
+    let packet = Packet {
+        packet_version: 0,
+        packet_id,
+        agenda_id: agenda.agenda_id.clone(),
+        run_id: run_id.to_string(),
+        produced_at: Utc::now(),
+        finding_summary,
+        reconciliation_summary,
+        diagnosis,
+        proposed_action,
+        authority_result,
+        diagnosis_review,
+        attention,
+        receipt_references: ReceiptReferences {
+            run_ledger: Some(format!("ledger://nightshift/runs/{run_id}")),
+            governor_receipts: vec![],
+            evidence_bundle: None,
+        },
+    };
+
+    store.save_packet(run_id, &packet)?;
+    store.append_run_event(&new_event(
+        run_id,
+        RunLedgerEventKind::RunCompleted,
+        serde_json::json!({
+            "packet_id": packet.packet_id,
+            "held": true,
+            "outcome": "liveness_gate_failed",
         }),
     ))?;
     store.complete_run(run_id)?;
