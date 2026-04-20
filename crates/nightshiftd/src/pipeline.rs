@@ -86,6 +86,7 @@ pub fn run_watchbill(
         payload_ref: format!("nq:snapshot:{}", captured_snapshot.snapshot_generation),
         admissible_for: vec![],
         inadmissible_for: vec![],
+        captured_finding_snapshot: Some(captured_snapshot.clone()),
     };
 
     let bundle_pre_reconcile = Bundle {
@@ -188,32 +189,21 @@ pub fn run_watchbill(
         current_status: current_snapshot.current_status,
     };
 
-    let diagnosis = Diagnosis {
-        regime: "v1 deterministic placeholder — LLM workflow deferred".into(),
-        evidence: vec![format!(
-            "finding {} persisted for {} generations; reconciliation status = {:?}",
-            target.as_string(),
-            current_snapshot.persistence_generations,
-            nq_result.status
-        )],
-        confidence: Confidence::Low,
-        alternatives_considered: vec![AlternativeRegime {
-            regime: "alternative regimes not considered in v1".into(),
-            ruled_out_by: "no LLM wired; deterministic placeholder".into(),
-        }],
-    };
-
-    let proposed_action = ProposedAction {
-        kind: ProposedActionKind::Advisory,
-        steps: vec![
-            "human review of the finding and reconciliation summary".into(),
-            "no automated action taken in v1 Watchbill".into(),
-        ],
-        risk_notes: vec![],
-        reversible: true,
-        blast_radius: "none — advise only".into(),
-        requested_authority_level: AuthorityLevel::Advise,
-    };
+    // Verdict-driven packet content. Per
+    // `GAP-nq-nightshift-contract.md`: Stale evidence may produce a
+    // packet but the proposal is constrained to revalidation steps,
+    // never normal remediation. Invalidated still emits a packet so
+    // silent disappearance is visible, with no proposed remediation
+    // beyond noting the captured premise no longer holds.
+    let (diagnosis, proposed_action) = build_verdict_surfaces(
+        target,
+        &current_snapshot,
+        nq_result.status,
+        nq_result
+            .notes
+            .as_deref()
+            .unwrap_or("no reconciler note recorded"),
+    );
 
     let ceiling_changed = effective_ceiling != agenda.promotion_ceiling;
     let (governor_verdict, ceiling_note) = if opts.no_governor {
@@ -523,6 +513,195 @@ pub fn effective_ceiling(declared: AuthorityLevel, no_governor: bool) -> Authori
         AuthorityLevel::Advise
     } else {
         declared
+    }
+}
+
+/// Build the verdict-aware diagnosis + proposed action for a packet.
+///
+/// Per `GAP-nq-nightshift-contract.md` (three-axis split) and the
+/// slice-5 design rulings:
+///
+/// - **Committed (cheap path)** — quiet acknowledgment; no churn note.
+/// - **Committed (churn-only)** — explicitly note generations advanced
+///   without semantic change, so the operator does not mistake quiet
+///   for unobserved.
+/// - **Changed** — the diagnosis evidence enumerates which semantic
+///   fields moved; the proposal remains advise-only in v1.
+/// - **Stale** — proposal is *revalidate-only*: restore evidence,
+///   inspect the NQ path, rerun once current. No remediation steps.
+/// - **Invalidated** — proposal is "captured premise no longer holds;
+///   no remediation proposed." A packet still emits so the
+///   transition is visible (silent disappearance is the failure mode
+///   that turns into folklore).
+/// - **Observed** — should not appear at packet build time; treat as
+///   an internal contract bug.
+fn build_verdict_surfaces(
+    target: &FindingKey,
+    current: &crate::finding::FindingSnapshot,
+    status: InputStatus,
+    reconciler_note: &str,
+) -> (Diagnosis, ProposedAction) {
+    let target_str = target.as_string();
+    let advise_only = AuthorityLevel::Advise;
+
+    match status {
+        InputStatus::Committed => {
+            let (regime, evidence) = if reconciler_note.contains("churn-only") {
+                (
+                    "committed (churn-only): finding still live, semantic axis unchanged".into(),
+                    vec![
+                        format!(
+                            "finding {target_str} persisted for {} generations",
+                            current.persistence_generations
+                        ),
+                        reconciler_note.to_string(),
+                    ],
+                )
+            } else {
+                (
+                    "committed: captured evidence matches current NQ snapshot byte-for-byte".into(),
+                    vec![format!(
+                        "finding {target_str} persisted for {} generations",
+                        current.persistence_generations
+                    )],
+                )
+            };
+            (
+                Diagnosis {
+                    regime,
+                    evidence,
+                    confidence: Confidence::Low,
+                    alternatives_considered: vec![AlternativeRegime {
+                        regime: "alternative regimes not considered in v1".into(),
+                        ruled_out_by: "no LLM wired; deterministic placeholder".into(),
+                    }],
+                },
+                ProposedAction {
+                    kind: ProposedActionKind::Advisory,
+                    steps: vec![
+                        "human review of the finding and reconciliation summary".into(),
+                        "no automated action taken in v1 Watchbill".into(),
+                    ],
+                    risk_notes: vec![],
+                    reversible: true,
+                    blast_radius: "none — advise only".into(),
+                    requested_authority_level: advise_only,
+                },
+            )
+        }
+        InputStatus::Changed => (
+            Diagnosis {
+                regime: "changed: semantic axis moved since capture".into(),
+                evidence: vec![
+                    format!(
+                        "finding {target_str} persisted for {} generations",
+                        current.persistence_generations
+                    ),
+                    reconciler_note.to_string(),
+                ],
+                confidence: Confidence::Low,
+                alternatives_considered: vec![AlternativeRegime {
+                    regime: "alternative regimes not considered in v1".into(),
+                    ruled_out_by: "no LLM wired; deterministic placeholder".into(),
+                }],
+            },
+            ProposedAction {
+                kind: ProposedActionKind::Advisory,
+                steps: vec![
+                    "review the semantic-axis change and decide whether the captured proposal still applies"
+                        .into(),
+                    "no automated action taken in v1 Watchbill".into(),
+                ],
+                risk_notes: vec![reconciler_note.to_string()],
+                reversible: true,
+                blast_radius: "none — advise only".into(),
+                requested_authority_level: advise_only,
+            },
+        ),
+        InputStatus::Stale => (
+            Diagnosis {
+                regime: "stale: captured evidence could not be revalidated".into(),
+                evidence: vec![
+                    format!("captured finding: {target_str}"),
+                    format!("revalidation failed: {reconciler_note}"),
+                ],
+                confidence: Confidence::Low,
+                alternatives_considered: vec![],
+            },
+            ProposedAction {
+                kind: ProposedActionKind::Advisory,
+                // Revalidate-only. Per chatty's slice-5 ruling: stale
+                // evidence may not propose remediation. The only safe
+                // moves are restoration of evidence currency.
+                steps: vec![
+                    "revalidate the NQ source: confirm the publisher/aggregator is healthy and the snapshot path is reachable"
+                        .into(),
+                    "fix transport or schema-version issues if revalidation surfaced any"
+                        .into(),
+                    "rerun this watchbill once current evidence is available"
+                        .into(),
+                ],
+                risk_notes: vec![
+                    "no remediation proposed: stale evidence is not a basis for action".into(),
+                ],
+                reversible: true,
+                blast_radius: "none — revalidation only".into(),
+                requested_authority_level: advise_only,
+            },
+        ),
+        InputStatus::Invalidated => (
+            Diagnosis {
+                regime: "invalidated: captured premise no longer holds".into(),
+                evidence: vec![
+                    format!("captured finding: {target_str}"),
+                    format!("invalidation: {reconciler_note}"),
+                ],
+                confidence: Confidence::Low,
+                alternatives_considered: vec![],
+            },
+            ProposedAction {
+                kind: ProposedActionKind::Advisory,
+                steps: vec![
+                    "no remediation proposed: the captured premise is no longer current".into(),
+                    "if the finding's disappearance was unexpected, investigate why upstream"
+                        .into(),
+                ],
+                risk_notes: vec![
+                    "silent disappearance flagged: this packet exists so the transition is visible"
+                        .into(),
+                ],
+                reversible: true,
+                blast_radius: "none — finding cleared since capture".into(),
+                requested_authority_level: advise_only,
+            },
+        ),
+        InputStatus::Observed => (
+            // An `Observed` status at packet build time means the
+            // reconciler did not run for this input. Treat as a
+            // pipeline contract bug; emit a clearly-labelled packet
+            // rather than panicking.
+            Diagnosis {
+                regime: "internal: input still Observed at packet build time".into(),
+                evidence: vec![
+                    "expected the reconciler to assign Committed/Changed/Stale/Invalidated"
+                        .into(),
+                    reconciler_note.to_string(),
+                ],
+                confidence: Confidence::Low,
+                alternatives_considered: vec![],
+            },
+            ProposedAction {
+                kind: ProposedActionKind::Advisory,
+                steps: vec!["investigate pipeline wiring; do not act on this packet".into()],
+                risk_notes: vec![
+                    "packet emitted from an unreconciled input; treat as evidence-of-bug, not evidence-of-finding"
+                        .into(),
+                ],
+                reversible: true,
+                blast_radius: "none — diagnostic only".into(),
+                requested_authority_level: advise_only,
+            },
+        ),
     }
 }
 

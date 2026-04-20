@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::coordination::ConcurrentActivity;
+use crate::finding::FindingSnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +76,14 @@ pub struct CaptureInput {
     pub admissible_for: Vec<ValidFor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inadmissible_for: Vec<ValidFor>,
+    /// The captured finding snapshot itself, when this input is
+    /// NQ-backed. Required for the reconciler to perform the
+    /// three-axis comparison (`GAP-nq-nightshift-contract.md`):
+    /// `evidence_hash` mismatch alone does not mean semantic change,
+    /// so the reconciler must read the captured semantic-axis fields
+    /// directly. Optional for non-NQ inputs and for legacy bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_finding_snapshot: Option<FindingSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

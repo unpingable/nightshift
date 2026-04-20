@@ -28,13 +28,54 @@ pub struct NqReconciliation {
     pub notes: Option<String>,
     pub previous_evidence_hash: Option<String>,
     pub current_evidence_hash: Option<String>,
+    /// Semantic-axis fields whose value differs between the captured
+    /// snapshot and the current snapshot. Empty for `Committed`
+    /// (including the churn-only path) and for `Stale` /
+    /// `Invalidated`. Populated for `Changed`. See
+    /// `GAP-nq-nightshift-contract.md` (three-axis split).
+    pub semantic_changes: Vec<&'static str>,
+}
+
+/// The semantic-axis projection of a finding snapshot. Two snapshots
+/// with the same projection have the same *meaning*, regardless of
+/// churn (`snapshot_generation`, `last_seen_at`,
+/// `persistence_generations`, `evidence_hash`).
+///
+/// Per the gap-doc three-axis split, only these fields participate in
+/// the `Committed` vs `Changed` decision. `first_seen_at` is treated
+/// as a lifecycle anchor (identity-adjacent) and is not included; if
+/// it ever drifts under a stable `finding_key`, that is closer to
+/// identity drift than to semantic change and the reconciler does
+/// not currently model it.
+fn semantic_diff(captured: &FindingSnapshot, current: &FindingSnapshot) -> Vec<&'static str> {
+    let mut diff = Vec::new();
+    if captured.severity != current.severity {
+        diff.push("severity");
+    }
+    if captured.current_status != current.current_status {
+        diff.push("evidence_state");
+    }
+    if captured.domain != current.domain {
+        diff.push("domain");
+    }
+    diff
 }
 
 /// Reconcile a single NQ-backed input given its capture record and
 /// the current snapshot from the NQ source (or `None` if absent).
 ///
-/// This is the core of "reconcile before propose." It does not touch
-/// state; it returns a decision.
+/// Applies the three-axis split from `GAP-nq-nightshift-contract.md`:
+/// identity drift → `Invalidated`, churn-only changes → `Committed`,
+/// semantic-axis differences → `Changed`. `evidence_hash` mismatch is
+/// only a cheap inequality check; on mismatch, the captured semantic
+/// fields are read from `captured.captured_finding_snapshot` and
+/// compared explicitly.
+///
+/// If the captured input lacks `captured_finding_snapshot` (legacy
+/// bundle or non-NQ caller), the reconciler degrades to the previous
+/// hash-only behavior and notes the degradation. This preserves
+/// backwards-compatible behavior for older persisted bundles while
+/// the new path becomes the default for fresh runs.
 pub fn reconcile_nq_input(
     captured: &CaptureInput,
     current: Option<&FindingSnapshot>,
@@ -53,6 +94,7 @@ pub fn reconcile_nq_input(
                 )),
                 previous_evidence_hash: Some(captured.evidence_hash.clone()),
                 current_evidence_hash: current.map(evidence_hash),
+                semantic_changes: Vec::new(),
             };
         }
     }
@@ -71,6 +113,7 @@ pub fn reconcile_nq_input(
                     notes: Some("finding absent from current NQ generation".into()),
                     previous_evidence_hash: Some(captured.evidence_hash.clone()),
                     current_evidence_hash: None,
+                    semantic_changes: Vec::new(),
                 }
             } else {
                 // No absence rule declared — treat as stale rather than invalid.
@@ -81,24 +124,81 @@ pub fn reconcile_nq_input(
                     ),
                     previous_evidence_hash: Some(captured.evidence_hash.clone()),
                     current_evidence_hash: None,
+                    semantic_changes: Vec::new(),
                 }
             }
         }
         Some(snap) => {
             let current_hash = evidence_hash(snap);
+            // Cheap path: byte-identical evidence ⇒ trivially Committed,
+            // no semantic-axis read needed.
             if current_hash == captured.evidence_hash {
-                NqReconciliation {
+                return NqReconciliation {
                     status: InputStatus::Committed,
                     notes: None,
                     previous_evidence_hash: Some(captured.evidence_hash.clone()),
                     current_evidence_hash: Some(current_hash),
+                    semantic_changes: Vec::new(),
+                };
+            }
+            // Identity drift under a stable input_id ⇒ Invalidated.
+            // The reconciler keys on the input_id's encoded
+            // finding_key; if NQ now returns a snapshot with a
+            // different finding_key, the captured premise no longer
+            // refers to the same finding.
+            if let Some(captured_snap) = captured.captured_finding_snapshot.as_ref() {
+                if captured_snap.finding_key != snap.finding_key {
+                    return NqReconciliation {
+                        status: InputStatus::Invalidated,
+                        notes: Some(format!(
+                            "identity drift: captured finding_key {} → current {}",
+                            captured_snap.finding_key.as_string(),
+                            snap.finding_key.as_string()
+                        )),
+                        previous_evidence_hash: Some(captured.evidence_hash.clone()),
+                        current_evidence_hash: Some(current_hash),
+                        semantic_changes: Vec::new(),
+                    };
+                }
+                let diff = semantic_diff(captured_snap, snap);
+                if diff.is_empty() {
+                    NqReconciliation {
+                        status: InputStatus::Committed,
+                        notes: Some(format!(
+                            "churn-only change (snapshot_generation {} → {}); semantic axis unchanged",
+                            captured_snap.snapshot_generation, snap.snapshot_generation
+                        )),
+                        previous_evidence_hash: Some(captured.evidence_hash.clone()),
+                        current_evidence_hash: Some(current_hash),
+                        semantic_changes: Vec::new(),
+                    }
+                } else {
+                    NqReconciliation {
+                        status: InputStatus::Changed,
+                        notes: Some(format!(
+                            "semantic-axis change: {}",
+                            diff.join(", ")
+                        )),
+                        previous_evidence_hash: Some(captured.evidence_hash.clone()),
+                        current_evidence_hash: Some(current_hash),
+                        semantic_changes: diff,
+                    }
                 }
             } else {
+                // Legacy / non-NQ-snapshot path: no captured semantic
+                // axis to compare against. Hash mismatch alone is not
+                // sufficient evidence of semantic change, but it is
+                // not nothing either. Surface it as `Changed` with an
+                // explicit note that the verdict was hash-only.
                 NqReconciliation {
                     status: InputStatus::Changed,
-                    notes: Some("evidence hash differs from capture".into()),
+                    notes: Some(
+                        "evidence hash differs; captured semantic snapshot unavailable, verdict is hash-only"
+                            .into(),
+                    ),
                     previous_evidence_hash: Some(captured.evidence_hash.clone()),
                     current_evidence_hash: Some(current_hash),
+                    semantic_changes: Vec::new(),
                 }
             }
         }
@@ -261,6 +361,14 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
 
     fn captured_input(hash: &str, expires_at: Option<chrono::DateTime<Utc>>) -> CaptureInput {
+        captured_input_with_snap(hash, expires_at, None)
+    }
+
+    fn captured_input_with_snap(
+        hash: &str,
+        expires_at: Option<chrono::DateTime<Utc>>,
+        snap: Option<FindingSnapshot>,
+    ) -> CaptureInput {
         CaptureInput {
             input_id: "nq:finding:wal_bloat:labelwatch-host:/var/lib/db".into(),
             source: "nq".into(),
@@ -278,6 +386,7 @@ mod tests {
             payload_ref: "ledger://...".into(),
             admissible_for: vec![],
             inadmissible_for: vec![],
+            captured_finding_snapshot: snap,
         }
     }
 
@@ -309,15 +418,146 @@ mod tests {
         assert_eq!(r.status, InputStatus::Committed);
     }
 
+    /// **Load-bearing test for the three-axis split**
+    /// (`GAP-nq-nightshift-contract.md`).
+    ///
+    /// Captured snapshot and current snapshot are identical on the
+    /// semantic axis (severity, evidence_state, domain) but differ on
+    /// the churn axis (`snapshot_generation`). `evidence_hash` flips
+    /// because the generation participates in the integrity hash.
+    /// The reconciler must report `Committed`, not `Changed`. If this
+    /// test ever flips to `Changed`, every long-lived NQ finding will
+    /// be classified as semantically changed every minute in steady
+    /// state, and the reconciler is operationally useless.
     #[test]
-    fn changed_when_hash_differs() {
-        let s = snap(0);
-        let hash = evidence_hash(&s);
-        let s2 = snap(1); // different snapshot_generation → different hash
-        let c = captured_input(&hash, None);
-        let r = reconcile_nq_input(&c, Some(&s2), Utc::now());
-        assert_eq!(r.status, InputStatus::Changed);
+    fn committed_when_only_churn() {
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let current_snap = snap(1); // only snapshot_generation differs
+        let current_hash = evidence_hash(&current_snap);
+        assert_ne!(
+            captured_hash, current_hash,
+            "test precondition: hash must differ when generation moves"
+        );
+
+        let c = captured_input_with_snap(&captured_hash, None, Some(captured_snap));
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(
+            r.status,
+            InputStatus::Committed,
+            "churn-only change must reconcile as Committed; got {:?} (notes={:?})",
+            r.status,
+            r.notes
+        );
+        assert!(r.semantic_changes.is_empty());
         assert_ne!(r.previous_evidence_hash, r.current_evidence_hash);
+        assert!(
+            r.notes.as_deref().unwrap_or("").contains("churn-only"),
+            "verdict notes should mark the cheap-path explanation; got {:?}",
+            r.notes
+        );
+    }
+
+    #[test]
+    fn changed_when_severity_promotes() {
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let mut current_snap = snap(0);
+        current_snap.severity = Severity::Critical; // semantic-axis move
+
+        let c = captured_input_with_snap(&captured_hash, None, Some(captured_snap));
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(r.status, InputStatus::Changed);
+        assert_eq!(r.semantic_changes, vec!["severity"]);
+    }
+
+    #[test]
+    fn changed_when_evidence_state_flips() {
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let mut current_snap = snap(0);
+        current_snap.current_status = EvidenceState::Resolving;
+
+        let c = captured_input_with_snap(&captured_hash, None, Some(captured_snap));
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(r.status, InputStatus::Changed);
+        assert_eq!(r.semantic_changes, vec!["evidence_state"]);
+    }
+
+    #[test]
+    fn changed_when_domain_shifts() {
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let mut current_snap = snap(0);
+        current_snap.domain = Some("delta_q".into());
+
+        let c = captured_input_with_snap(&captured_hash, None, Some(captured_snap));
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(r.status, InputStatus::Changed);
+        assert_eq!(r.semantic_changes, vec!["domain"]);
+    }
+
+    #[test]
+    fn changed_carries_multi_field_diff() {
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let mut current_snap = snap(0);
+        current_snap.severity = Severity::Critical;
+        current_snap.current_status = EvidenceState::Worsening;
+
+        let c = captured_input_with_snap(&captured_hash, None, Some(captured_snap));
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(r.status, InputStatus::Changed);
+        assert_eq!(r.semantic_changes, vec!["severity", "evidence_state"]);
+    }
+
+    #[test]
+    fn invalidated_when_identity_drifts() {
+        // Captured snapshot has one finding_key; NQ now returns a
+        // snapshot under a different finding_key for the same
+        // input_id. That is identity drift, not semantic change.
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let mut current_snap = snap(1);
+        current_snap.finding_key = FindingKey {
+            source: "nq".into(),
+            detector: "wal_bloat".into(),
+            subject: "labelwatch-host:/var/lib/somewhere-else.db".into(),
+        };
+
+        let c = captured_input_with_snap(&captured_hash, None, Some(captured_snap));
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(r.status, InputStatus::Invalidated);
+        assert!(r.notes.as_deref().unwrap_or("").contains("identity drift"));
+    }
+
+    #[test]
+    fn legacy_bundle_without_captured_snapshot_falls_back_to_hash_only_changed() {
+        // CaptureInput with no captured_finding_snapshot (legacy
+        // shape). Hash mismatch must still produce a verdict; without
+        // the semantic axis to read, the reconciler degrades to
+        // hash-only Changed and notes the degradation. This protects
+        // older persisted bundles from silently misclassifying.
+        let captured_snap = snap(0);
+        let captured_hash = evidence_hash(&captured_snap);
+        let current_snap = snap(1);
+
+        let c = captured_input(&captured_hash, None); // no snapshot
+        let r = reconcile_nq_input(&c, Some(&current_snap), Utc::now());
+
+        assert_eq!(r.status, InputStatus::Changed);
+        assert!(r.semantic_changes.is_empty());
+        assert!(
+            r.notes.as_deref().unwrap_or("").contains("hash-only"),
+            "verdict notes must surface the hash-only degradation; got {:?}",
+            r.notes
+        );
     }
 
     #[test]
