@@ -206,6 +206,48 @@ impl Store for SqliteStore {
         Ok(run_id)
     }
 
+    fn get_run_summary(&self, run_id: &str) -> Result<Option<RunSummary>> {
+        self.with_conn(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT run_id, agenda_id, trigger, target_finding_key, started_at, completed_at
+                     FROM runs WHERE run_id = ?",
+                    params![run_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, Option<String>>(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| store_err("select run", e))?;
+            match row {
+                None => Ok(None),
+                Some((run_id, agenda_id, trigger_s, target, started_s, completed_s)) => {
+                    let trigger = parse_trigger(&trigger_s)?;
+                    let started_at = parse_ts(&started_s)?;
+                    let completed_at = match completed_s {
+                        Some(s) => Some(parse_ts(&s)?),
+                        None => None,
+                    };
+                    Ok(Some(RunSummary {
+                        run_id,
+                        agenda_id,
+                        trigger,
+                        target_finding_key: target,
+                        started_at,
+                        completed_at,
+                    }))
+                }
+            }
+        })
+    }
+
     fn complete_run(&self, run_id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.with_tx(|tx| {

@@ -31,6 +31,13 @@ pub enum RunLedgerEventKind {
     /// The NQ liveness gate cleared. Recorded so the operator can
     /// inspect what age/verdict was observed at gate time.
     RunLivenessGateCleared,
+    /// Reconcile-time live acquisition step. One explicit call to the
+    /// finding source to capture current state for adjudication; the
+    /// result is persisted into the run's bundle so subsequent
+    /// adjudication is deterministic. Per GAP-deferred-run-split.md,
+    /// this is the only reconcile-time live dependency; after this
+    /// event the run has no further live NQ dependency.
+    RunCurrentSnapshotAcquired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

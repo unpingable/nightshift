@@ -114,6 +114,15 @@ pub struct ReconciliationResult {
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrent_activity: Option<ConcurrentActivity>,
+    /// The current snapshot observed at reconcile-time, persisted so
+    /// adjudication is deterministic over the stored bundle and does
+    /// not require re-acquiring live state. Populated by the
+    /// reconcile-time acquisition step for NQ-backed inputs; None
+    /// when the finding was absent from the current generation, or
+    /// for non-NQ inputs that do not carry a snapshot. See
+    /// `GAP-deferred-run-split.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_finding_snapshot: Option<FindingSnapshot>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

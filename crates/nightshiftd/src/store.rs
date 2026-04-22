@@ -57,6 +57,11 @@ pub trait Store: Send + Sync {
     /// Mark a run as completed (sets completed_at).
     fn complete_run(&self, run_id: &str) -> Result<()>;
 
+    /// Fetch a single run's summary. Returns `None` if no such run
+    /// exists. Used to distinguish captured-but-open runs from
+    /// completed runs when the pipeline enforces one-shot reconcile.
+    fn get_run_summary(&self, run_id: &str) -> Result<Option<RunSummary>>;
+
     fn append_run_event(&self, event: &RunLedgerEvent) -> Result<()>;
     fn list_events(&self, run_id: &str) -> Result<Vec<RunLedgerEvent>>;
 

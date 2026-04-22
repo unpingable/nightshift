@@ -7,8 +7,26 @@
 //! `invalidated`, plus a reliance class and valid_for scope.
 //!
 //! Recheck is the gate, not metadata.
+//!
+//! # Two-phase shape (GAP-deferred-run-split.md)
+//!
+//! Reconcile is internally two phases:
+//!
+//! 1. [`acquire_current`] — the single, explicit reconcile-time live
+//!    acquisition. One call per NQ-backed input; results are bundled
+//!    into a [`ReconciliationAcquisition`]. This is the only live
+//!    dependency in the reconcile path.
+//! 2. [`adjudicate`] — pure function over
+//!    (bundle, acquisition, policy fingerprint). Produces the
+//!    [`ReconciliationPhase`] with no further live NQ dependency. Given
+//!    the same inputs, always produces the same output.
+//!
+//! [`reconcile_bundle`] composes both phases for callers (e.g.
+//! `watchbill run`) that want the same-generation path.
 
-use chrono::Utc;
+use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
 
 use crate::bundle::{
     Bundle, CaptureInput, InputStatus, InvalidationRule, ReconciliationPhase, ReconciliationResult,
@@ -242,24 +260,116 @@ pub fn valid_for_default(cls: RelianceClass) -> Vec<ValidFor> {
     }
 }
 
-/// Reconcile a full bundle against current state, producing a
-/// `ReconciliationPhase` to attach to it.
+/// The explicit reconcile-time live acquisition result.
 ///
-/// v1: only NQ-backed inputs are actively reconciled against a live
-/// source. Other input kinds keep their captured status and are
-/// assigned default reliance classes.
-pub fn reconcile_bundle(bundle: &Bundle, nq: &dyn NqSource) -> Result<ReconciliationPhase> {
-    let now = Utc::now();
+/// One entry per NQ-backed captured input. A `None` value means the
+/// finding was absent from the current generation — a load-bearing
+/// distinction for the adjudicator (absence + absence-rule →
+/// Invalidated; absence without rule → Stale).
+///
+/// Non-NQ inputs do not appear here in v1. `acquired_at` is a single
+/// wall-clock read taken once, passed to `adjudicate` as the `now`
+/// reference for freshness-TTL checks. Fixing the reference clock at
+/// acquisition time is what makes `adjudicate` deterministic.
+#[derive(Debug, Clone)]
+pub struct ReconciliationAcquisition {
+    pub acquired_at: DateTime<Utc>,
+    pub current_snapshots: HashMap<String, Option<FindingSnapshot>>,
+}
+
+impl ReconciliationAcquisition {
+    /// Count of inputs that returned a present snapshot. Used for
+    /// ledger payloads and operator-facing summaries.
+    pub fn present_count(&self) -> usize {
+        self.current_snapshots
+            .values()
+            .filter(|v| v.is_some())
+            .count()
+    }
+
+    /// Count of inputs that returned absent. Load-bearing for absence
+    /// detection: the adjudicator needs to know this was *observed
+    /// absent*, not *not asked*.
+    pub fn absent_count(&self) -> usize {
+        self.current_snapshots
+            .values()
+            .filter(|v| v.is_none())
+            .count()
+    }
+}
+
+/// Policy fingerprint — the versioned declarative material that the
+/// adjudicator may legitimately vary over between capture and
+/// reconcile. Per `GAP-deferred-run-split.md`: any variation is
+/// allowed only if surfaced explicitly and versioned in the output.
+///
+/// v1 stubs this. Real policy versioning arrives with the Governor
+/// adapter; the shape is reserved so the pure adjudication signature
+/// doesn't change when policy lands.
+#[derive(Debug, Clone, Default)]
+pub struct PolicyFingerprint {
+    pub version: Option<String>,
+}
+
+/// Perform the reconcile-time live acquisition pass.
+///
+/// One live NQ call per NQ-backed input. Returns a structure that
+/// fully specifies the observed state; [`adjudicate`] is then pure
+/// over it. Intended to be called exactly once per run's reconcile
+/// phase; the pipeline persists the resulting current snapshots into
+/// the bundle so replay / debugging needs no further live calls.
+pub fn acquire_current(
+    bundle: &Bundle,
+    nq: &dyn NqSource,
+) -> Result<ReconciliationAcquisition> {
+    let mut current_snapshots = HashMap::new();
+    for input in &bundle.capture.inputs {
+        if input.source != "nq" {
+            continue;
+        }
+        let key = parse_nq_input_id(&input.input_id)?;
+        let snap = nq.snapshot(&key)?;
+        current_snapshots.insert(input.input_id.clone(), snap);
+    }
+    Ok(ReconciliationAcquisition {
+        acquired_at: Utc::now(),
+        current_snapshots,
+    })
+}
+
+/// Pure adjudication pass.
+///
+/// Deterministic over `(bundle, acquisition, policy_fp)`: the same
+/// three inputs always produce the same `ReconciliationPhase`. No
+/// live dependency, no wall-clock read beyond the acquisition
+/// timestamp already frozen in `acquisition.acquired_at`.
+///
+/// v1: only NQ-backed inputs are adjudicated against acquired state.
+/// Other input kinds keep their captured status and are assigned
+/// default reliance classes.
+pub fn adjudicate(
+    bundle: &Bundle,
+    acquisition: &ReconciliationAcquisition,
+    _policy_fp: &PolicyFingerprint,
+) -> ReconciliationPhase {
+    let now = acquisition.acquired_at;
     let mut results = Vec::with_capacity(bundle.capture.inputs.len());
 
     for input in &bundle.capture.inputs {
-        let (status, notes, prev_hash, curr_hash) = if input.source == "nq" {
-            // Extract the finding_key from the input_id ("nq:finding:<source>:<detector>:<subject>")
-            // or from the payload. For v1 fixture source, the input_id carries it directly.
-            let key = parse_nq_input_id(&input.input_id)?;
-            let current = nq.snapshot(&key)?;
+        let (status, notes, prev_hash, curr_hash, current_snapshot) = if input.source == "nq" {
+            let current = acquisition
+                .current_snapshots
+                .get(&input.input_id)
+                .cloned()
+                .flatten();
             let r = reconcile_nq_input(input, current.as_ref(), now);
-            (r.status, r.notes, r.previous_evidence_hash, r.current_evidence_hash)
+            (
+                r.status,
+                r.notes,
+                r.previous_evidence_hash,
+                r.current_evidence_hash,
+                current,
+            )
         } else {
             // Non-NQ inputs: keep observed → committed without a live check in v1.
             (
@@ -267,6 +377,7 @@ pub fn reconcile_bundle(bundle: &Bundle, nq: &dyn NqSource) -> Result<Reconcilia
                 None,
                 Some(input.evidence_hash.clone()),
                 Some(input.evidence_hash.clone()),
+                None,
             )
         };
 
@@ -285,17 +396,27 @@ pub fn reconcile_bundle(bundle: &Bundle, nq: &dyn NqSource) -> Result<Reconcilia
             current_evidence_hash: curr_hash,
             notes,
             concurrent_activity: None,
+            current_finding_snapshot: current_snapshot,
         });
     }
 
     let summary = build_summary(&results);
 
-    Ok(ReconciliationPhase {
+    ReconciliationPhase {
         reconciled_at: now,
         reconciled_by: "scheduler".into(),
         results,
         summary,
-    })
+    }
+}
+
+/// Convenience: acquire current state and adjudicate in a single
+/// call. Preserves the pre-split contract for same-generation callers
+/// like `watchbill run`; the deferred path uses
+/// [`acquire_current`] + [`adjudicate`] explicitly.
+pub fn reconcile_bundle(bundle: &Bundle, nq: &dyn NqSource) -> Result<ReconciliationPhase> {
+    let acquisition = acquire_current(bundle, nq)?;
+    Ok(adjudicate(bundle, &acquisition, &PolicyFingerprint::default()))
 }
 
 fn build_summary(results: &[ReconciliationResult]) -> ReconciliationSummary {
@@ -583,6 +704,169 @@ mod tests {
         c.freshness.invalidates_if.clear();
         let r = reconcile_nq_input(&c, None, Utc::now());
         assert_eq!(r.status, InputStatus::Stale);
+    }
+
+    // ----- Pure `adjudicate` tests (deferred-run split) -----
+    //
+    // These exercise adjudication directly, without any `NqSource`.
+    // They are the operational proof of
+    // `GAP-deferred-run-split.md` invariant #3: once reconcile-time
+    // acquisition is persisted, adjudication is deterministic with no
+    // further live NQ dependency.
+
+    use crate::bundle::{Bundle, CapturePhase};
+
+    fn bundle_with_single_input(input: CaptureInput) -> Bundle {
+        Bundle {
+            bundle_version: 0,
+            agenda_id: "test-agenda".into(),
+            run_id: "run_test".into(),
+            capture: CapturePhase {
+                captured_at: input.freshness.captured_at,
+                captured_by: "test".into(),
+                capture_reason: "unit test".into(),
+                inputs: vec![input],
+            },
+            reconciliation: None,
+        }
+    }
+
+    fn acquisition_of(
+        input_id: &str,
+        snap: Option<FindingSnapshot>,
+        at: DateTime<Utc>,
+    ) -> ReconciliationAcquisition {
+        let mut m = HashMap::new();
+        m.insert(input_id.into(), snap);
+        ReconciliationAcquisition {
+            acquired_at: at,
+            current_snapshots: m,
+        }
+    }
+
+    #[test]
+    fn adjudicate_is_pure_no_live_source_needed() {
+        // Classic churn-only bundle. `adjudicate` has no NqSource
+        // argument — the "current" snapshot is supplied via the
+        // acquisition. This test exists to lock the signature as
+        // pure: if someone later re-threads live state into
+        // adjudicate, this test fails to compile.
+        let captured = snap(0);
+        let hash = evidence_hash(&captured);
+        let current = snap(1); // churn only
+
+        let input = captured_input_with_snap(&hash, None, Some(captured));
+        let bundle = bundle_with_single_input(input.clone());
+        let acq = acquisition_of(
+            &input.input_id,
+            Some(current),
+            Utc.with_ymd_and_hms(2026, 4, 22, 3, 0, 0).unwrap(),
+        );
+
+        let phase = adjudicate(&bundle, &acq, &PolicyFingerprint::default());
+        assert_eq!(phase.results.len(), 1);
+        assert_eq!(phase.results[0].status, InputStatus::Committed);
+        assert!(phase.results[0].current_finding_snapshot.is_some());
+    }
+
+    #[test]
+    fn adjudicate_persists_current_snapshot_into_result() {
+        // The reconcile-time acquisition must be captured in the
+        // ReconciliationResult so the bundle is self-contained for
+        // replay. Covers invariant #2 of GAP-deferred-run-split.md:
+        // reconcile-time live acquisition is persisted as part of
+        // the run record.
+        let captured = snap(0);
+        let hash = evidence_hash(&captured);
+        let mut current = snap(0);
+        current.severity = Severity::Critical; // semantic change
+
+        let input = captured_input_with_snap(&hash, None, Some(captured));
+        let bundle = bundle_with_single_input(input.clone());
+        let acq = acquisition_of(&input.input_id, Some(current.clone()), Utc::now());
+
+        let phase = adjudicate(&bundle, &acq, &PolicyFingerprint::default());
+        let r = &phase.results[0];
+        assert_eq!(r.status, InputStatus::Changed);
+        let persisted = r
+            .current_finding_snapshot
+            .as_ref()
+            .expect("adjudicate must persist the acquired snapshot");
+        assert_eq!(persisted.severity, Severity::Critical);
+        assert_eq!(persisted.finding_key, current.finding_key);
+    }
+
+    #[test]
+    fn adjudicate_is_deterministic_over_fixed_inputs() {
+        // Load-bearing test for invariant #3 of
+        // GAP-deferred-run-split.md: once acquisition is persisted,
+        // adjudication is deterministic. Running adjudicate twice
+        // over the same bundle + acquisition + policy must produce
+        // byte-for-byte identical phases (modulo collection ordering
+        // of independent vecs, which we assert on the load-bearing
+        // fields explicitly).
+        let captured = snap(0);
+        let hash = evidence_hash(&captured);
+        let current = snap(1); // churn only
+
+        let input = captured_input_with_snap(&hash, None, Some(captured));
+        let bundle = bundle_with_single_input(input.clone());
+        let acq_at = Utc.with_ymd_and_hms(2026, 4, 22, 3, 0, 0).unwrap();
+        let acq = acquisition_of(&input.input_id, Some(current), acq_at);
+        let policy = PolicyFingerprint::default();
+
+        let phase_a = adjudicate(&bundle, &acq, &policy);
+        let phase_b = adjudicate(&bundle, &acq, &policy);
+
+        assert_eq!(phase_a.reconciled_at, phase_b.reconciled_at);
+        assert_eq!(phase_a.reconciled_at, acq_at);
+        assert_eq!(phase_a.results.len(), phase_b.results.len());
+        for (ra, rb) in phase_a.results.iter().zip(phase_b.results.iter()) {
+            assert_eq!(ra.input_id, rb.input_id);
+            assert_eq!(ra.status, rb.status);
+            assert_eq!(ra.previous_evidence_hash, rb.previous_evidence_hash);
+            assert_eq!(ra.current_evidence_hash, rb.current_evidence_hash);
+            assert_eq!(ra.notes, rb.notes);
+            assert_eq!(
+                ra.current_finding_snapshot.as_ref().map(|s| &s.finding_key),
+                rb.current_finding_snapshot.as_ref().map(|s| &s.finding_key),
+            );
+        }
+    }
+
+    #[test]
+    fn adjudicate_absent_snapshot_with_absence_rule_is_invalidated() {
+        // Acquisition observed the finding absent at current
+        // generation. Absence rule present → Invalidated. This is
+        // the absence path of the three-axis contract, proven
+        // without any NqSource.
+        let input = captured_input("sha256:abc", None);
+        let bundle = bundle_with_single_input(input.clone());
+        let acq = acquisition_of(&input.input_id, None, Utc::now());
+
+        let phase = adjudicate(&bundle, &acq, &PolicyFingerprint::default());
+        assert_eq!(phase.results[0].status, InputStatus::Invalidated);
+        assert!(phase.results[0].current_finding_snapshot.is_none());
+        assert!(!phase.summary.ok_to_proceed);
+    }
+
+    #[test]
+    fn adjudicate_respects_freshness_ttl_without_reading_current() {
+        // TTL-expired: adjudicate returns Stale regardless of what
+        // the acquisition observed. This is the first branch in
+        // reconcile_nq_input; covered here to lock the behavior at
+        // the adjudication-surface level, not just the per-input
+        // primitive.
+        let captured = snap(0);
+        let hash = evidence_hash(&captured);
+        let expired = Utc::now() - Duration::hours(1);
+        let input = captured_input_with_snap(&hash, Some(expired), Some(captured.clone()));
+        let bundle = bundle_with_single_input(input.clone());
+        // Acquisition observed the finding still present + identical.
+        let acq = acquisition_of(&input.input_id, Some(captured), Utc::now());
+
+        let phase = adjudicate(&bundle, &acq, &PolicyFingerprint::default());
+        assert_eq!(phase.results[0].status, InputStatus::Stale);
     }
 
     #[test]
