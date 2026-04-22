@@ -20,6 +20,15 @@ pub enum NightShiftError {
     #[error("run aborted by coordination preflight: {0}")]
     PreflightBlocked(String),
 
+    #[error("run not found: {0}")]
+    RunNotFound(String),
+
+    #[error("run already completed: {0} — reconcile is one-shot, start a new capture instead")]
+    RunAlreadyCompleted(String),
+
+    #[error("run has no persisted bundle: {0}")]
+    RunBundleMissing(String),
+
     #[error("store error: {0}")]
     Store(String),
 

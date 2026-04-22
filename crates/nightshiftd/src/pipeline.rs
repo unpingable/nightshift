@@ -1,18 +1,35 @@
 //! Pipeline — capture → reconcile → packet.
 //!
-//! v1 orchestrator. Reads agenda, captures current evidence into a
-//! bundle, reconciles the bundle against live sources, emits a packet.
-//! No persistence (commit C adds Store integration). No mutation.
+//! Per `GAP-deferred-run-split.md`, the Watchbill pipeline is split
+//! into two phases that may run in the same invocation or separated
+//! by wall time:
+//!
+//! - [`capture_phase`] — freezes the baseline observation, runs the
+//!   capture-time gates (authority, liveness, preflight), persists
+//!   the bundle, and leaves the run *open*. Returns a
+//!   [`CaptureOutcome`] that is either `Captured { run_id }` (the
+//!   normal path) or `HeldPacket` (liveness / preflight held the run
+//!   and the packet is already saved + the run already completed).
+//! - [`reconcile_phase`] — loads a captured run, re-checks preflight,
+//!   performs exactly one explicit live NQ acquisition step, runs
+//!   pure [`crate::reconciler::adjudicate`] over the captured bundle +
+//!   acquisition, emits the packet, finalizes the run. One-shot:
+//!   reconciling an already-completed run is an error.
+//!
+//! [`run_watchbill_with_liveness`] composes both phases in one
+//! invocation — the same-generation convenience path used by
+//! `watchbill run` and legacy callers.
 
 use chrono::Utc;
 
 use crate::agenda::{Agenda, AuthorityLevel, CriticalityClass};
 use crate::bundle::{
     Bundle, CaptureInput, CapturePhase, Freshness, InputStatus, InvalidationRule,
+    ReconciliationPhase,
 };
 use crate::coordination::{classify_risky, preflight, scope_key, CoordinationOutcome};
 use crate::errors::{NightShiftError, Result};
-use crate::finding::{EvidenceState, FindingKey};
+use crate::finding::{EvidenceState, FindingKey, FindingSnapshot};
 use crate::ledger::{RunLedgerEvent, RunLedgerEventKind};
 use crate::liveness::{verdict_for, LivenessSource, LivenessVerdict, DEFAULT_STALENESS_THRESHOLD_SECONDS};
 use crate::nq::{evidence_hash, NqSource};
@@ -21,7 +38,7 @@ use crate::packet::{
     DiagnosisReview, DiagnosisReviewMode, FindingSummary, OperationalUrgency, Packet,
     ProposedAction, ProposedActionKind, ReceiptReferences,
 };
-use crate::reconciler;
+use crate::reconciler::{self, PolicyFingerprint};
 use crate::store::{RunTrigger, Store};
 
 /// Runtime options for a pipeline invocation.
@@ -44,6 +61,18 @@ pub struct PipelineOptions {
     pub liveness_threshold_seconds: Option<u64>,
 }
 
+/// Outcome of the capture phase.
+///
+/// `Captured` means the run is open and awaiting reconcile. `HeldPacket`
+/// means a gate (liveness or preflight) held the run, and the packet
+/// is already saved + the run already completed; no further pipeline
+/// work is required. Boxed to keep the enum small.
+#[derive(Debug, Clone)]
+pub enum CaptureOutcome {
+    Captured { run_id: String },
+    HeldPacket(Box<Packet>),
+}
+
 /// Execute the v1 Watchbill pipeline for a single finding target.
 ///
 /// Persists through the `Store`: creates the run record, saves the
@@ -60,18 +89,12 @@ pub fn run_watchbill(
     run_watchbill_with_liveness(agenda, target, nq, None, store, opts)
 }
 
-/// Variant of `run_watchbill` that consults a `LivenessSource` before
-/// capture. If the witness is stale or skewed per the operator's
-/// threshold, the pipeline emits a Stale-shape packet (revalidate-
-/// only proposal per slice-5 contract) and does not consult the NQ
-/// finding source. When `liveness` is `None`, behavior is identical
-/// to `run_watchbill`.
+/// Same-generation composition of `capture_phase` + `reconcile_phase`.
 ///
-/// Liveness is an *intelligence dependency*, not an authority
-/// dependency: missing it never raises authority. A successful gate
-/// permits the run to continue at the agenda's promotion ceiling; a
-/// failed gate caps the run at advise (Stale verdict). See CLAUDE.md
-/// invariants 6 and 8.
+/// Provides the pre-split behavior for callers (like `watchbill run`)
+/// that want the full pipeline in one invocation. Deferred callers
+/// invoke `capture_phase` and `reconcile_phase` separately — that is
+/// the canonical path (see `GAP-deferred-run-split.md`).
 pub fn run_watchbill_with_liveness(
     agenda: &Agenda,
     target: &FindingKey,
@@ -80,19 +103,36 @@ pub fn run_watchbill_with_liveness(
     store: &dyn Store,
     opts: &PipelineOptions,
 ) -> Result<Packet> {
-    // Ensure agenda persisted — the store is the durable record.
+    match capture_phase(agenda, target, nq, liveness, store, opts)? {
+        CaptureOutcome::HeldPacket(packet) => Ok(*packet),
+        CaptureOutcome::Captured { run_id } => reconcile_phase(&run_id, nq, store, opts),
+    }
+}
+
+/// Freeze the baseline observation for a Watchbill run and leave the
+/// run open, ready for `reconcile_phase`. Runs the capture-time
+/// gates (authority ceiling, optional liveness, preflight). On gate
+/// failure returns `HeldPacket` with the run already finalized.
+///
+/// See `GAP-deferred-run-split.md` invariant #1: capture happens
+/// exactly once per run.
+pub fn capture_phase(
+    agenda: &Agenda,
+    target: &FindingKey,
+    nq: &dyn NqSource,
+    liveness: Option<&dyn LivenessSource>,
+    store: &dyn Store,
+    opts: &PipelineOptions,
+) -> Result<CaptureOutcome> {
     store.create_agenda(agenda)?;
 
     let trigger = opts.trigger.unwrap_or(RunTrigger::Manual);
     let run_id = store.create_run(&agenda.agenda_id, trigger, Some(target))?;
-    // 1. Authority ceiling enforcement (pre-pipeline gate).
-    //    Without Governor, ceiling cannot exceed advise.
     let effective_ceiling = effective_ceiling(agenda.promotion_ceiling, opts.no_governor);
 
-    // 1a. Liveness gate (if configured). Before consulting the
-    //     finding source at all, ask whether the witness is alive
-    //     enough to trust further evidence. A stale or skewed
-    //     witness terminates the run as Stale.
+    // 1. Liveness gate (if configured). A stale or skewed witness
+    //    terminates the run as Stale before any finding source is
+    //    consulted.
     if let Some(liveness_src) = liveness {
         let threshold = opts
             .liveness_threshold_seconds
@@ -100,7 +140,7 @@ pub fn run_watchbill_with_liveness(
         let snapshot = liveness_src.current()?;
         let verdict = verdict_for(&snapshot, threshold);
         if !verdict.is_fresh() {
-            return liveness_gate_failed(
+            let pkt = liveness_gate_failed(
                 agenda,
                 target,
                 &snapshot,
@@ -109,7 +149,8 @@ pub fn run_watchbill_with_liveness(
                 opts,
                 effective_ceiling,
                 &run_id,
-            );
+            )?;
+            return Ok(CaptureOutcome::HeldPacket(Box::new(pkt)));
         }
         store.append_run_event(&new_event(
             &run_id,
@@ -175,10 +216,10 @@ pub fn run_watchbill_with_liveness(
         }),
     ))?;
 
-    // 2a. Preflight — risky-class coordination gate per
-    //     GAP-parallel-ops.md. For non-risky agendas this is always
-    //     Clear; for risky agendas without Continuity configured it
-    //     holds the run, per CLAUDE.md invariant #18.
+    // 3. Preflight — risky-class coordination gate per
+    //    GAP-parallel-ops.md. Reconcile will re-check preflight at
+    //    reconcile time per GAP-deferred-run-split.md: coordination
+    //    state can move while the run is paused.
     let preflight_outcome = preflight(agenda, opts.continuity_configured);
     let risky = classify_risky(agenda);
 
@@ -191,12 +232,12 @@ pub fn run_watchbill_with_liveness(
                     "outcome": "clear",
                     "risky": risky.is_risky(),
                     "reasons": risky.reasons(),
+                    "phase": "capture",
                 }),
             ))?;
         }
         _ => {
-            // Hold path — the run stops before reconcile.
-            return hold_for_preflight(
+            let pkt = hold_for_preflight(
                 agenda,
                 target,
                 &captured_snapshot,
@@ -207,21 +248,127 @@ pub fn run_watchbill_with_liveness(
                 opts,
                 effective_ceiling,
                 &run_id,
+            )?;
+            return Ok(CaptureOutcome::HeldPacket(Box::new(pkt)));
+        }
+    }
+
+    // 4. Persist the captured bundle. After this point, reconcile_phase
+    //    can pick the run up asynchronously.
+    store.save_bundle(&run_id, &bundle_pre_reconcile)?;
+
+    Ok(CaptureOutcome::Captured { run_id })
+}
+
+/// Reconcile a captured (open) run: re-check preflight, perform the
+/// explicit reconcile-time live NQ acquisition, run pure adjudication
+/// over the captured bundle + acquisition, emit the packet, and
+/// finalize the run.
+///
+/// One-shot: returns `RunAlreadyCompleted` if the run has already
+/// been reconciled. If the bundle is missing, returns
+/// `RunBundleMissing` — that indicates a bug or a crash between
+/// `create_run` and `save_bundle` in capture_phase.
+pub fn reconcile_phase(
+    run_id: &str,
+    nq: &dyn NqSource,
+    store: &dyn Store,
+    opts: &PipelineOptions,
+) -> Result<Packet> {
+    // 0. Run must exist and be open.
+    let summary = store
+        .get_run_summary(run_id)?
+        .ok_or_else(|| NightShiftError::RunNotFound(run_id.to_string()))?;
+    if summary.completed_at.is_some() {
+        return Err(NightShiftError::RunAlreadyCompleted(run_id.to_string()));
+    }
+
+    // 1. Load the captured bundle + agenda. Both must be present.
+    let captured_bundle = store
+        .get_bundle(run_id)?
+        .ok_or_else(|| NightShiftError::RunBundleMissing(run_id.to_string()))?;
+    let agenda = store.get_agenda(&captured_bundle.agenda_id)?.ok_or_else(|| {
+        NightShiftError::AgendaNotFound(captured_bundle.agenda_id.clone())
+    })?;
+    let effective_ceiling = effective_ceiling(agenda.promotion_ceiling, opts.no_governor);
+
+    // 2. Re-check preflight. Coordination state can move while a
+    //    run is paused between capture and reconcile.
+    let preflight_outcome = preflight(&agenda, opts.continuity_configured);
+    let risky = classify_risky(&agenda);
+    let target = parse_target_from_bundle(&captured_bundle)?;
+
+    match preflight_outcome {
+        CoordinationOutcome::Clear | CoordinationOutcome::OperatorOverride => {
+            store.append_run_event(&new_event(
+                run_id,
+                RunLedgerEventKind::RunPreflightCleared,
+                serde_json::json!({
+                    "outcome": "clear",
+                    "risky": risky.is_risky(),
+                    "reasons": risky.reasons(),
+                    "phase": "reconcile",
+                }),
+            ))?;
+        }
+        _ => {
+            // Preflight moved to a hold between capture and reconcile.
+            // Same packet-shape as a capture-time hold, but the bundle
+            // is already saved and the run is open — just emit the
+            // held packet and close the run.
+            let captured_snapshot = captured_bundle
+                .capture
+                .inputs
+                .iter()
+                .find_map(|i| i.captured_finding_snapshot.clone())
+                .ok_or_else(|| {
+                    NightShiftError::InvalidAgenda(format!(
+                        "reconcile_phase: captured bundle for run {run_id} has no NQ snapshot"
+                    ))
+                })?;
+            return hold_for_preflight(
+                &agenda,
+                &target,
+                &captured_snapshot,
+                &captured_bundle,
+                preflight_outcome,
+                &risky,
+                store,
+                opts,
+                effective_ceiling,
+                run_id,
             );
         }
     }
 
-    // 3. Reconcile — live source check for each NQ input.
-    let reconciliation = reconciler::reconcile_bundle(&bundle_pre_reconcile, nq)?;
+    // 3. Explicit, single-shot live acquisition. One NQ call per
+    //    NQ-backed input. After this event, the run has no further
+    //    live NQ dependency.
+    let acquisition = reconciler::acquire_current(&captured_bundle, nq)?;
+    store.append_run_event(&new_event(
+        run_id,
+        RunLedgerEventKind::RunCurrentSnapshotAcquired,
+        serde_json::json!({
+            "acquired_at": acquisition.acquired_at.to_rfc3339(),
+            "inputs": acquisition.current_snapshots.len(),
+            "present": acquisition.present_count(),
+            "absent": acquisition.absent_count(),
+        }),
+    ))?;
+
+    // 4. Pure adjudication. Deterministic over bundle + acquisition +
+    //    policy fingerprint; no further live reads.
+    let reconciliation =
+        reconciler::adjudicate(&captured_bundle, &acquisition, &PolicyFingerprint::default());
 
     let reconciled_bundle = Bundle {
         reconciliation: Some(reconciliation.clone()),
-        ..bundle_pre_reconcile
+        ..captured_bundle
     };
-    store.save_bundle(&run_id, &reconciled_bundle)?;
+    store.save_bundle(run_id, &reconciled_bundle)?;
 
     store.append_run_event(&new_event(
-        &run_id,
+        run_id,
         RunLedgerEventKind::RunReconciled,
         serde_json::json!({
             "ok_to_proceed": reconciliation.summary.ok_to_proceed,
@@ -230,15 +377,83 @@ pub fn run_watchbill_with_liveness(
         }),
     ))?;
 
-    // 4. Build the packet. v1 diagnosis is deterministic — no LLM.
+    // 5. Build the packet from persisted bundle state — no live reads.
+    let packet = build_success_packet(
+        &agenda,
+        run_id,
+        &target,
+        &reconciled_bundle,
+        &reconciliation,
+        effective_ceiling,
+        opts,
+    )?;
+
+    store.save_packet(run_id, &packet)?;
+    store.append_run_event(&new_event(
+        run_id,
+        RunLedgerEventKind::RunCompleted,
+        serde_json::json!({
+            "packet_id": packet.packet_id,
+            "requested_authority_level": packet.proposed_action.requested_authority_level,
+            "effective_ceiling": effective_ceiling,
+        }),
+    ))?;
+    store.complete_run(run_id)?;
+
+    Ok(packet)
+}
+
+/// Reconstruct the target FindingKey from a persisted bundle. v1
+/// bundles have exactly one NQ finding input per capture; derive the
+/// key from its captured snapshot.
+fn parse_target_from_bundle(bundle: &Bundle) -> Result<FindingKey> {
+    bundle
+        .capture
+        .inputs
+        .iter()
+        .find_map(|i| i.captured_finding_snapshot.as_ref().map(|s| s.finding_key.clone()))
+        .ok_or_else(|| {
+            NightShiftError::InvalidAgenda(format!(
+                "bundle for run {} has no captured NQ snapshot",
+                bundle.run_id
+            ))
+        })
+}
+
+/// Build the success-path packet from persisted bundle + adjudication
+/// result. Pure: reads no live state. The current-state fields come
+/// from `reconciliation.results[i].current_finding_snapshot` (the
+/// persisted reconcile-time acquisition); when the finding was
+/// absent at acquisition time, falls back to the captured baseline
+/// so the packet still renders sensible operator-facing context.
+#[allow(clippy::too_many_arguments)]
+fn build_success_packet(
+    agenda: &Agenda,
+    run_id: &str,
+    target: &FindingKey,
+    reconciled_bundle: &Bundle,
+    reconciliation: &ReconciliationPhase,
+    effective_ceiling: AuthorityLevel,
+    opts: &PipelineOptions,
+) -> Result<Packet> {
     let nq_result = reconciliation
         .results
         .iter()
         .find(|r| r.input_id.starts_with("nq:finding:"))
         .expect("v1 pipeline seeded a single NQ input; it must be present in reconciliation");
 
-    let current_snapshot = nq
-        .snapshot(target)?
+    // Prefer the reconcile-time acquired snapshot for the
+    // FindingSummary; fall back to the captured baseline when the
+    // finding was absent at acquisition time.
+    let captured_snapshot = reconciled_bundle
+        .capture
+        .inputs
+        .iter()
+        .find_map(|i| i.captured_finding_snapshot.clone())
+        .expect("v1 bundle invariant: one NQ input with captured_finding_snapshot");
+    let current_snapshot = nq_result
+        .current_finding_snapshot
+        .clone()
         .unwrap_or_else(|| captured_snapshot.clone());
 
     let finding_summary = FindingSummary {
@@ -253,12 +468,6 @@ pub fn run_watchbill_with_liveness(
         current_status: current_snapshot.current_status,
     };
 
-    // Verdict-driven packet content. Per
-    // `GAP-nq-nightshift-contract.md`: Stale evidence may produce a
-    // packet but the proposal is constrained to revalidation steps,
-    // never normal remediation. Invalidated still emits a packet so
-    // silent disappearance is visible, with no proposed remediation
-    // beyond noting the captured premise no longer holds.
     let (diagnosis, proposed_action) = build_verdict_surfaces(
         target,
         &current_snapshot,
@@ -337,11 +546,11 @@ pub fn run_watchbill_with_liveness(
         scope_key(&agenda.scope).chars().take(12).collect::<String>()
     );
 
-    let packet = Packet {
+    Ok(Packet {
         packet_version: 0,
         packet_id,
         agenda_id: agenda.agenda_id.clone(),
-        run_id: run_id.clone(),
+        run_id: run_id.to_string(),
         produced_at: Utc::now(),
         finding_summary,
         reconciliation_summary: reconciliation.summary.clone(),
@@ -355,23 +564,7 @@ pub fn run_watchbill_with_liveness(
             governor_receipts: vec![],
             evidence_bundle: Some(format!("bundle://{run_id}")),
         },
-    };
-
-    store.save_packet(&run_id, &packet)?;
-
-    store.append_run_event(&new_event(
-        &run_id,
-        RunLedgerEventKind::RunCompleted,
-        serde_json::json!({
-            "packet_id": packet.packet_id,
-            "requested_authority_level": packet.proposed_action.requested_authority_level,
-            "effective_ceiling": effective_ceiling,
-        }),
-    ))?;
-
-    store.complete_run(&run_id)?;
-
-    Ok(packet)
+    })
 }
 
 /// Handle a preflight hold — emit the appropriate event, save a
@@ -382,7 +575,7 @@ pub fn run_watchbill_with_liveness(
 fn hold_for_preflight(
     agenda: &Agenda,
     target: &FindingKey,
-    captured_snapshot: &crate::finding::FindingSnapshot,
+    captured_snapshot: &FindingSnapshot,
     bundle: &Bundle,
     outcome: CoordinationOutcome,
     risk: &crate::coordination::RiskyClassification,
@@ -762,7 +955,7 @@ pub fn effective_ceiling(declared: AuthorityLevel, no_governor: bool) -> Authori
 ///   an internal contract bug.
 fn build_verdict_surfaces(
     target: &FindingKey,
-    current: &crate::finding::FindingSnapshot,
+    current: &FindingSnapshot,
     status: InputStatus,
     reconciler_note: &str,
 ) -> (Diagnosis, ProposedAction) {

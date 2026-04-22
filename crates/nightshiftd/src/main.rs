@@ -9,7 +9,9 @@ use nightshiftd::finding::FindingKey;
 use nightshiftd::liveness::{CliLivenessSource, LivenessSource};
 use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqListFilter, NqSource};
 use nightshiftd::nq_peek::{render_peek_text, PeekDocument};
-use nightshiftd::pipeline::{run_watchbill_with_liveness, PipelineOptions};
+use nightshiftd::pipeline::{
+    capture_phase, reconcile_phase, run_watchbill_with_liveness, CaptureOutcome, PipelineOptions,
+};
 use nightshiftd::posture::{list_postures, load_posture, render_list_row, render_show, PostureFilter};
 use nightshiftd::store::sqlite::SqliteStore;
 
@@ -147,7 +149,9 @@ enum RunsAction {
 
 #[derive(Subcommand, Debug)]
 enum WatchbillAction {
-    /// Run an agenda by path to its YAML definition.
+    /// Run an agenda end-to-end (capture then reconcile in one
+    /// invocation). Thin convenience over `capture` + `reconcile`;
+    /// same semantics, same-generation timing.
     Run {
         /// Path to an agenda YAML file.
         agenda_path: PathBuf,
@@ -155,6 +159,29 @@ enum WatchbillAction {
         /// Stable finding key to target: `<source>:<detector>:<subject>`.
         #[arg(long)]
         finding: String,
+    },
+    /// Freeze a baseline observation into a new run and leave the
+    /// run open, awaiting `reconcile`. Runs capture-time gates
+    /// (authority, liveness, preflight); on gate hold the run is
+    /// closed immediately with a held packet. On success, prints
+    /// the new run_id to stdout (consumable by `reconcile`).
+    ///
+    /// See `docs/GAP-deferred-run-split.md`.
+    Capture {
+        /// Path to an agenda YAML file.
+        agenda_path: PathBuf,
+
+        /// Stable finding key to target: `<source>:<detector>:<subject>`.
+        #[arg(long)]
+        finding: String,
+    },
+    /// Reconcile a previously captured, still-open run: re-check
+    /// preflight, perform the one explicit reconcile-time NQ
+    /// acquisition, adjudicate, emit the packet, finalize the run.
+    /// One-shot: reconciling a completed run is an error.
+    Reconcile {
+        /// The run_id returned by a prior `capture`.
+        run_id: String,
     },
 }
 
@@ -167,6 +194,11 @@ fn main() -> anyhow::Result<()> {
                 agenda_path,
                 finding,
             } => run_watchbill_cmd(&cli, agenda_path, finding),
+            WatchbillAction::Capture {
+                agenda_path,
+                finding,
+            } => capture_cmd(&cli, agenda_path, finding),
+            WatchbillAction::Reconcile { run_id } => reconcile_cmd(&cli, run_id),
         },
         Command::Runs { action } => match action {
             RunsAction::List {
@@ -290,12 +322,7 @@ fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) ->
     let store = SqliteStore::open(&cli.store)?;
     let target = parse_finding_arg(finding)?;
 
-    let opts = PipelineOptions {
-        no_governor: cli.no_governor,
-        continuity_configured: cli.continuity_configured,
-        trigger: None,
-        liveness_threshold_seconds: cli.nq_liveness_threshold_secs,
-    };
+    let opts = pipeline_opts(cli);
 
     let packet = run_watchbill_with_liveness(
         &agenda,
@@ -310,6 +337,62 @@ fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) ->
     let rendered = serde_yaml::to_string(&packet)?;
     println!("{rendered}");
     Ok(())
+}
+
+/// `watchbill capture` — freeze a baseline, persist an open run.
+///
+/// On `Captured`, prints the run_id alone (machine-consumable). On
+/// a held outcome (liveness/preflight), the run is already closed
+/// and the held packet is printed as YAML — operators still see what
+/// was attempted and why.
+fn capture_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyhow::Result<()> {
+    let agenda = Agenda::from_yaml_file(agenda_path)?;
+    let nq = build_nq_source(cli)?;
+    let liveness = build_liveness_source(cli);
+    let store = SqliteStore::open(&cli.store)?;
+    let target = parse_finding_arg(finding)?;
+
+    let opts = pipeline_opts(cli);
+
+    match capture_phase(
+        &agenda,
+        &target,
+        nq.as_ref(),
+        liveness.as_deref(),
+        &store,
+        &opts,
+    )? {
+        CaptureOutcome::Captured { run_id } => {
+            println!("{run_id}");
+        }
+        CaptureOutcome::HeldPacket(packet) => {
+            let rendered = serde_yaml::to_string(&*packet)?;
+            println!("{rendered}");
+        }
+    }
+    Ok(())
+}
+
+/// `watchbill reconcile <run_id>` — complete a captured run. One-shot.
+fn reconcile_cmd(cli: &Cli, run_id: &str) -> anyhow::Result<()> {
+    let nq = build_nq_source(cli)?;
+    let store = SqliteStore::open(&cli.store)?;
+
+    let opts = pipeline_opts(cli);
+
+    let packet = reconcile_phase(run_id, nq.as_ref(), &store, &opts)?;
+    let rendered = serde_yaml::to_string(&packet)?;
+    println!("{rendered}");
+    Ok(())
+}
+
+fn pipeline_opts(cli: &Cli) -> PipelineOptions {
+    PipelineOptions {
+        no_governor: cli.no_governor,
+        continuity_configured: cli.continuity_configured,
+        trigger: None,
+        liveness_threshold_seconds: cli.nq_liveness_threshold_secs,
+    }
 }
 
 fn parse_finding_arg(s: &str) -> anyhow::Result<FindingKey> {
