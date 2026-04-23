@@ -91,17 +91,23 @@ impl HorizonClass {
 }
 
 /// The horizon block as Night Shift consumes it. Field names
-/// mirror Governor's spec. Not a wire deserialization target —
-/// the parser lives in the Governor adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// mirror Governor's spec for wire compatibility (when Night Shift
+/// later forwards this to Governor via `record_receipt`), but the
+/// **origin is producer-local**, not a Governor read path. See
+/// `horizon_policy.rs` and the module header of `reconcile_horizon`
+/// for the invariant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HorizonBlock {
     pub class: HorizonClass,
     /// Required for `class != None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis_id: Option<String>,
     /// Required for `class != None`. Content hash of the basis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis_hash: Option<String>,
     /// Required for `class in {Hours, BusinessHours, Scheduled}`.
     /// Wall-clock expiry. `now >= expiry` triggers escalation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expiry: Option<DateTime<Utc>>,
 }
 

@@ -2,14 +2,17 @@
 //! A5 four-way distinction (`GOV_GAP_TOLERABILITY_HORIZON_001`).
 //!
 //! This file is the **acceptance center** for Phase A of the
-//! Nightshift Governor adapter wiring (per chatty's 2026-04-23
-//! guardrail #3): "if that test is clean, A is real."
+//! horizon-consumer wiring (per chatty's 2026-04-23 guardrail #3:
+//! "if that test is clean, A is real").
 //!
 //! Each scenario simulates two runs against a shared persistent
-//! SQLite store, a fixed `FixtureGovernorSource`, and a controlled
-//! wall-clock. Run A writes (or does not write) a tolerance record
-//! via `apply_horizon_outcomes`; run B reads that state via
-//! `process_horizon` and must produce the correct `HorizonAction`.
+//! SQLite store, a fixed `FixtureHorizonPolicySource` (Night Shift's
+//! local horizon-declaration surface — see `horizon_policy.rs` for
+//! the invariant that horizon is producer-local, not a Governor
+//! lookup), and a controlled wall-clock. Run A writes (or does not
+//! write) a tolerance record via `apply_horizon_outcomes`; run B
+//! reads that state via `process_horizon` and must produce the
+//! correct `HorizonAction`.
 //!
 //! Four cases:
 //!
@@ -20,7 +23,7 @@
 //!    matching basis; outcome is `EscalateExpired` carrying the
 //!    prior record as lineage. Tolerance record is cleared.
 //! 3. `basis_invalidated` — run A defers under basis hash X; run B
-//!    sees the same finding with a receipt declaring hash Y (still
+//!    sees the same finding with a declaration under hash Y (still
 //!    future expiry); outcome is `EscalateBasisInvalidated` with
 //!    both sides surfaced. Tolerance record is cleared.
 //! 4. `fresh_arrival` — no run A deferral. Run B sees a finding
@@ -28,9 +31,12 @@
 //!    outcome is `ActOnVerdict(Missing)`. No tolerance record ever
 //!    written.
 //!
-//! Phase B will rerun the same scenarios against a real JSON-RPC
-//! Governor daemon; the shape of the acceptance test does not
-//! change — only the source is swapped.
+//! Phase B adds real Governor RPC plumbing (`check_policy`,
+//! `record_receipt`, `authorize_transition`) — orthogonal to this
+//! file's decision logic. The horizon acquisition surface stays
+//! NS-internal; what Phase B adds is the archival path: when NS
+//! defers, it forwards that tolerance declaration to Governor via
+//! `record_receipt` so the audit trail exists.
 
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -39,8 +45,8 @@ use nightshiftd::bundle::{
     ReconciliationResult, ReconciliationSummary, RelianceClass, RelianceScope, ValidFor,
 };
 use nightshiftd::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity};
-use nightshiftd::governor::{FixtureGovernorSource, GateReceipt, WireHorizon};
-use nightshiftd::horizon::{HorizonAction, HorizonClass};
+use nightshiftd::horizon::{HorizonAction, HorizonBlock, HorizonClass};
+use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
 use nightshiftd::reconcile_horizon::{apply_horizon_outcomes, process_horizon};
 use nightshiftd::store::sqlite::SqliteStore;
 use nightshiftd::store::Store;
@@ -119,24 +125,21 @@ fn reconciliation_phase_for(input_id: &str, at: DateTime<Utc>) -> Reconciliation
     }
 }
 
-fn receipt_with_timed_horizon(
+fn declaration_with_timed_horizon(
     key: &FindingKey,
     basis_id: &str,
     basis_hash: &str,
     class: HorizonClass,
     expiry: DateTime<Utc>,
-) -> GateReceipt {
-    GateReceipt {
-        receipt_id: format!("r_{basis_id}"),
-        verdict: "allow".into(),
+) -> HorizonDeclaration {
+    HorizonDeclaration {
         finding_key: key.clone(),
-        horizon: Some(WireHorizon {
+        horizon: HorizonBlock {
             class,
             basis_id: Some(basis_id.into()),
             basis_hash: Some(basis_hash.into()),
             expiry: Some(expiry),
-        }),
-        extras: serde_json::Value::Null,
+        },
     }
 }
 
@@ -156,19 +159,19 @@ fn tolerated_active_continues_to_defer_before_expiry() {
     let expiry = Utc.with_ymd_and_hms(2026, 4, 23, 16, 0, 0).unwrap();
     let t_mid = Utc.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
 
-    let receipt = receipt_with_timed_horizon(
+    let declaration = declaration_with_timed_horizon(
         &key,
         "maintenance-window-042",
         "sha256:basis-abc",
         HorizonClass::Hours,
         expiry,
     );
-    let governor = FixtureGovernorSource::from_receipts(vec![receipt]);
+    let policy = FixtureHorizonPolicySource::from_declarations(vec![declaration]);
 
     let input = capture_input_for(&key, t0);
     let phase_a = reconciliation_phase_for(&input.input_id, t0);
     let outcomes_a =
-        process_horizon(&phase_a, std::slice::from_ref(&input), &governor, &store, t0).unwrap();
+        process_horizon(&phase_a, std::slice::from_ref(&input), &policy, &store, t0).unwrap();
     assert_eq!(outcomes_a.len(), 1);
     assert!(matches!(outcomes_a[0].action, HorizonAction::Defer { .. }));
     apply_horizon_outcomes(&outcomes_a, &store, "run_a", t0).unwrap();
@@ -181,7 +184,7 @@ fn tolerated_active_continues_to_defer_before_expiry() {
     let outcomes_b = process_horizon(
         &phase_b,
         std::slice::from_ref(&input),
-        &governor,
+        &policy,
         &store,
         t_mid,
     )
@@ -223,19 +226,19 @@ fn expired_tolerance_escalates_with_prior_lineage() {
     let expiry = Utc.with_ymd_and_hms(2026, 4, 23, 16, 0, 0).unwrap();
     let t_past = Utc.with_ymd_and_hms(2026, 4, 23, 17, 0, 0).unwrap();
 
-    let receipt = receipt_with_timed_horizon(
+    let declaration = declaration_with_timed_horizon(
         &key,
         "maintenance-window-042",
         "sha256:basis-abc",
         HorizonClass::Hours,
         expiry,
     );
-    let governor = FixtureGovernorSource::from_receipts(vec![receipt]);
+    let policy = FixtureHorizonPolicySource::from_declarations(vec![declaration]);
     let input = capture_input_for(&key, t0);
 
     let phase_a = reconciliation_phase_for(&input.input_id, t0);
     let outcomes_a =
-        process_horizon(&phase_a, std::slice::from_ref(&input), &governor, &store, t0).unwrap();
+        process_horizon(&phase_a, std::slice::from_ref(&input), &policy, &store, t0).unwrap();
     assert!(matches!(outcomes_a[0].action, HorizonAction::Defer { .. }));
     apply_horizon_outcomes(&outcomes_a, &store, "run_a", t0).unwrap();
 
@@ -243,7 +246,7 @@ fn expired_tolerance_escalates_with_prior_lineage() {
     let outcomes_b = process_horizon(
         &phase_b,
         std::slice::from_ref(&input),
-        &governor,
+        &policy,
         &store,
         t_past,
     )
@@ -282,7 +285,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let t_mid = Utc.with_ymd_and_hms(2026, 4, 23, 14, 0, 0).unwrap();
 
     // Run A: governor emits receipt under basis hash "old".
-    let governor_a = FixtureGovernorSource::from_receipts(vec![receipt_with_timed_horizon(
+    let policy_a = FixtureHorizonPolicySource::from_declarations(vec![declaration_with_timed_horizon(
         &key,
         "basis-old",
         "sha256:hash-old",
@@ -292,7 +295,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let input = capture_input_for(&key, t0);
     let phase_a = reconciliation_phase_for(&input.input_id, t0);
     let outcomes_a =
-        process_horizon(&phase_a, std::slice::from_ref(&input), &governor_a, &store, t0).unwrap();
+        process_horizon(&phase_a, std::slice::from_ref(&input), &policy_a, &store, t0).unwrap();
     apply_horizon_outcomes(&outcomes_a, &store, "run_a", t0).unwrap();
     assert_eq!(
         store.load_tolerance(&key).unwrap().unwrap().basis_hash,
@@ -301,7 +304,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
 
     // Run B: governor now emits the same finding with a new basis
     // hash. Expiry identical, still in the future.
-    let governor_b = FixtureGovernorSource::from_receipts(vec![receipt_with_timed_horizon(
+    let policy_b = FixtureHorizonPolicySource::from_declarations(vec![declaration_with_timed_horizon(
         &key,
         "basis-new",
         "sha256:hash-new",
@@ -312,7 +315,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let outcomes_b = process_horizon(
         &phase_b,
         std::slice::from_ref(&input),
-        &governor_b,
+        &policy_b,
         &store,
         t_mid,
     )
@@ -351,12 +354,12 @@ fn fresh_arrival_fail_closes_to_act_on_verdict() {
     // No tolerance record pre-exists. Governor has no receipt for
     // this finding (simulates "no horizon declared").
     assert!(store.load_tolerance(&key).unwrap().is_none());
-    let governor = FixtureGovernorSource::from_receipts(vec![]);
+    let policy = FixtureHorizonPolicySource::from_declarations(vec![]);
 
     let input = capture_input_for(&key, t);
     let phase = reconciliation_phase_for(&input.input_id, t);
     let outcomes =
-        process_horizon(&phase, std::slice::from_ref(&input), &governor, &store, t).unwrap();
+        process_horizon(&phase, std::slice::from_ref(&input), &policy, &store, t).unwrap();
     match &outcomes[0].action {
         HorizonAction::ActOnVerdict { reason } => {
             assert_eq!(
@@ -410,22 +413,22 @@ fn four_way_distinction_is_observable_end_to_end() {
 
     // Governor at run A: emits receipts for the three that will
     // start under tolerance. The "fresh" finding has no receipt.
-    let governor_a = FixtureGovernorSource::from_receipts(vec![
-        receipt_with_timed_horizon(
+    let policy_a = FixtureHorizonPolicySource::from_declarations(vec![
+        declaration_with_timed_horizon(
             &k_active,
             "bw-active",
             "sha256:active-1",
             HorizonClass::Hours,
             expiry,
         ),
-        receipt_with_timed_horizon(
+        declaration_with_timed_horizon(
             &k_expired,
             "bw-expired",
             "sha256:expired-1",
             HorizonClass::Hours,
             expiry,
         ),
-        receipt_with_timed_horizon(
+        declaration_with_timed_horizon(
             &k_invalid,
             "bw-invalid",
             "sha256:invalid-old",
@@ -444,7 +447,7 @@ fn four_way_distinction_is_observable_end_to_end() {
         let outcomes = process_horizon(
             &phase,
             std::slice::from_ref(input),
-            &governor_a,
+            &policy_a,
             &store,
             t0,
         )
@@ -460,22 +463,22 @@ fn four_way_distinction_is_observable_end_to_end() {
     // Governor at run B: rotates the basis on `invalid` (same
     // expiry); leaves `active` and `expired` receipts unchanged;
     // still no receipt for `fresh`.
-    let governor_b = FixtureGovernorSource::from_receipts(vec![
-        receipt_with_timed_horizon(
+    let policy_b = FixtureHorizonPolicySource::from_declarations(vec![
+        declaration_with_timed_horizon(
             &k_active,
             "bw-active",
             "sha256:active-1",
             HorizonClass::Hours,
             expiry,
         ),
-        receipt_with_timed_horizon(
+        declaration_with_timed_horizon(
             &k_expired,
             "bw-expired",
             "sha256:expired-1",
             HorizonClass::Hours,
             expiry,
         ),
-        receipt_with_timed_horizon(
+        declaration_with_timed_horizon(
             &k_invalid,
             "bw-invalid-new",
             "sha256:invalid-new",
@@ -498,7 +501,7 @@ fn four_way_distinction_is_observable_end_to_end() {
         let outcomes = process_horizon(
             &phase,
             std::slice::from_ref(input),
-            &governor_b,
+            &policy_b,
             &store,
             now,
         )

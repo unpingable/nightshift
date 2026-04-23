@@ -1,30 +1,41 @@
 //! Horizon processing phase.
 //!
 //! Runs after the reconciler's `adjudicate`. For each admissible
-//! NQ-backed input, consults `GovernorSource` for a gate receipt,
-//! consults the store for any prior tolerance grant, and computes a
-//! `HorizonAction` via `horizon::action_for`. The pipeline then
-//! applies the decisions to the store (write on `Defer`; clear on
-//! the escalate variants).
+//! NQ-backed input, consults `HorizonPolicySource` for a horizon
+//! declaration, consults the store for any prior tolerance grant,
+//! and computes a `HorizonAction` via `horizon::action_for`. The
+//! pipeline then applies the decisions to the store (write on
+//! `Defer`; clear on the escalate variants).
 //!
 //! Kept separate from `reconciler.rs` so that module's `adjudicate`
-//! remains pure. Acquisition of receipts + prior tolerance lives
-//! here because it's the same failure-mode family as the NQ
-//! acquisition (one live read per input, fixed by a single `now`
-//! timestamp), but it touches two different sources that the
-//! pure adjudicator has no business knowing about.
+//! remains pure. Acquisition of declarations + prior tolerance
+//! lives here because it's the same failure-mode family as the NQ
+//! acquisition (one local read per input, fixed by a single `now`
+//! timestamp), but it touches two different sources that the pure
+//! adjudicator has no business knowing about.
 //!
-//! Phase A scope: only the four-way A5 distinction. Phase B will
-//! extend this path with real Governor RPC (replacing
-//! `FixtureGovernorSource`) and receipt-emission plumbing.
+//! # Invariant: horizon is producer-local
+//!
+//! Horizon is **declared by Night Shift**, not fetched from
+//! Governor. `HorizonPolicySource` is an NS-internal surface
+//! (agenda policy, operator declarations, tests). Governor is the
+//! archivist — Phase B will forward NS's tolerance decisions to
+//! Governor via `record_receipt` so the audit trail exists, but
+//! Governor is never the lookup source at reconcile time. See
+//! `horizon_policy.rs` module header for the full rationale.
+//!
+//! Phase A scope: only the four-way A5 distinction, fixture-only.
+//! Phase B adds the real Governor RPC client for receipt emission,
+//! `check_policy`, and `authorize_transition` — orthogonal to this
+//! module's horizon decision logic.
 
 use chrono::{DateTime, Utc};
 
 use crate::bundle::{CaptureInput, ReconciliationPhase, ReconciliationResult};
 use crate::errors::Result;
 use crate::finding::FindingKey;
-use crate::governor::GovernorSource;
 use crate::horizon::{action_for, HorizonAction};
+use crate::horizon_policy::HorizonPolicySource;
 use crate::store::{Store, ToleranceRecord};
 
 /// One horizon decision for one finding in one run, after acquiring
@@ -56,12 +67,12 @@ impl HorizonOutcome {
 }
 
 /// For a single reconciled result, compute the horizon outcome.
-/// Pure over (input, result, receipt, prior, now) — the acquisition
-/// of receipt + prior happens in the caller.
+/// Pure over (input, result, declaration, prior, now) — the
+/// acquisition of declaration + prior happens in the caller.
 fn outcome_for_result(
     input: &CaptureInput,
     _result: &ReconciliationResult,
-    governor: &dyn GovernorSource,
+    policy: &dyn HorizonPolicySource,
     store: &dyn Store,
     now: DateTime<Utc>,
 ) -> Result<Option<HorizonOutcome>> {
@@ -71,8 +82,7 @@ fn outcome_for_result(
     let Some(finding_key) = FindingKey::from_nq_input_id(&input.input_id) else {
         return Ok(None);
     };
-    let receipt = governor.fetch_gate_receipt(&finding_key)?;
-    let block = receipt.as_ref().and_then(|r| r.horizon_block());
+    let block = policy.horizon_for(&finding_key)?;
     let prior_record = store.load_tolerance(&finding_key)?;
     let prior = prior_record.as_ref().map(|r| r.to_prior_tolerance());
     let action = action_for(block.as_ref(), now, prior.as_ref());
@@ -84,8 +94,9 @@ fn outcome_for_result(
 }
 
 /// Process the horizon phase for a reconciled run. Iterates the
-/// adjudicated results, pulls each NQ-backed input's gate receipt
-/// and prior tolerance, and produces a `HorizonOutcome` per input.
+/// adjudicated results, pulls each NQ-backed input's horizon
+/// declaration and prior tolerance, and produces a
+/// `HorizonOutcome` per input.
 ///
 /// Non-NQ inputs and inputs whose finding_key cannot be parsed are
 /// skipped (no outcome emitted). The `now` timestamp should be the
@@ -95,7 +106,7 @@ fn outcome_for_result(
 pub fn process_horizon(
     phase: &ReconciliationPhase,
     capture_inputs: &[CaptureInput],
-    governor: &dyn GovernorSource,
+    policy: &dyn HorizonPolicySource,
     store: &dyn Store,
     now: DateTime<Utc>,
 ) -> Result<Vec<HorizonOutcome>> {
@@ -108,7 +119,7 @@ pub fn process_horizon(
         let Some(input) = input_by_id.get(result.input_id.as_str()) else {
             continue;
         };
-        if let Some(outcome) = outcome_for_result(input, result, governor, store, now)? {
+        if let Some(outcome) = outcome_for_result(input, result, policy, store, now)? {
             outcomes.push(outcome);
         }
     }
@@ -180,8 +191,8 @@ mod tests {
         ReconciliationSummary, ValidFor,
     };
     use crate::finding::{EvidenceState, FindingSnapshot, Severity};
-    use crate::governor::{FixtureGovernorSource, GateReceipt, WireHorizon};
-    use crate::horizon::HorizonClass;
+    use crate::horizon::{HorizonBlock, HorizonClass};
+    use crate::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
     use crate::store::sqlite::SqliteStore;
     use chrono::TimeZone;
 
@@ -252,39 +263,36 @@ mod tests {
         }
     }
 
-    fn receipt_for(
+    fn declaration_for(
         key: &FindingKey,
         class: HorizonClass,
         basis_id: &str,
         basis_hash: &str,
         expiry: Option<DateTime<Utc>>,
-    ) -> GateReceipt {
-        GateReceipt {
-            receipt_id: format!("r_{basis_id}"),
-            verdict: "allow".into(),
+    ) -> HorizonDeclaration {
+        HorizonDeclaration {
             finding_key: key.clone(),
-            horizon: Some(WireHorizon {
+            horizon: HorizonBlock {
                 class,
                 basis_id: Some(basis_id.into()),
                 basis_hash: Some(basis_hash.into()),
                 expiry,
-            }),
-            extras: serde_json::Value::Null,
+            },
         }
     }
 
     // --- outcome-of-one-finding tests ---
 
     #[test]
-    fn no_receipt_produces_act_on_verdict_missing() {
+    fn no_declaration_produces_act_on_verdict_missing() {
         let store = SqliteStore::open_in_memory().unwrap();
         let key = fk("wal_bloat", "host:/db");
         let input = input_for(&key, "hash-1");
         let result = result_for(&input.input_id);
         let phase = phase_with(vec![result], Utc::now());
-        let governor = FixtureGovernorSource::from_receipts(vec![]);
+        let policy = FixtureHorizonPolicySource::from_declarations(vec![]);
         let outcomes =
-            process_horizon(&phase, &[input], &governor, &store, Utc::now()).unwrap();
+            process_horizon(&phase, &[input], &policy, &store, Utc::now()).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert!(matches!(
             outcomes[0].action,
@@ -301,14 +309,14 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
         let expiry = Utc.with_ymd_and_hms(2026, 4, 23, 16, 0, 0).unwrap();
         let phase = phase_with(vec![result], now);
-        let governor = FixtureGovernorSource::from_receipts(vec![receipt_for(
+        let policy = FixtureHorizonPolicySource::from_declarations(vec![declaration_for(
             &key,
             HorizonClass::Hours,
             "basis-abc",
             "hash-abc",
             Some(expiry),
         )]);
-        let outcomes = process_horizon(&phase, &[input], &governor, &store, now).unwrap();
+        let outcomes = process_horizon(&phase, &[input], &policy, &store, now).unwrap();
         assert!(matches!(outcomes[0].action, HorizonAction::Defer { .. }));
     }
 
@@ -319,9 +327,9 @@ mod tests {
         input.source = "continuity".into();
         let result = result_for(&input.input_id);
         let phase = phase_with(vec![result], Utc::now());
-        let governor = FixtureGovernorSource::from_receipts(vec![]);
+        let policy = FixtureHorizonPolicySource::from_declarations(vec![]);
         let outcomes =
-            process_horizon(&phase, &[input], &governor, &store, Utc::now()).unwrap();
+            process_horizon(&phase, &[input], &policy, &store, Utc::now()).unwrap();
         assert!(outcomes.is_empty(), "non-nq inputs must not produce outcomes");
     }
 
