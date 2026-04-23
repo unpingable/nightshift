@@ -30,21 +30,30 @@
 //! module's horizon decision logic.
 
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 
 use crate::bundle::{CaptureInput, ReconciliationPhase, ReconciliationResult};
 use crate::errors::Result;
 use crate::finding::FindingKey;
+use crate::governor_client::{EventKind, GovernorClient, RecordReceiptRequest};
 use crate::horizon::{action_for, HorizonAction};
 use crate::horizon_policy::HorizonPolicySource;
 use crate::store::{Store, ToleranceRecord};
 
 /// One horizon decision for one finding in one run, after acquiring
-/// the gate receipt and any prior tolerance grant.
+/// the horizon declaration and any prior tolerance grant.
+///
+/// `evidence_hash` is the reconciled evidence hash from the input —
+/// carried through so the Governor receipt on `Defer` can cite the
+/// evidence NS evaluated the horizon against. None for inputs the
+/// reconciler produced without a current evidence hash (e.g. Stale
+/// verdicts).
 #[derive(Debug, Clone)]
 pub struct HorizonOutcome {
     pub finding_key: FindingKey,
     pub input_id: String,
     pub action: HorizonAction,
+    pub evidence_hash: Option<String>,
 }
 
 impl HorizonOutcome {
@@ -71,7 +80,7 @@ impl HorizonOutcome {
 /// acquisition of declaration + prior happens in the caller.
 fn outcome_for_result(
     input: &CaptureInput,
-    _result: &ReconciliationResult,
+    result: &ReconciliationResult,
     policy: &dyn HorizonPolicySource,
     store: &dyn Store,
     now: DateTime<Utc>,
@@ -86,10 +95,19 @@ fn outcome_for_result(
     let prior_record = store.load_tolerance(&finding_key)?;
     let prior = prior_record.as_ref().map(|r| r.to_prior_tolerance());
     let action = action_for(block.as_ref(), now, prior.as_ref());
+    // Prefer the reconciled current evidence hash; fall back to
+    // captured input hash so Defer outcomes always carry something
+    // citable into the Governor receipt.
+    let evidence_hash = result
+        .current_evidence_hash
+        .clone()
+        .or_else(|| result.previous_evidence_hash.clone())
+        .or_else(|| Some(input.evidence_hash.clone()));
     Ok(Some(HorizonOutcome {
         finding_key,
         input_id: input.input_id.clone(),
         action,
+        evidence_hash,
     }))
 }
 
@@ -126,21 +144,47 @@ pub fn process_horizon(
     Ok(outcomes)
 }
 
-/// Apply horizon outcomes to the store.
+/// sha256 of a finding-key string, formatted as Governor expects
+/// (`sha256:<64 hex>`).
+fn subject_hash_for(key: &FindingKey) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_string().as_bytes());
+    let digest = hasher.finalize();
+    format!("sha256:{}", hex::encode(digest))
+}
+
+/// Zero-hash used when the reconciler produced a `Defer` outcome
+/// without a current evidence hash (unexpected in practice, but
+/// the Governor receipt payload must not be left empty — Governor
+/// validates non-empty evidence_hash).
+const ZERO_EVIDENCE_HASH: &str =
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+/// Apply horizon outcomes to the store and to Governor.
 ///
-/// `Defer` → write a `ToleranceRecord` (upsert) so the next run
-/// sees it as `PriorTolerance`. All other outcomes that involve a
-/// prior record (the two escalate variants) → clear the record so
-/// a later run doesn't re-consume the stale grant. `ActOnVerdict`
-/// and the render-only variants → no-op.
+/// Store effects:
+///   `Defer` → write a `ToleranceRecord` (upsert) so the next run
+///   sees it as `PriorTolerance`. The two escalate variants →
+///   clear the tolerance record so a later run doesn't re-consume
+///   the stale grant. `ActOnVerdict` and the render-only variants
+///   → no store change.
 ///
-/// `run_id` is recorded on new tolerance records as the grant's
-/// provenance. `granted_at` is recorded as-is (the caller should
-/// pass wall-clock now or the same reconcile reference time).
+/// Governor effects (B.1 scope — record_receipt only):
+///   `Defer` → emit an `action.authorized` event carrying the
+///   horizon declaration so Governor's receipt chain archives the
+///   tolerance grant. Other outcomes do not emit receipts in B.1;
+///   B.2+ will add `escalation.paged` on the escalate variants and
+///   `action.authorized` wiring at real action-propose points.
+///
+/// `run_id` and `agenda_id` identify the emitting run on both the
+/// tolerance record and any receipts. `granted_at` is used as the
+/// tolerance record's grant timestamp.
 pub fn apply_horizon_outcomes(
     outcomes: &[HorizonOutcome],
     store: &dyn Store,
+    governor: &dyn GovernorClient,
     run_id: &str,
+    agenda_id: &str,
     granted_at: DateTime<Utc>,
 ) -> Result<()> {
     for outcome in outcomes {
@@ -161,6 +205,31 @@ pub fn apply_horizon_outcomes(
                     granted_in_run_id: run_id.into(),
                 };
                 store.save_tolerance(&record)?;
+
+                // Forward the deferral to Governor as an authority
+                // receipt. The horizon block rides along unchanged;
+                // Governor is the archivist here, not the decider.
+                let block = crate::horizon::HorizonBlock {
+                    class: *class,
+                    basis_id: Some(basis_id.clone()),
+                    basis_hash: Some(basis_hash.clone()),
+                    expiry: Some(*until),
+                };
+                let request = RecordReceiptRequest {
+                    event_kind: EventKind::ActionAuthorized,
+                    run_id: run_id.into(),
+                    agenda_id: agenda_id.into(),
+                    subject_hash: subject_hash_for(&outcome.finding_key),
+                    evidence_hash: outcome
+                        .evidence_hash
+                        .clone()
+                        .unwrap_or_else(|| ZERO_EVIDENCE_HASH.into()),
+                    policy_hash: basis_hash.clone(),
+                    from_level: None,
+                    to_level: None,
+                    horizon: Some(block),
+                };
+                governor.record_receipt(&request)?;
             }
             HorizonAction::EscalateExpired { .. }
             | HorizonAction::EscalateBasisInvalidated { .. } => {
@@ -170,13 +239,10 @@ pub fn apply_horizon_outcomes(
             | HorizonAction::RenderNoIntervene { .. }
             | HorizonAction::RenderHolding { .. } => {
                 // No-op: no prior record to create or clear on these
-                // paths. If a prior record exists and the current
-                // receipt is Missing/None/Now/ObserveOnly/Indefinite,
-                // it means the producer stopped declaring a timed
-                // tolerance — Phase A leaves such records in place
-                // (they'll expire naturally or be cleared on the
-                // next basis-mismatched timed receipt). Phase B can
-                // tighten this if needed.
+                // paths, and no Governor event to emit in B.1.
+                // Phase B.2 can extend: escalation.paged on the
+                // escalate variants, action.authorized from real
+                // propose-time check_policy elsewhere.
             }
         }
     }
@@ -191,10 +257,16 @@ mod tests {
         ReconciliationSummary, ValidFor,
     };
     use crate::finding::{EvidenceState, FindingSnapshot, Severity};
+    use crate::governor_client::FixtureGovernorClient;
     use crate::horizon::{HorizonBlock, HorizonClass};
     use crate::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
     use crate::store::sqlite::SqliteStore;
     use chrono::TimeZone;
+
+    /// Handy sentinel for tests that don't care about the specific
+    /// hash value — the apply layer treats `evidence_hash` as opaque.
+    const FAKE_EVIDENCE_HASH: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
     fn fk(detector: &str, subject: &str) -> FindingKey {
         FindingKey {
@@ -338,6 +410,7 @@ mod tests {
     #[test]
     fn apply_defer_writes_tolerance_record() {
         let store = SqliteStore::open_in_memory().unwrap();
+        let governor = FixtureGovernorClient::new();
         let key = fk("wal_bloat", "host:/db");
         let expiry = Utc.with_ymd_and_hms(2026, 4, 23, 16, 0, 0).unwrap();
         let now = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
@@ -350,8 +423,9 @@ mod tests {
                 basis_hash: "hash-abc".into(),
                 class: HorizonClass::Hours,
             },
+            evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
         };
-        apply_horizon_outcomes(&[outcome], &store, "run_a", now).unwrap();
+        apply_horizon_outcomes(&[outcome], &store, &governor, "run_a", "agenda_x", now).unwrap();
         let record = store.load_tolerance(&key).unwrap().unwrap();
         assert_eq!(record.basis_id, "basis-abc");
         assert_eq!(record.basis_hash, "hash-abc");
@@ -389,17 +463,26 @@ mod tests {
                     expired_at: expiry,
                 },
             },
+            evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
         };
+        let governor = FixtureGovernorClient::new();
         apply_horizon_outcomes(
             &[outcome],
             &store,
+            &governor,
             "run_b",
+            "agenda_x",
             Utc.with_ymd_and_hms(2026, 4, 23, 17, 0, 0).unwrap(),
         )
         .unwrap();
         assert!(
             store.load_tolerance(&key).unwrap().is_none(),
             "EscalateExpired must clear prior tolerance"
+        );
+        assert_eq!(
+            governor.call_count(),
+            0,
+            "EscalateExpired must not emit a Governor receipt in B.1"
         );
     }
 
@@ -432,17 +515,33 @@ mod tests {
                 },
                 current_basis_hash: "hash-new".into(),
             },
+            evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
         };
-        apply_horizon_outcomes(&[outcome], &store, "run_b", Utc::now()).unwrap();
+        let governor = FixtureGovernorClient::new();
+        apply_horizon_outcomes(
+            &[outcome],
+            &store,
+            &governor,
+            "run_b",
+            "agenda_x",
+            Utc::now(),
+        )
+        .unwrap();
         assert!(
             store.load_tolerance(&key).unwrap().is_none(),
             "EscalateBasisInvalidated must clear prior tolerance"
+        );
+        assert_eq!(
+            governor.call_count(),
+            0,
+            "EscalateBasisInvalidated must not emit a Governor receipt in B.1"
         );
     }
 
     #[test]
     fn apply_act_on_verdict_is_noop() {
         let store = SqliteStore::open_in_memory().unwrap();
+        let governor = FixtureGovernorClient::new();
         let key = fk("wal_bloat", "host:/db");
         let outcome = HorizonOutcome {
             finding_key: key.clone(),
@@ -450,9 +549,19 @@ mod tests {
             action: HorizonAction::ActOnVerdict {
                 reason: crate::horizon::ActReason::Missing,
             },
+            evidence_hash: None,
         };
-        apply_horizon_outcomes(&[outcome], &store, "run_x", Utc::now()).unwrap();
+        apply_horizon_outcomes(
+            &[outcome],
+            &store,
+            &governor,
+            "run_x",
+            "agenda_x",
+            Utc::now(),
+        )
+        .unwrap();
         assert!(store.load_tolerance(&key).unwrap().is_none());
+        assert_eq!(governor.call_count(), 0);
     }
 
     #[test]
@@ -466,6 +575,7 @@ mod tests {
                 basis_hash: "h".into(),
                 class: HorizonClass::Hours,
             },
+            evidence_hash: None,
         };
         assert!(defer.requires_tolerance_write());
         assert!(!defer.requires_tolerance_clear());
@@ -485,6 +595,7 @@ mod tests {
             action: HorizonAction::EscalateExpired {
                 prior: prior.clone(),
             },
+            evidence_hash: None,
         };
         let invalidated = HorizonOutcome {
             finding_key: fk("d", "s"),
@@ -493,10 +604,84 @@ mod tests {
                 prior,
                 current_basis_hash: "new".into(),
             },
+            evidence_hash: None,
         };
         assert!(expired.requires_tolerance_clear());
         assert!(invalidated.requires_tolerance_clear());
         assert!(!expired.requires_tolerance_write());
         assert!(!invalidated.requires_tolerance_write());
+    }
+
+    /// Phase B.1 core test: Defer emits a Governor `record_receipt`
+    /// with `event_kind=action.authorized` and the horizon block
+    /// attached. This is the audit trail.
+    #[test]
+    fn defer_emits_record_receipt_with_horizon() {
+        use crate::governor_client::EventKind;
+        let store = SqliteStore::open_in_memory().unwrap();
+        let governor = FixtureGovernorClient::new();
+        let key = fk("wal_bloat", "host:/db");
+        let expiry = Utc.with_ymd_and_hms(2026, 4, 23, 16, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
+        let outcome = HorizonOutcome {
+            finding_key: key.clone(),
+            input_id: "nq:finding:wal_bloat:host:/db".into(),
+            action: HorizonAction::Defer {
+                until: expiry,
+                basis_id: "maintenance-window-042".into(),
+                basis_hash: "sha256:basis-abc".into(),
+                class: HorizonClass::Hours,
+            },
+            evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
+        };
+        apply_horizon_outcomes(
+            &[outcome],
+            &store,
+            &governor,
+            "run_a",
+            "wal-bloat-review",
+            now,
+        )
+        .unwrap();
+
+        let calls = governor.recorded_calls();
+        assert_eq!(calls.len(), 1, "Defer must emit exactly one receipt");
+        let req = &calls[0];
+        assert_eq!(req.event_kind, EventKind::ActionAuthorized);
+        assert_eq!(req.run_id, "run_a");
+        assert_eq!(req.agenda_id, "wal-bloat-review");
+        assert_eq!(req.evidence_hash, FAKE_EVIDENCE_HASH);
+        assert_eq!(req.policy_hash, "sha256:basis-abc");
+        let block = req.horizon.as_ref().expect("horizon must be attached");
+        assert_eq!(block.class, HorizonClass::Hours);
+        assert_eq!(block.basis_id.as_deref(), Some("maintenance-window-042"));
+        assert_eq!(block.basis_hash.as_deref(), Some("sha256:basis-abc"));
+        assert_eq!(block.expiry, Some(expiry));
+    }
+
+    #[test]
+    fn defer_subject_hash_is_sha256_of_finding_key_string() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let governor = FixtureGovernorClient::new();
+        let key = fk("wal_bloat", "host-x:/db");
+        let expiry = Utc::now() + chrono::Duration::hours(4);
+        let outcome = HorizonOutcome {
+            finding_key: key.clone(),
+            input_id: "nq:finding:wal_bloat:host-x:/db".into(),
+            action: HorizonAction::Defer {
+                until: expiry,
+                basis_id: "b".into(),
+                basis_hash: "sha256:h".into(),
+                class: HorizonClass::Hours,
+            },
+            evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
+        };
+        apply_horizon_outcomes(&[outcome], &store, &governor, "r", "a", Utc::now()).unwrap();
+        let req = &governor.recorded_calls()[0];
+        // Compute expected: sha256 of key.as_string()
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_string().as_bytes());
+        let expected = format!("sha256:{}", hex::encode(hasher.finalize()));
+        assert_eq!(req.subject_hash, expected);
     }
 }

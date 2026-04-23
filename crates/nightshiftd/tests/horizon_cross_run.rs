@@ -45,11 +45,16 @@ use nightshiftd::bundle::{
     ReconciliationResult, ReconciliationSummary, RelianceClass, RelianceScope, ValidFor,
 };
 use nightshiftd::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity};
+use nightshiftd::governor_client::{EventKind, FixtureGovernorClient};
 use nightshiftd::horizon::{HorizonAction, HorizonBlock, HorizonClass};
 use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
 use nightshiftd::reconcile_horizon::{apply_horizon_outcomes, process_horizon};
 use nightshiftd::store::sqlite::SqliteStore;
 use nightshiftd::store::Store;
+
+/// Stable agenda id used across the acceptance tests. Governor
+/// validates the field is non-empty.
+const TEST_AGENDA: &str = "wal-bloat-review";
 
 // ---- helpers ----
 
@@ -153,6 +158,7 @@ fn declaration_with_timed_horizon(
 #[test]
 fn tolerated_active_continues_to_defer_before_expiry() {
     let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
     let key = finding_key();
 
     let t0 = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
@@ -174,7 +180,7 @@ fn tolerated_active_continues_to_defer_before_expiry() {
         process_horizon(&phase_a, std::slice::from_ref(&input), &policy, &store, t0).unwrap();
     assert_eq!(outcomes_a.len(), 1);
     assert!(matches!(outcomes_a[0].action, HorizonAction::Defer { .. }));
-    apply_horizon_outcomes(&outcomes_a, &store, "run_a", t0).unwrap();
+    apply_horizon_outcomes(&outcomes_a, &store, &governor, "run_a", TEST_AGENDA, t0).unwrap();
     assert!(
         store.load_tolerance(&key).unwrap().is_some(),
         "run A must write tolerance record"
@@ -204,11 +210,38 @@ fn tolerated_active_continues_to_defer_before_expiry() {
         }
         other => panic!("run B expected Defer (tolerated_active), got {other:?}"),
     }
-    apply_horizon_outcomes(&outcomes_b, &store, "run_b", t_mid).unwrap();
+    apply_horizon_outcomes(&outcomes_b, &store, &governor, "run_b", TEST_AGENDA, t_mid).unwrap();
     assert!(
         store.load_tolerance(&key).unwrap().is_some(),
         "tolerance record must persist through tolerated_active case"
     );
+
+    // Both Defer outcomes should have emitted record_receipt with
+    // the horizon attached — this is the Phase B.1 audit trail.
+    let calls = governor.recorded_calls();
+    assert_eq!(
+        calls.len(),
+        2,
+        "each Defer must emit one record_receipt (run A + run B)"
+    );
+    for (i, call) in calls.iter().enumerate() {
+        assert_eq!(call.event_kind, EventKind::ActionAuthorized, "call {i}");
+        assert_eq!(call.agenda_id, TEST_AGENDA, "call {i}");
+        let block = call.horizon.as_ref().expect("horizon must be attached");
+        assert_eq!(block.class, HorizonClass::Hours, "call {i}");
+        assert_eq!(
+            block.basis_id.as_deref(),
+            Some("maintenance-window-042"),
+            "call {i}"
+        );
+        assert_eq!(
+            block.basis_hash.as_deref(),
+            Some("sha256:basis-abc"),
+            "call {i}"
+        );
+    }
+    assert_eq!(calls[0].run_id, "run_a");
+    assert_eq!(calls[1].run_id, "run_b");
 }
 
 /// **Case 2: expired_tolerance.**
@@ -220,6 +253,7 @@ fn tolerated_active_continues_to_defer_before_expiry() {
 #[test]
 fn expired_tolerance_escalates_with_prior_lineage() {
     let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
     let key = finding_key();
 
     let t0 = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
@@ -240,7 +274,7 @@ fn expired_tolerance_escalates_with_prior_lineage() {
     let outcomes_a =
         process_horizon(&phase_a, std::slice::from_ref(&input), &policy, &store, t0).unwrap();
     assert!(matches!(outcomes_a[0].action, HorizonAction::Defer { .. }));
-    apply_horizon_outcomes(&outcomes_a, &store, "run_a", t0).unwrap();
+    apply_horizon_outcomes(&outcomes_a, &store, &governor, "run_a", TEST_AGENDA, t0).unwrap();
 
     let phase_b = reconciliation_phase_for(&input.input_id, t_past);
     let outcomes_b = process_horizon(
@@ -262,11 +296,20 @@ fn expired_tolerance_escalates_with_prior_lineage() {
             "run B expected EscalateExpired carrying prior lineage, got {other:?}"
         ),
     }
-    apply_horizon_outcomes(&outcomes_b, &store, "run_b", t_past).unwrap();
+    apply_horizon_outcomes(&outcomes_b, &store, &governor, "run_b", TEST_AGENDA, t_past).unwrap();
     assert!(
         store.load_tolerance(&key).unwrap().is_none(),
         "EscalateExpired must clear the consumed tolerance record"
     );
+
+    // Only run A's Defer should emit a receipt. Run B's
+    // EscalateExpired is not a record_receipt event in B.1.
+    assert_eq!(
+        governor.call_count(),
+        1,
+        "only run A's Defer emits a receipt; EscalateExpired is silent in B.1"
+    );
+    assert_eq!(governor.recorded_calls()[0].run_id, "run_a");
 }
 
 /// **Case 3: basis_invalidated.**
@@ -278,6 +321,7 @@ fn expired_tolerance_escalates_with_prior_lineage() {
 #[test]
 fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
     let key = finding_key();
 
     let t0 = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
@@ -296,7 +340,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let phase_a = reconciliation_phase_for(&input.input_id, t0);
     let outcomes_a =
         process_horizon(&phase_a, std::slice::from_ref(&input), &policy_a, &store, t0).unwrap();
-    apply_horizon_outcomes(&outcomes_a, &store, "run_a", t0).unwrap();
+    apply_horizon_outcomes(&outcomes_a, &store, &governor, "run_a", TEST_AGENDA, t0).unwrap();
     assert_eq!(
         store.load_tolerance(&key).unwrap().unwrap().basis_hash,
         "sha256:hash-old"
@@ -333,11 +377,15 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
             "run B expected EscalateBasisInvalidated, got {other:?}"
         ),
     }
-    apply_horizon_outcomes(&outcomes_b, &store, "run_b", t_mid).unwrap();
+    apply_horizon_outcomes(&outcomes_b, &store, &governor, "run_b", TEST_AGENDA, t_mid).unwrap();
     assert!(
         store.load_tolerance(&key).unwrap().is_none(),
         "EscalateBasisInvalidated must clear the invalidated record"
     );
+    // Only run A's Defer emits a receipt; EscalateBasisInvalidated
+    // is silent in B.1 (like EscalateExpired).
+    assert_eq!(governor.call_count(), 1);
+    assert_eq!(governor.recorded_calls()[0].run_id, "run_a");
 }
 
 /// **Case 4: fresh_arrival.**
@@ -348,6 +396,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
 #[test]
 fn fresh_arrival_fail_closes_to_act_on_verdict() {
     let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
     let key = finding_key();
     let t = Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap();
 
@@ -370,10 +419,15 @@ fn fresh_arrival_fail_closes_to_act_on_verdict() {
         }
         other => panic!("fresh_arrival expected ActOnVerdict(Missing), got {other:?}"),
     }
-    apply_horizon_outcomes(&outcomes, &store, "run_b", t).unwrap();
+    apply_horizon_outcomes(&outcomes, &store, &governor, "run_b", TEST_AGENDA, t).unwrap();
     assert!(
         store.load_tolerance(&key).unwrap().is_none(),
         "fresh_arrival must never write a tolerance record"
+    );
+    assert_eq!(
+        governor.call_count(),
+        0,
+        "fresh_arrival must never emit a record_receipt (no tolerance declared)"
     );
 }
 
@@ -386,6 +440,7 @@ fn fresh_arrival_fail_closes_to_act_on_verdict() {
 #[test]
 fn four_way_distinction_is_observable_end_to_end() {
     let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
 
     let mk_key = |detector: &str, subject: &str| FindingKey {
         source: "nq".into(),
@@ -457,7 +512,7 @@ fn four_way_distinction_is_observable_end_to_end() {
             "run A for {name}: expected Defer, got {:?}",
             outcomes[0].action
         );
-        apply_horizon_outcomes(&outcomes, &store, "run_a", t0).unwrap();
+        apply_horizon_outcomes(&outcomes, &store, &governor, "run_a", TEST_AGENDA, t0).unwrap();
     }
 
     // Governor at run B: rotates the basis on `invalid` (same
@@ -515,7 +570,7 @@ fn four_way_distinction_is_observable_end_to_end() {
             HorizonAction::RenderHolding { .. } => "render_holding",
         };
         seen.push(format!("{name}={kind}"));
-        apply_horizon_outcomes(&outcomes, &store, "run_b", now).unwrap();
+        apply_horizon_outcomes(&outcomes, &store, &governor, "run_b", TEST_AGENDA, now).unwrap();
     }
 
     // The ordering + identity of outcomes is the proof: four
@@ -539,4 +594,33 @@ fn four_way_distinction_is_observable_end_to_end() {
     assert!(store.load_tolerance(&k_expired).unwrap().is_none());
     assert!(store.load_tolerance(&k_invalid).unwrap().is_none());
     assert!(store.load_tolerance(&k_fresh).unwrap().is_none());
+
+    // Governor-side audit trail: run A wrote three tolerance
+    // receipts (active, expired, invalid all deferred at t0). Run B
+    // wrote one (active re-defers). EscalateExpired,
+    // EscalateBasisInvalidated, and ActOnVerdict are silent in B.1.
+    // Total = 4.
+    let calls = governor.recorded_calls();
+    assert_eq!(
+        calls.len(),
+        4,
+        "three Defer receipts from run A + one from run B's tolerated_active"
+    );
+    for call in &calls {
+        assert_eq!(call.event_kind, EventKind::ActionAuthorized);
+        assert!(
+            call.horizon.is_some(),
+            "every Defer receipt must carry the horizon block"
+        );
+    }
+    assert_eq!(
+        calls.iter().filter(|c| c.run_id == "run_a").count(),
+        3,
+        "run A emits three Defer receipts"
+    );
+    assert_eq!(
+        calls.iter().filter(|c| c.run_id == "run_b").count(),
+        1,
+        "run B emits one Defer receipt (tolerated_active only)"
+    );
 }

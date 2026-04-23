@@ -9,6 +9,7 @@ pub mod bundle;
 pub mod coordination;
 pub mod errors;
 pub mod finding;
+pub mod governor_client;
 pub mod horizon;
 pub mod horizon_policy;
 pub mod ledger;

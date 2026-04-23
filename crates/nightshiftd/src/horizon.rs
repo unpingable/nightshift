@@ -98,6 +98,10 @@ impl HorizonClass {
 /// for the invariant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HorizonBlock {
+    /// On-wire as `"kind"` (Governor's contract field name, per
+    /// `agent_gov/src/governor/gate_receipt.py:HorizonBlock`).
+    /// Rust field stays `class` for internal ergonomics.
+    #[serde(rename = "kind")]
     pub class: HorizonClass,
     /// Required for `class != None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

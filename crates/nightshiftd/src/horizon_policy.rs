@@ -194,7 +194,7 @@ mod tests {
                         "subject": "labelwatch-host:/var/lib/db"
                     },
                     "horizon": {
-                        "class": "hours",
+                        "kind": "hours",
                         "basis_id": "basis-abc",
                         "basis_hash": "hash-123",
                         "expiry": "2026-04-23T20:00:00Z"
