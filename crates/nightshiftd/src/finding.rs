@@ -18,6 +18,21 @@ impl FindingKey {
     pub fn as_string(&self) -> String {
         format!("{}:{}:{}", self.source, self.detector, self.subject)
     }
+
+    /// Parse from the `input_id` format used in `CaptureInput` for
+    /// NQ-backed inputs: `"nq:finding:<detector>:<subject>"`. Returns
+    /// `None` for non-NQ or malformed ids. Source defaults to `"nq"`.
+    pub fn from_nq_input_id(id: &str) -> Option<Self> {
+        let parts: Vec<&str> = id.splitn(4, ':').collect();
+        match parts.as_slice() {
+            ["nq", "finding", detector, subject] => Some(FindingKey {
+                source: "nq".into(),
+                detector: (*detector).into(),
+                subject: (*subject).into(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

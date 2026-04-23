@@ -7,12 +7,14 @@
 
 pub mod sqlite;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agenda::Agenda;
 use crate::bundle::Bundle;
 use crate::errors::Result;
 use crate::finding::FindingKey;
+use crate::horizon::{HorizonClass, PriorTolerance};
 use crate::ledger::RunLedgerEvent;
 use crate::packet::Packet;
 
@@ -39,6 +41,43 @@ pub struct RunFilter {
     pub agenda_id: Option<String>,
     pub target_finding_key: Option<String>,
     pub limit: Option<usize>,
+}
+
+/// Persisted tolerance grant for one finding.
+///
+/// Written when the reconciler sees `HorizonAction::Defer` and the
+/// consumer must carry the grant forward to the next run. Read when
+/// a later run reconciles the same finding and needs to distinguish
+/// "previously tolerated, now expired" from "brand new incident"
+/// (the four-way A5 distinction).
+///
+/// Keyed by `FindingKey` because tolerance is a property of the
+/// finding across runs, not of any single run. `granted_in_run_id`
+/// is carried for diagnostics; it is not the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToleranceRecord {
+    pub finding_key: FindingKey,
+    pub basis_id: String,
+    pub basis_hash: String,
+    pub prior_class: HorizonClass,
+    pub expires_at: DateTime<Utc>,
+    pub granted_at: DateTime<Utc>,
+    pub granted_in_run_id: String,
+}
+
+impl ToleranceRecord {
+    /// Project the record down to the consumer-logic shape the
+    /// horizon module's `action_for` accepts. Drops provenance
+    /// (granted_at, granted_in_run_id) that is useful for operator
+    /// rendering but not for the decision function.
+    pub fn to_prior_tolerance(&self) -> PriorTolerance {
+        PriorTolerance {
+            basis_id: self.basis_id.clone(),
+            basis_hash: self.basis_hash.clone(),
+            prior_class: self.prior_class,
+            expired_at: self.expires_at,
+        }
+    }
 }
 
 pub trait Store: Send + Sync {
@@ -72,4 +111,20 @@ pub trait Store: Send + Sync {
     fn get_packet(&self, run_id: &str) -> Result<Option<Packet>>;
 
     fn list_runs(&self, filter: RunFilter) -> Result<Vec<RunSummary>>;
+
+    /// Persist a tolerance grant for a finding. Upsert semantics:
+    /// writing under the same `finding_key` replaces the prior
+    /// record (matches the single-grant-per-finding spec).
+    fn save_tolerance(&self, record: &ToleranceRecord) -> Result<()>;
+
+    /// Fetch the tolerance grant for a finding, if any. Returns
+    /// `None` if no grant was ever written OR if the grant has been
+    /// cleared by `clear_tolerance`.
+    fn load_tolerance(&self, key: &FindingKey) -> Result<Option<ToleranceRecord>>;
+
+    /// Remove the tolerance grant for a finding. Called on the
+    /// escalate paths (`EscalateExpired`, `EscalateBasisInvalidated`)
+    /// so the next run sees `None` and does not re-apply the stale
+    /// grant.
+    fn clear_tolerance(&self, key: &FindingKey) -> Result<()>;
 }

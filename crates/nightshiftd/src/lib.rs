@@ -9,6 +9,8 @@ pub mod bundle;
 pub mod coordination;
 pub mod errors;
 pub mod finding;
+pub mod governor;
+pub mod horizon;
 pub mod ledger;
 pub mod liveness;
 pub mod nq;
@@ -16,6 +18,7 @@ pub mod nq_peek;
 pub mod packet;
 pub mod pipeline;
 pub mod posture;
+pub mod reconcile_horizon;
 pub mod reconciler;
 pub mod store;
 

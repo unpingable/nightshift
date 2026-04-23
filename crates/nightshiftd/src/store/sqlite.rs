@@ -18,9 +18,10 @@ use crate::agenda::Agenda;
 use crate::bundle::Bundle;
 use crate::errors::{NightShiftError, Result};
 use crate::finding::FindingKey;
+use crate::horizon::HorizonClass;
 use crate::ledger::RunLedgerEvent;
 use crate::packet::Packet;
-use crate::store::{RunFilter, RunSummary, RunTrigger, Store};
+use crate::store::{RunFilter, RunSummary, RunTrigger, Store, ToleranceRecord};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -70,6 +71,19 @@ CREATE TABLE IF NOT EXISTS packets (
 );
 
 CREATE INDEX IF NOT EXISTS packets_by_run ON packets(run_id);
+
+CREATE TABLE IF NOT EXISTS tolerance_state (
+    finding_key         TEXT PRIMARY KEY,
+    basis_id            TEXT NOT NULL,
+    basis_hash          TEXT NOT NULL,
+    prior_class         TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    granted_at          TEXT NOT NULL,
+    granted_in_run_id   TEXT NOT NULL,
+    source              TEXT NOT NULL,
+    detector            TEXT NOT NULL,
+    subject             TEXT NOT NULL
+);
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 "#;
@@ -383,6 +397,111 @@ impl Store for SqliteStore {
         })
     }
 
+    fn save_tolerance(&self, record: &ToleranceRecord) -> Result<()> {
+        let key_str = record.finding_key.as_string();
+        let class_str = serde_json::to_value(record.prior_class)?
+            .as_str()
+            .expect("HorizonClass serializes as string")
+            .to_string();
+        let expires_at = record.expires_at.to_rfc3339();
+        let granted_at = record.granted_at.to_rfc3339();
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO tolerance_state (
+                    finding_key, basis_id, basis_hash, prior_class,
+                    expires_at, granted_at, granted_in_run_id,
+                    source, detector, subject
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    key_str,
+                    record.basis_id,
+                    record.basis_hash,
+                    class_str,
+                    expires_at,
+                    granted_at,
+                    record.granted_in_run_id,
+                    record.finding_key.source,
+                    record.finding_key.detector,
+                    record.finding_key.subject,
+                ],
+            )
+            .map_err(|e| store_err("insert tolerance_state", e))?;
+            Ok(())
+        })
+    }
+
+    fn load_tolerance(&self, key: &FindingKey) -> Result<Option<ToleranceRecord>> {
+        let key_str = key.as_string();
+        self.with_conn(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT basis_id, basis_hash, prior_class, expires_at,
+                            granted_at, granted_in_run_id, source, detector, subject
+                     FROM tolerance_state WHERE finding_key = ?",
+                    params![key_str],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, String>(5)?,
+                            r.get::<_, String>(6)?,
+                            r.get::<_, String>(7)?,
+                            r.get::<_, String>(8)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| store_err("select tolerance_state", e))?;
+            match row {
+                None => Ok(None),
+                Some((
+                    basis_id,
+                    basis_hash,
+                    class_s,
+                    expires_s,
+                    granted_s,
+                    run_id,
+                    source,
+                    detector,
+                    subject,
+                )) => {
+                    let prior_class: HorizonClass = serde_json::from_value(
+                        serde_json::Value::String(class_s.clone()),
+                    )
+                    .map_err(|e| store_err(&format!("parse prior_class {class_s}"), e))?;
+                    Ok(Some(ToleranceRecord {
+                        finding_key: FindingKey {
+                            source,
+                            detector,
+                            subject,
+                        },
+                        basis_id,
+                        basis_hash,
+                        prior_class,
+                        expires_at: parse_ts(&expires_s)?,
+                        granted_at: parse_ts(&granted_s)?,
+                        granted_in_run_id: run_id,
+                    }))
+                }
+            }
+        })
+    }
+
+    fn clear_tolerance(&self, key: &FindingKey) -> Result<()> {
+        let key_str = key.as_string();
+        self.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM tolerance_state WHERE finding_key = ?",
+                params![key_str],
+            )
+            .map_err(|e| store_err("delete tolerance_state", e))?;
+            Ok(())
+        })
+    }
+
     fn list_runs(&self, filter: RunFilter) -> Result<Vec<RunSummary>> {
         self.with_conn(|conn| {
             let mut sql = String::from(
@@ -592,6 +711,99 @@ diagnosis: { mode: self_check }
         assert_eq!(evs.len(), 2);
         assert!(matches!(evs[0].kind, RunLedgerEventKind::RunCaptured));
         assert!(matches!(evs[1].kind, RunLedgerEventKind::RunCompleted));
+    }
+
+    fn mk_tolerance(key: &FindingKey, run_id: &str, basis_hash: &str) -> ToleranceRecord {
+        ToleranceRecord {
+            finding_key: key.clone(),
+            basis_id: "basis-abc".into(),
+            basis_hash: basis_hash.into(),
+            prior_class: HorizonClass::Hours,
+            expires_at: Utc.with_ymd_and_hms(2026, 4, 23, 20, 0, 0).unwrap(),
+            granted_at: Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap(),
+            granted_in_run_id: run_id.into(),
+        }
+    }
+
+    #[test]
+    fn tolerance_round_trip() {
+        let s = mk_store();
+        let key = mk_key();
+        let record = mk_tolerance(&key, "run_abc", "hash-123");
+        s.save_tolerance(&record).unwrap();
+        let loaded = s.load_tolerance(&key).unwrap().unwrap();
+        assert_eq!(loaded, record);
+    }
+
+    #[test]
+    fn tolerance_upsert_replaces_prior_on_same_finding() {
+        let s = mk_store();
+        let key = mk_key();
+        let first = mk_tolerance(&key, "run_a", "hash-old");
+        s.save_tolerance(&first).unwrap();
+        let second = mk_tolerance(&key, "run_b", "hash-new");
+        s.save_tolerance(&second).unwrap();
+        let loaded = s.load_tolerance(&key).unwrap().unwrap();
+        assert_eq!(loaded.basis_hash, "hash-new");
+        assert_eq!(loaded.granted_in_run_id, "run_b");
+    }
+
+    #[test]
+    fn tolerance_clear_removes_record() {
+        let s = mk_store();
+        let key = mk_key();
+        let record = mk_tolerance(&key, "run_a", "hash-123");
+        s.save_tolerance(&record).unwrap();
+        assert!(s.load_tolerance(&key).unwrap().is_some());
+        s.clear_tolerance(&key).unwrap();
+        assert!(s.load_tolerance(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn tolerance_load_returns_none_for_unknown_finding() {
+        let s = mk_store();
+        let key = mk_key();
+        assert!(s.load_tolerance(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn tolerance_projects_to_prior_tolerance_cleanly() {
+        let key = mk_key();
+        let record = mk_tolerance(&key, "run_a", "hash-xyz");
+        let prior = record.to_prior_tolerance();
+        assert_eq!(prior.basis_id, "basis-abc");
+        assert_eq!(prior.basis_hash, "hash-xyz");
+        assert_eq!(prior.prior_class, HorizonClass::Hours);
+        assert_eq!(prior.expired_at, record.expires_at);
+    }
+
+    #[test]
+    fn tolerance_isolates_by_finding_key() {
+        let s = mk_store();
+        let key_a = FindingKey {
+            source: "nq".into(),
+            detector: "wal_bloat".into(),
+            subject: "host-a:/db".into(),
+        };
+        let key_b = FindingKey {
+            source: "nq".into(),
+            detector: "wal_bloat".into(),
+            subject: "host-b:/db".into(),
+        };
+        s.save_tolerance(&mk_tolerance(&key_a, "run_a", "hash-a"))
+            .unwrap();
+        s.save_tolerance(&mk_tolerance(&key_b, "run_b", "hash-b"))
+            .unwrap();
+        let loaded_a = s.load_tolerance(&key_a).unwrap().unwrap();
+        let loaded_b = s.load_tolerance(&key_b).unwrap().unwrap();
+        assert_eq!(loaded_a.basis_hash, "hash-a");
+        assert_eq!(loaded_b.basis_hash, "hash-b");
+        s.clear_tolerance(&key_a).unwrap();
+        assert!(s.load_tolerance(&key_a).unwrap().is_none());
+        assert!(
+            s.load_tolerance(&key_b).unwrap().is_some(),
+            "clearing key_a must not touch key_b"
+        );
     }
 
     #[test]
