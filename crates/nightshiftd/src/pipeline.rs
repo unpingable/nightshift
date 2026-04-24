@@ -30,6 +30,9 @@ use crate::bundle::{
 use crate::coordination::{classify_risky, preflight, scope_key, CoordinationOutcome};
 use crate::errors::{NightShiftError, Result};
 use crate::finding::{EvidenceState, FindingKey, FindingSnapshot};
+use crate::governor_client::GovernorClient;
+use crate::horizon::HorizonAction;
+use crate::horizon_policy::HorizonPolicySource;
 use crate::ledger::{RunLedgerEvent, RunLedgerEventKind};
 use crate::liveness::{verdict_for, LivenessSource, LivenessVerdict, DEFAULT_STALENESS_THRESHOLD_SECONDS};
 use crate::nq::{evidence_hash, NqSource};
@@ -38,6 +41,7 @@ use crate::packet::{
     DiagnosisReview, DiagnosisReviewMode, FindingSummary, OperationalUrgency, Packet,
     ProposedAction, ProposedActionKind, ReceiptReferences,
 };
+use crate::reconcile_horizon::{apply_horizon_outcomes, process_horizon, HorizonOutcome};
 use crate::reconciler::{self, PolicyFingerprint};
 use crate::store::{RunTrigger, Store};
 
@@ -260,18 +264,47 @@ pub fn capture_phase(
     Ok(CaptureOutcome::Captured { run_id })
 }
 
+/// Reconcile a captured (open) run without the horizon phase.
+///
+/// Thin wrapper over [`reconcile_phase_with_horizon`] with no
+/// `HorizonPolicySource` and no `GovernorClient` configured. See that
+/// function's doc for the full contract. Preserved as a stable entry
+/// point for callers that don't yet carry horizon dependencies
+/// (legacy CLI + pre-Phase-B integration tests).
+pub fn reconcile_phase(
+    run_id: &str,
+    nq: &dyn NqSource,
+    store: &dyn Store,
+    opts: &PipelineOptions,
+) -> Result<Packet> {
+    reconcile_phase_with_horizon(run_id, nq, None, None, store, opts)
+}
+
 /// Reconcile a captured (open) run: re-check preflight, perform the
 /// explicit reconcile-time live NQ acquisition, run pure adjudication
-/// over the captured bundle + acquisition, emit the packet, and
-/// finalize the run.
+/// over the captured bundle + acquisition, optionally run the horizon
+/// phase (policy lookup + tolerance writes + Governor receipt),
+/// emit the packet, and finalize the run.
 ///
 /// One-shot: returns `RunAlreadyCompleted` if the run has already
 /// been reconciled. If the bundle is missing, returns
 /// `RunBundleMissing` — that indicates a bug or a crash between
 /// `create_run` and `save_bundle` in capture_phase.
-pub fn reconcile_phase(
+///
+/// When `horizon_policy.is_some()` and `governor.is_some()`, the
+/// reconciled bundle flows through `process_horizon` +
+/// `apply_horizon_outcomes` before the packet is built. A `Defer`
+/// outcome on the target finding promotes the packet's Attention to
+/// `WatchUntil` with `(re_alert_after=T, tolerance_basis_id,
+/// tolerance_basis_hash)` populated — the durable state transition
+/// that lets a later run distinguish expired-tolerance from
+/// fresh-arrival. Missing either dependency skips the horizon phase
+/// entirely; the packet carries `AttentionState::Unowned` as before.
+pub fn reconcile_phase_with_horizon(
     run_id: &str,
     nq: &dyn NqSource,
+    horizon_policy: Option<&dyn HorizonPolicySource>,
+    governor: Option<&dyn GovernorClient>,
     store: &dyn Store,
     opts: &PipelineOptions,
 ) -> Result<Packet> {
@@ -377,7 +410,37 @@ pub fn reconcile_phase(
         }),
     ))?;
 
-    // 5. Build the packet from persisted bundle state — no live reads.
+    // 5. Horizon phase (optional). Runs only when both a policy
+    //    source and a Governor client are configured. Computes the
+    //    four-way A5 outcome per input, writes tolerance records on
+    //    Defer, emits Governor receipts on Defer, and surfaces the
+    //    target's outcome to the packet builder so Attention can be
+    //    promoted to WatchUntil on deferral.
+    let target_outcome = match (horizon_policy, governor) {
+        (Some(policy), Some(gov)) => {
+            let outcomes = process_horizon(
+                &reconciliation,
+                &reconciled_bundle.capture.inputs,
+                policy,
+                store,
+                acquisition.acquired_at,
+            )?;
+            apply_horizon_outcomes(
+                &outcomes,
+                store,
+                gov,
+                run_id,
+                &agenda.agenda_id,
+                acquisition.acquired_at,
+            )?;
+            outcomes
+                .into_iter()
+                .find(|o| o.finding_key == target)
+        }
+        _ => None,
+    };
+
+    // 6. Build the packet from persisted bundle state — no live reads.
     let packet = build_success_packet(
         &agenda,
         run_id,
@@ -386,6 +449,7 @@ pub fn reconcile_phase(
         &reconciliation,
         effective_ceiling,
         opts,
+        target_outcome.as_ref(),
     )?;
 
     store.save_packet(run_id, &packet)?;
@@ -426,6 +490,15 @@ fn parse_target_from_bundle(bundle: &Bundle) -> Result<FindingKey> {
 /// persisted reconcile-time acquisition); when the finding was
 /// absent at acquisition time, falls back to the captured baseline
 /// so the packet still renders sensible operator-facing context.
+///
+/// When `target_horizon_outcome` is `Some(HorizonAction::Defer{..})`,
+/// the Attention record is promoted to `AttentionState::WatchUntil`
+/// with `re_alert_after`, `tolerance_basis_id`, and
+/// `tolerance_basis_hash` populated from the outcome. Other horizon
+/// actions (ActOnVerdict / Escalate* / RenderNoIntervene /
+/// RenderHolding) leave Attention at `Unowned` in v1 — their
+/// downstream surfaces (diagnosis.evidence, escalation envelope)
+/// will follow in later slices.
 #[allow(clippy::too_many_arguments)]
 fn build_success_packet(
     agenda: &Agenda,
@@ -435,6 +508,7 @@ fn build_success_packet(
     reconciliation: &ReconciliationPhase,
     effective_ceiling: AuthorityLevel,
     opts: &PipelineOptions,
+    target_horizon_outcome: Option<&HorizonOutcome>,
 ) -> Result<Packet> {
     let nq_result = reconciliation
         .results
@@ -521,13 +595,33 @@ fn build_success_packet(
         nq_result.status,
     );
 
+    // Horizon Defer on the target finding promotes Attention to
+    // WatchUntil, with T on re_alert_after and basis on the
+    // tolerance_basis_* fields. Every other horizon outcome — and
+    // the no-horizon-configured path — leaves Attention at Unowned.
+    let (attention_state, re_alert_after, tolerance_basis_id, tolerance_basis_hash) =
+        match target_horizon_outcome.map(|o| &o.action) {
+            Some(HorizonAction::Defer {
+                until,
+                basis_id,
+                basis_hash,
+                ..
+            }) => (
+                AttentionState::WatchUntil,
+                Some(*until),
+                Some(basis_id.clone()),
+                Some(basis_hash.clone()),
+            ),
+            _ => (AttentionState::Unowned, None, None, None),
+        };
+
     let attention = Attention {
         attention_key: target.clone(),
         evidence_state: match nq_result.status {
             InputStatus::Stale | InputStatus::Invalidated => EvidenceState::Stale,
             _ => current_snapshot.current_status,
         },
-        attention_state: AttentionState::Unowned,
+        attention_state,
         operational_urgency,
         owner: None,
         last_touched_by: None,
@@ -536,8 +630,10 @@ fn build_success_packet(
         ack_expires_at: None,
         follow_up_by: None,
         handoff_note: None,
-        re_alert_after: None,
+        re_alert_after,
         silence_reason: None,
+        tolerance_basis_id,
+        tolerance_basis_hash,
     };
 
     let packet_id = format!(
@@ -706,6 +802,8 @@ fn hold_for_preflight(
         handoff_note: None,
         re_alert_after: None,
         silence_reason: Some(hold_reason),
+        tolerance_basis_id: None,
+        tolerance_basis_hash: None,
     };
 
     let packet_id = format!(
@@ -867,6 +965,8 @@ fn liveness_gate_failed(
         handoff_note: None,
         re_alert_after: None,
         silence_reason: Some(verdict.explain()),
+        tolerance_basis_id: None,
+        tolerance_basis_hash: None,
     };
 
     let packet_id = format!(

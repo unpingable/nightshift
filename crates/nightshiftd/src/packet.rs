@@ -151,6 +151,19 @@ pub struct Attention {
     pub re_alert_after: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silence_reason: Option<String>,
+    /// Required when `attention_state = WatchUntil`. Identifies the
+    /// horizon declaration the watch was granted under (e.g. a named
+    /// maintenance window, an observed quiescence, a scheduled
+    /// rollout). Paired with `tolerance_basis_hash` so a later run
+    /// can detect basis invalidation. `re_alert_after` carries the
+    /// expiry T; together they are the `(T, basis=B)` write payload
+    /// named in the 2026-04-23 observatory-family hand-off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance_basis_id: Option<String>,
+    /// Content hash of the basis artifact. Required when
+    /// `attention_state = WatchUntil`. See `tolerance_basis_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance_basis_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
