@@ -3,8 +3,10 @@
 Status: proposed
 Owner: TBD
 Created: 2026-04-24
+Revised: 2026-04-24 (post-Island-Discipline topology correction)
 Applies to: Night Shift, Continuity, cross-agent project workflows
 Related: deferred-run split, continuity reliance classes, agent handoff discipline
+Depends on (Continuity-side doctrine): `ISLAND_DISCIPLINE.md`, `CROSS_SCOPE_REFERENCE_GAP`
 
 ## Summary
 
@@ -65,6 +67,21 @@ It may not govern.
 More formally:
 
 > Coordination mode can request status about stale or unresolved work, but cannot confer authority, close obligations, or promote reliance class.
+
+## Topology: domain-aware by construction
+
+Per Continuity's `ISLAND_DISCIPLINE.md` (landed 2026-04-24, advisory / global):
+
+> scope=global is global only within its declared domain. That is the anti-empire bolt.
+
+Coordination mode is a **consumer** of Island Discipline, not an alternate topology system. Consequences:
+
+- A sweep must take a declared continuity domain. `--scope global` alone is underspecified: `global` inside `observatory-family` is a different set of memories than `global` inside `book`.
+- Night Shift may coordinate **across** declared domains but MUST NOT merge, promote, import, or infer equivalence. A stale item in domain A and a similarly-titled item in domain B are two items, not one, until Continuity's bridge machinery says otherwise.
+- Cross-domain references ride the `CROSS_SCOPE_REFERENCE_GAP` hash-pinning primitives that Continuity provides. Night Shift does not invent its own `source_hash` scheme, and it does not construct bridge imports. At most, it emits a coordination item of kind `candidate_bridge_review` and hands it to an operator or to Continuity.
+- Firewall-class domains (`domain_purpose: firewall`) are visible to coordination mode only through declared exports. A sweep that touches a firewall domain may emit bridge candidates only as `denied` or `requires_operator_review`; it never imports.
+
+These are topology invariants, not preferences. They constrain the CLI, the digest schema, and the acceptance tests below.
 
 ## Scope
 
@@ -171,20 +188,27 @@ Constellation:
 
 ### Machine-readable JSON
 
-Shape TBD, but must include:
+Shape TBD, but must include the declared continuity domain at both digest and item level. Same-domain items and cross-domain candidates have distinct shapes: same-domain items carry `continuity_domain_id` + scope + memory pointers; cross-domain candidates carry both sides and an explicit forbidden-actions list that blocks merge / promote / infer-equivalence.
+
+**Same-domain coordination item:**
 
 ```json
 {
   "schema_version": "nightshift.coordination_digest.v0",
   "generated_at": "...",
   "mode": "coordination",
+  "continuity_domain_id": "observatory-family",
   "items": [
     {
+      "continuity_domain_id": "observatory-family",
+      "domain_purpose": "bridgeable",
+      "source_scope": "global",
+      "memory_id": "mem_...",
       "project": "agent_governor",
-      "scope": "global",
       "title": "Deferred-run split status unknown",
       "status": "needs_status",
       "evidence_refs": [],
+      "source_reliance_class": "advisory",
       "last_seen_at": "...",
       "stale_reason": "prerequisite_landed_no_followup",
       "suggested_prompt": "What is current state of deferred-run split?",
@@ -194,6 +218,24 @@ Shape TBD, but must include:
   ]
 }
 ```
+
+**Cross-domain candidate (bridge-review only):**
+
+```json
+{
+  "source_domain_id": "book",
+  "source_scope": "global",
+  "source_memory_id": "mem_...",
+  "source_content_hash": "sha256:...",
+  "target_domain_id": "observatory-family",
+  "status": "candidate_bridge_review",
+  "suggested_prompt": "Operator: is a Continuity bridge export from `book:global` into `observatory-family` warranted here?",
+  "allowed_actions": ["ask_status", "recommend_bridge_review"],
+  "forbidden_actions": ["merge", "promote", "import", "infer_equivalence"]
+}
+```
+
+If the source-side content hash is not available (firewall domain, missing CROSS_SCOPE_REFERENCE_GAP record), the candidate carries an explicit `evidence_absent: "source_content_hash"` marker instead of fabricating one.
 
 ## State Semantics
 
@@ -250,13 +292,17 @@ Project repos remain responsible for local doctrine and closure rules.
 
 ## CLI Sketch
 
+Every sweep takes an explicit continuity domain. `--scope` names the scope *within* that domain. Omitting `--continuity-domain` is an error (or a warning in MVP) — never silently defaulted.
+
 ```bash
 nightshift coordination sweep \
+  --continuity-domain observatory-family \
   --scope global \
   --stale-after 7d \
   --format text
 
 nightshift coordination sweep \
+  --continuity-domain observatory-family \
   --scope global \
   --project governor \
   --format json
@@ -267,6 +313,7 @@ nightshift coordination prompt \
 
 nightshift coordination record \
   --digest <digest_id> \
+  --continuity-domain observatory-family \
   --continuity-scope global \
   --reliance-class observed
 ```
@@ -281,6 +328,17 @@ nightshift coordination ask-agent \
 ```
 
 Not MVP unless agent routing is already explicit and safe.
+
+Cross-domain candidate review is a distinct verb, not a flag on `sweep`:
+
+```bash
+# Hypothetical — surfaces bridge-review candidates only; does not
+# import, merge, or promote. Requires an operator-side action via
+# Continuity's bridge machinery to actually establish a bridge.
+nightshift coordination bridge-candidates \
+  --continuity-domain observatory-family \
+  --since 7d
+```
 
 ## Configuration Sketch
 
@@ -336,6 +394,15 @@ coordination:
 
 7. **Stale means ask.**
    Staleness is a coordination signal, not a verdict.
+
+8. **Domain-aware by construction.**
+   A sweep is always scoped to a declared continuity domain. `scope=global` is meaningful only inside a declared domain. Undeclared domain is a topology fault, not a convenience default.
+
+9. **No cross-domain authority.**
+   Night Shift may surface cross-domain items as bridge-review candidates, but MUST NOT merge, promote, import, or infer equivalence between memories in different domains. Bridge construction is Continuity's responsibility via `CROSS_SCOPE_REFERENCE_GAP`.
+
+10. **No parallel hash-pinning.**
+    If coordination mode needs to cite a source-side artifact across domains, it uses the content hash Continuity already provides. It does not invent its own.
 
 ## MVP Behavior
 
@@ -393,6 +460,26 @@ Given an observed agent response claiming work is done, coordination mode record
 
 Given identical inputs, coordination mode emits deterministic JSON ordering and stable item identifiers.
 
+### Domain-aware sweep rejects undeclared domain
+
+Given a `sweep` invocation without `--continuity-domain`, coordination mode errors (MVP may warn) rather than silently defaulting. Declared domain is a topology requirement, not a UX affordance.
+
+### Domain isolation: A-global is not visible in B
+
+Given a memory at `(domain=A, scope=global)` and a sweep of `(domain=B, scope=global)`, coordination mode does NOT include the A-memory in B's digest unless a Continuity-side bridge / `CROSS_SCOPE_REFERENCE_GAP` record exists for it. Similar titles across domains are not equivalence.
+
+### Firewall domain surfaces as bridge-candidate only
+
+Given a source domain with `domain_purpose: firewall`, a cross-domain sweep emits any derived candidate as `status: candidate_bridge_review` with `allowed_actions` restricted to `ask_status` / `recommend_bridge_review`. Coordination mode never imports from a firewall domain.
+
+### No equivalence inference across domains
+
+Given two memories with identical or near-identical titles in different domains, coordination mode emits them as two distinct items (or as a bridge-review candidate pair), never as one merged item.
+
+### Cross-domain evidence pins provenance or marks absence
+
+Every cross-domain coordination item includes `source_domain_id`, `source_memory_id`, and either a source-side content hash or an explicit `evidence_absent` marker. Fabricated or inferred hashes are forbidden.
+
 ## Open Questions
 
 1. Should coordination digests get their own receipt type, or remain ordinary Continuity observations?
@@ -409,18 +496,22 @@ Given identical inputs, coordination mode emits deterministic JSON ordering and 
 The smallest useful version:
 
 ```bash
-nightshift coordination sweep --scope global --stale-after 7d
+nightshift coordination sweep \
+  --continuity-domain observatory-family \
+  --scope global \
+  --stale-after 7d
 ```
 
 Reads Continuity only.
 Emits a text digest and JSON digest.
+Confined to one declared domain — cross-domain candidates are out of scope for the first slice.
 No repo scanning.
 No agent contact.
 No writeback by default.
 
 That proves the core semantic rule:
 
-> Night Shift can notice stale remembered work without becoming the authority that resolves it.
+> Night Shift can notice stale remembered work inside a declared continuity domain without becoming the authority that resolves it, and without pretending domains don't exist.
 
 ## Later Slices
 
@@ -492,3 +583,18 @@ Candidate names:
 Recommendation: `coordination mode`.
 
 It sounds boring enough to survive contact with reality.
+
+## Revision note (2026-04-24)
+
+This GAP was first drafted and committed earlier today, without awareness that Continuity had committed `ISLAND_DISCIPLINE.md` (advisory / global, ~50 minutes prior) naming declared-domain topology and the anti-empire bolt on `scope=global`. The first draft's CLI sketch used bare `--scope global`, which is topologically underspecified: `global` inside `observatory-family` is not the same set as `global` inside `book`.
+
+The revision:
+
+- Adds Island Discipline and `CROSS_SCOPE_REFERENCE_GAP` as explicit doctrinal dependencies.
+- Names coordination mode as a consumer of Island Discipline, not an alternate topology system.
+- Makes every sweep take `--continuity-domain`; drops the silent-global-default.
+- Splits the digest item shape into same-domain vs cross-domain variants, with explicit `forbidden_actions` on the cross-domain side (no merge/promote/import/infer-equivalence).
+- Adds Invariants 8–10 (domain-aware, no cross-domain authority, no parallel hash-pinning).
+- Adds acceptance tests for undeclared-domain rejection, A-to-B isolation, firewall bridge-candidate surfacing, no equivalence inference, and cross-domain evidence pinning.
+
+The meta-read is that coordination mode's motivating failure mode fired on its own GAP in the ~4 hours between Island Discipline committing and this GAP committing. That is instrumentation, not embarrassment: the gap between "doctrine landed" and "downstream work was aware of it" is exactly what coordination mode is meant to shrink.
