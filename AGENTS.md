@@ -7,6 +7,14 @@ If anything here conflicts with the user's explicit instructions, the user wins.
 
 ---
 
+## Role
+
+Night Shift manages admissibility across time. Its job is not to decide whether action is authorized, but to prevent old observations, stale plans, and deferred work from silently becoming current authority.
+
+Pair with NQ (premise-movement detection) and Governor (authorization decisions): *NQ detects that the premise moved. Governor decides whether the authorization fell off. Night Shift makes that movement legible across the deferral.*
+
+---
+
 ## Quick start
 
 ```bash
@@ -76,6 +84,8 @@ docs/                       Design documents, architecture decisions
 3. Every run produces receipts. If it happened without a receipt, it didn't happen correctly.
 4. Promotion is explicit and sequential. No step in `observe → reconcile → propose → authorize → execute → verify → publish` may be skipped.
 5. MCP is tool transport, not authority. Tool availability is not permission.
+6. Staleness escalates to revalidation, not action. Night Shift may schedule a recheck on stale evidence; it may not propose mutation against it.
+7. Witness positions are NQ's grammar, not Night Shift's. NS consumes the finding shape NQ surfaces; it does not branch behavior on substrate / application_internal / application_external / platform_internal / platform_external. If position disagreement should change scheduling, NQ encodes it into the finding shape and NS responds to the shape.
 
 ---
 

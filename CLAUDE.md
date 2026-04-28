@@ -4,6 +4,8 @@
 
 Night Shift: deferred agent work with receipts, reconciliation, and governed promotion.
 
+Night Shift manages admissibility across time. Its job is not to decide whether action is authorized, but to prevent old observations, stale plans, and deferred work from silently becoming current authority.
+
 Schedules and resumes *intent* — not commands — under declared policy, with
 context bundles that revalidate their own premises before execution.
 
@@ -105,3 +107,5 @@ context bundles that revalidate their own premises before execution.
 - Don't treat "same host, different directory" as off-host. That is staging, not continuity protection. Off-host means out of the protected host's primary failure domain.
 - Don't let Nightshift become a universal archive substrate. Nightshift owns backup *orchestration and visibility*, not preservation theory. Evidentiary archive is a separate concern if it ever needs to exist.
 - Don't treat Continuity as advisory for risky work. For shared-infrastructure ops, topology/config/publisher/source changes, mode transitions, or protected-class scopes, preflight is a guardrail — a run that skips it is not a faster run, it is an unsafe run.
+- Don't propose execution on stale evidence. Staleness escalates to revalidation, not action. Night Shift may schedule a recheck; it may not propose mutation against evidence the reconciler flagged stale.
+- Don't branch Night Shift behavior on NQ witness positions. NQ witness-position taxonomy (substrate / application_internal / application_external / platform_internal / platform_external) lives entirely inside NQ's grammar. Night Shift consumes the finding *shape* NQ surfaces; it does not interpret which witness wins. If two positions disagreeing should change scheduling, NQ encodes that into the finding shape and Night Shift responds to the shape — not to the witness metadata.
