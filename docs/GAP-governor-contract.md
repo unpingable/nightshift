@@ -202,6 +202,73 @@ Obligation vocabulary Night Shift will request:
 - `LOG_HIGH_PRIORITY`
 - `COOLDOWN` (agenda-level rate limiting)
 
+## Pipe-through debt: `receipt_id` from `record_receipt`
+
+> Status: captured during 2026-04-28 dogfood pass against agent_gov
+> commit 23dba99 (Night Shift adapter from 9b0c2e5 + later fixes).
+> Not yet wired.
+
+When Night Shift defers under a horizon, it forwards an
+`action.authorized` lifecycle event to Governor via
+`nightshift.record_receipt`. Governor returns
+`{receipt_id, receipt_hash}` (`nightshift_adapter.py:RecordReceiptResponse`).
+Night Shift currently **drops the response**.
+
+Drop site: `crates/nightshiftd/src/reconcile_horizon.rs` —
+`apply_horizon_outcomes` calls `governor.record_receipt(&request)?;`
+and discards the return value.
+
+Natural landing site: `Packet.receipt_references.governor_receipts:
+Vec<String>` in `packet.rs`. The field exists for exactly this
+purpose, and the success-packet builder in `pipeline.rs` hardcodes it
+to `vec![]`. Two other packet-construction sites (preflight hold,
+liveness fail) also hardcode empty; those don't call `record_receipt`
+yet so they're correct.
+
+Seam shape (when wired):
+1. `apply_horizon_outcomes` returns the `RecordReceiptResponse` per
+   outcome (or attaches it onto a richer `HorizonOutcome` variant —
+   today the struct has no place to carry the receipt back).
+2. `reconcile_phase_with_horizon` flows the response(s) into
+   `build_success_packet` alongside the existing `target_horizon_outcome`.
+3. `build_success_packet` populates `governor_receipts` with the
+   receipt_id strings (one per Defer outcome on this run; v1 has at
+   most one).
+
+The dogfood test
+`crates/nightshiftd/tests/governor_rpc_live.rs::live_horizon_defer_pipeline_round_trips`
+asserts `governor_receipts.is_empty()` to document the current
+behavior. When the seam is closed, that assertion flips and the
+comment on it becomes stale — that's the trip-wire that the work
+landed.
+
+### Adjacent finding: fixture/real validation drift
+
+`FixtureGovernorClient` accepts any `basis_hash` string; the live
+daemon's `HorizonBlock.__post_init__` enforces `sha256:<64 hex>` and
+returns `-32602 Invalid params` on violation. Canonical fixture tests
+in `horizon_packet_state.rs` and `reconcile_horizon.rs` use synthetic
+basis_hashes like `"sha256:basis-abc"` that the real daemon would
+reject. Not blocking — fixture tests test the apply layer's logic,
+not the daemon contract — but the pipeline layer should not be the
+first place this divergence shows up in production.
+
+Possible future tightening: add a `cfg(debug_assertions)` validator
+in `FixtureGovernorClient::record_receipt` that rejects malformed
+hashes the same way the live daemon does. Out of scope for the
+dogfood pass; named here so it doesn't get lost.
+
+### Adjacent observation: `receipt_hash == receipt_id`
+
+`agent_gov/src/governor/nightshift_adapter.py:670` returns
+`RecordReceiptResponse(receipt_id=receipt.receipt_id,
+receipt_hash=receipt.receipt_id)` — the two fields carry the same
+value. NS treats both as opaque strings so this is harmless on the
+wire, but consumers should not assume `receipt_hash` is independent
+content-addressing of the receipt body. If it ever diverges from
+`receipt_id` in a future Governor version, NS does not need to change
+to accommodate.
+
 ## Open questions
 
 - Who owns the agenda → policy binding? (Agenda declares `policy_id`;
