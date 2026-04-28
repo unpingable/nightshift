@@ -56,6 +56,25 @@ use nightshiftd::store::Store;
 /// validates the field is non-empty.
 const TEST_AGENDA: &str = "wal-bloat-review";
 
+// Daemon-valid 64-hex basis_hashes for tests. The
+// `FixtureGovernorClient` validates basis_hash the same way the live
+// Governor daemon does, so synthetic Defer payloads must satisfy
+// `sha256:[0-9a-f]{64}`.
+const HASH_BASIS_ABC: &str =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HASH_OLD: &str =
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const HASH_NEW: &str =
+    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const HASH_ACTIVE_1: &str =
+    "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const HASH_EXPIRED_1: &str =
+    "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const HASH_INVALID_OLD: &str =
+    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+const HASH_INVALID_NEW: &str =
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
 // ---- helpers ----
 
 fn finding_key() -> FindingKey {
@@ -168,7 +187,7 @@ fn tolerated_active_continues_to_defer_before_expiry() {
     let declaration = declaration_with_timed_horizon(
         &key,
         "maintenance-window-042",
-        "sha256:basis-abc",
+        HASH_BASIS_ABC,
         HorizonClass::Hours,
         expiry,
     );
@@ -205,7 +224,7 @@ fn tolerated_active_continues_to_defer_before_expiry() {
         } => {
             assert_eq!(*until, expiry);
             assert_eq!(basis_id, "maintenance-window-042");
-            assert_eq!(basis_hash, "sha256:basis-abc");
+            assert_eq!(basis_hash, HASH_BASIS_ABC);
             assert_eq!(*class, HorizonClass::Hours);
         }
         other => panic!("run B expected Defer (tolerated_active), got {other:?}"),
@@ -236,7 +255,7 @@ fn tolerated_active_continues_to_defer_before_expiry() {
         );
         assert_eq!(
             block.basis_hash.as_deref(),
-            Some("sha256:basis-abc"),
+            Some(HASH_BASIS_ABC),
             "call {i}"
         );
     }
@@ -263,7 +282,7 @@ fn expired_tolerance_escalates_with_prior_lineage() {
     let declaration = declaration_with_timed_horizon(
         &key,
         "maintenance-window-042",
-        "sha256:basis-abc",
+        HASH_BASIS_ABC,
         HorizonClass::Hours,
         expiry,
     );
@@ -288,7 +307,7 @@ fn expired_tolerance_escalates_with_prior_lineage() {
     match &outcomes_b[0].action {
         HorizonAction::EscalateExpired { prior } => {
             assert_eq!(prior.basis_id, "maintenance-window-042");
-            assert_eq!(prior.basis_hash, "sha256:basis-abc");
+            assert_eq!(prior.basis_hash, HASH_BASIS_ABC);
             assert_eq!(prior.prior_class, HorizonClass::Hours);
             assert_eq!(prior.expired_at, expiry);
         }
@@ -332,7 +351,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let policy_a = FixtureHorizonPolicySource::from_declarations(vec![declaration_with_timed_horizon(
         &key,
         "basis-old",
-        "sha256:hash-old",
+        HASH_OLD,
         HorizonClass::Hours,
         expiry,
     )]);
@@ -343,7 +362,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     apply_horizon_outcomes(&outcomes_a, &store, &governor, "run_a", TEST_AGENDA, t0).unwrap();
     assert_eq!(
         store.load_tolerance(&key).unwrap().unwrap().basis_hash,
-        "sha256:hash-old"
+        HASH_OLD
     );
 
     // Run B: governor now emits the same finding with a new basis
@@ -351,7 +370,7 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
     let policy_b = FixtureHorizonPolicySource::from_declarations(vec![declaration_with_timed_horizon(
         &key,
         "basis-new",
-        "sha256:hash-new",
+        HASH_NEW,
         HorizonClass::Hours,
         expiry,
     )]);
@@ -369,9 +388,9 @@ fn basis_invalidated_escalates_with_both_sides_surfaced() {
             prior,
             current_basis_hash,
         } => {
-            assert_eq!(prior.basis_hash, "sha256:hash-old");
+            assert_eq!(prior.basis_hash, HASH_OLD);
             assert_eq!(prior.basis_id, "basis-old");
-            assert_eq!(current_basis_hash, "sha256:hash-new");
+            assert_eq!(current_basis_hash, HASH_NEW);
         }
         other => panic!(
             "run B expected EscalateBasisInvalidated, got {other:?}"
@@ -472,21 +491,21 @@ fn four_way_distinction_is_observable_end_to_end() {
         declaration_with_timed_horizon(
             &k_active,
             "bw-active",
-            "sha256:active-1",
+            HASH_ACTIVE_1,
             HorizonClass::Hours,
             expiry,
         ),
         declaration_with_timed_horizon(
             &k_expired,
             "bw-expired",
-            "sha256:expired-1",
+            HASH_EXPIRED_1,
             HorizonClass::Hours,
             expiry,
         ),
         declaration_with_timed_horizon(
             &k_invalid,
             "bw-invalid",
-            "sha256:invalid-old",
+            HASH_INVALID_OLD,
             HorizonClass::Hours,
             expiry,
         ),
@@ -522,21 +541,21 @@ fn four_way_distinction_is_observable_end_to_end() {
         declaration_with_timed_horizon(
             &k_active,
             "bw-active",
-            "sha256:active-1",
+            HASH_ACTIVE_1,
             HorizonClass::Hours,
             expiry,
         ),
         declaration_with_timed_horizon(
             &k_expired,
             "bw-expired",
-            "sha256:expired-1",
+            HASH_EXPIRED_1,
             HorizonClass::Hours,
             expiry,
         ),
         declaration_with_timed_horizon(
             &k_invalid,
             "bw-invalid-new",
-            "sha256:invalid-new",
+            HASH_INVALID_NEW,
             HorizonClass::Hours,
             expiry,
         ),

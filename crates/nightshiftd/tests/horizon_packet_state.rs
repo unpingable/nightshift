@@ -111,7 +111,11 @@ fn opts() -> PipelineOptions {
 }
 
 const BASIS_ID: &str = "maintenance-window-042";
-const BASIS_HASH: &str = "sha256:basis-abc";
+// Daemon-valid 64-hex basis_hash. The FixtureGovernorClient validates
+// basis_hash like the live daemon (sha256:[0-9a-f]{64}), so synthetic
+// Defer payloads must satisfy that shape.
+const BASIS_HASH: &str =
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn policy_with_expiry(
     key: &FindingKey,

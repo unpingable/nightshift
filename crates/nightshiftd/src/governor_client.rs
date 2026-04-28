@@ -116,9 +116,63 @@ pub trait GovernorClient: Send + Sync {
     fn record_receipt(&self, request: &RecordReceiptRequest) -> Result<RecordReceiptResponse>;
 }
 
+/// Validate a `RecordReceiptRequest` against the same rules the live
+/// Governor daemon enforces for the horizon basis hash.
+///
+/// Mirrors `agent_gov/src/governor/gate_receipt.py:HorizonBlock.__post_init__`:
+/// for non-'none' horizons, `basis_hash` must be present and match
+/// `sha256:[0-9a-f]{64}`. The daemon returns JSON-RPC error code
+/// `-32602` with the message
+/// `"basis_hash must match 'sha256:<64 hex chars>', got '...'"` and
+/// this function reproduces that exact wording so fixture rejections
+/// are indistinguishable from real-daemon rejections at the call site.
+///
+/// Scope is deliberately narrow — only the basis_hash format check.
+/// Other daemon-side checks (non-empty top-level hashes, enum
+/// validation on event_kind/from_level/to_level) are not reproduced
+/// here because the Rust types already prevent the violations the
+/// daemon catches.
+fn validate_record_receipt_request(request: &RecordReceiptRequest) -> Result<()> {
+    let Some(horizon) = request.horizon.as_ref() else {
+        return Ok(());
+    };
+    // The Rust type makes 'none' horizons unrepresentable —
+    // HorizonClass has no None variant — so we only need to check
+    // the non-'none' rule: basis_hash must be present and well-formed.
+    let Some(basis_hash) = horizon.basis_hash.as_deref() else {
+        return Err(NightShiftError::Store(
+            "governor rpc nightshift.record_receipt failed (code -32602): \
+             basis_hash is required for non-'none' horizon"
+                .into(),
+        ));
+    };
+    if !is_sha256_64_hex(basis_hash) {
+        return Err(NightShiftError::Store(format!(
+            "governor rpc nightshift.record_receipt failed (code -32602): \
+             basis_hash must match 'sha256:<64 hex chars>', got '{basis_hash}'"
+        )));
+    }
+    Ok(())
+}
+
+/// True iff `s` matches `sha256:[0-9a-f]{64}`. Hand-rolled to avoid
+/// pulling in the regex crate for one anchored pattern.
+fn is_sha256_64_hex(s: &str) -> bool {
+    let Some(hex) = s.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// In-memory test fixture. Records every `record_receipt` call so
 /// tests can assert on the emitted payload. Thread-safe for use
 /// through `&dyn GovernorClient`.
+///
+/// Validates the request the same way the live daemon does (see
+/// `validate_record_receipt_request`) before recording it. This
+/// keeps fixture-based tests honest: a payload that the fixture
+/// accepts will also be accepted by the real daemon, and vice
+/// versa for rejection.
 pub struct FixtureGovernorClient {
     calls: Mutex<Vec<RecordReceiptRequest>>,
     /// Counter for generating synthetic receipt_ids. Monotonic per
@@ -160,6 +214,12 @@ impl FixtureGovernorClient {
 
 impl GovernorClient for FixtureGovernorClient {
     fn record_receipt(&self, request: &RecordReceiptRequest) -> Result<RecordReceiptResponse> {
+        // Validate first; the live daemon would reject before
+        // emitting a receipt, so the fixture must too — otherwise
+        // synthetic tests can pass with payloads that production
+        // would refuse. Rejection happens before the call is logged.
+        validate_record_receipt_request(request)?;
+
         let mut counter = self
             .counter
             .lock()
@@ -404,6 +464,106 @@ mod tests {
         let r = basic_request(EventKind::ActionAuthorized);
         let s = serde_json::to_string(&r).unwrap();
         assert!(!s.contains("horizon"));
+    }
+
+    fn well_formed_horizon_basis_hash() -> String {
+        format!("sha256:{}", "d".repeat(64))
+    }
+
+    fn defer_request_with_basis_hash(hash: &str) -> RecordReceiptRequest {
+        RecordReceiptRequest {
+            horizon: Some(HorizonBlock {
+                class: HorizonClass::Hours,
+                basis_id: Some("policy:defer".into()),
+                basis_hash: Some(hash.into()),
+                expiry: Some("2026-04-24T03:00:00Z".parse().unwrap()),
+            }),
+            ..basic_request(EventKind::ActionAuthorized)
+        }
+    }
+
+    #[test]
+    fn is_sha256_64_hex_rejects_wrong_prefix_length_and_chars() {
+        assert!(is_sha256_64_hex(&format!("sha256:{}", "a".repeat(64))));
+        assert!(is_sha256_64_hex(&format!("sha256:{}", "0123456789abcdef".repeat(4))));
+        // Wrong prefix.
+        assert!(!is_sha256_64_hex(&format!("sha384:{}", "a".repeat(64))));
+        assert!(!is_sha256_64_hex(&"a".repeat(71)));
+        // Wrong length.
+        assert!(!is_sha256_64_hex(&format!("sha256:{}", "a".repeat(63))));
+        assert!(!is_sha256_64_hex(&format!("sha256:{}", "a".repeat(65))));
+        // Non-hex characters.
+        assert!(!is_sha256_64_hex(&format!("sha256:{}g", "a".repeat(63))));
+        assert!(!is_sha256_64_hex(&format!("sha256:{}", "A".repeat(64))));
+    }
+
+    #[test]
+    fn fixture_rejects_basis_hash_without_sha256_prefix() {
+        let client = FixtureGovernorClient::new();
+        let req = defer_request_with_basis_hash("not-a-hash");
+        let err = client
+            .record_receipt(&req)
+            .expect_err("fixture must reject malformed basis_hash");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("-32602") && msg.contains("basis_hash must match"),
+            "fixture rejection must mirror daemon's -32602 message: {msg}"
+        );
+        assert_eq!(
+            client.call_count(),
+            0,
+            "rejected request must not be recorded"
+        );
+    }
+
+    #[test]
+    fn fixture_rejects_basis_hash_with_short_hex() {
+        let client = FixtureGovernorClient::new();
+        let req = defer_request_with_basis_hash("sha256:basis-abc");
+        let err = client.record_receipt(&req).expect_err("must reject");
+        assert!(format!("{err}").contains("got 'sha256:basis-abc'"));
+    }
+
+    #[test]
+    fn fixture_rejects_horizon_with_no_basis_hash() {
+        let client = FixtureGovernorClient::new();
+        let req = RecordReceiptRequest {
+            horizon: Some(HorizonBlock {
+                class: HorizonClass::Hours,
+                basis_id: Some("policy:defer".into()),
+                basis_hash: None,
+                expiry: Some("2026-04-24T03:00:00Z".parse().unwrap()),
+            }),
+            ..basic_request(EventKind::ActionAuthorized)
+        };
+        let err = client.record_receipt(&req).expect_err("must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("basis_hash is required"),
+            "rejection message must name the missing field: {msg}"
+        );
+    }
+
+    #[test]
+    fn fixture_accepts_valid_basis_hash() {
+        let client = FixtureGovernorClient::new();
+        let req = defer_request_with_basis_hash(&well_formed_horizon_basis_hash());
+        client
+            .record_receipt(&req)
+            .expect("well-formed basis_hash must round-trip");
+        assert_eq!(client.call_count(), 1);
+    }
+
+    #[test]
+    fn fixture_accepts_request_without_horizon() {
+        // Lifecycle events that don't carry a horizon (e.g. action.applied)
+        // are not subject to basis_hash validation.
+        let client = FixtureGovernorClient::new();
+        let req = basic_request(EventKind::ActionApplied); // horizon: None
+        client
+            .record_receipt(&req)
+            .expect("non-horizon receipt must round-trip");
+        assert_eq!(client.call_count(), 1);
     }
 
     #[test]

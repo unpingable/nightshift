@@ -268,6 +268,14 @@ mod tests {
     const FAKE_EVIDENCE_HASH: &str =
         "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
+    /// Daemon-valid basis_hashes for Defer outcomes. The
+    /// `FixtureGovernorClient` validates basis_hash the same way the
+    /// live Governor daemon does (see `governor_client::
+    /// validate_record_receipt_request`), so synthetic Defer tests
+    /// must use payloads that match `sha256:[0-9a-f]{64}`.
+    const BASIS_HASH_DEFER_A: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     fn fk(detector: &str, subject: &str) -> FindingKey {
         FindingKey {
             source: "nq".into(),
@@ -420,7 +428,7 @@ mod tests {
             action: HorizonAction::Defer {
                 until: expiry,
                 basis_id: "basis-abc".into(),
-                basis_hash: "hash-abc".into(),
+                basis_hash: BASIS_HASH_DEFER_A.into(),
                 class: HorizonClass::Hours,
             },
             evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
@@ -428,7 +436,7 @@ mod tests {
         apply_horizon_outcomes(&[outcome], &store, &governor, "run_a", "agenda_x", now).unwrap();
         let record = store.load_tolerance(&key).unwrap().unwrap();
         assert_eq!(record.basis_id, "basis-abc");
-        assert_eq!(record.basis_hash, "hash-abc");
+        assert_eq!(record.basis_hash, BASIS_HASH_DEFER_A);
         assert_eq!(record.expires_at, expiry);
         assert_eq!(record.granted_in_run_id, "run_a");
     }
@@ -629,7 +637,7 @@ mod tests {
             action: HorizonAction::Defer {
                 until: expiry,
                 basis_id: "maintenance-window-042".into(),
-                basis_hash: "sha256:basis-abc".into(),
+                basis_hash: BASIS_HASH_DEFER_A.into(),
                 class: HorizonClass::Hours,
             },
             evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
@@ -651,11 +659,11 @@ mod tests {
         assert_eq!(req.run_id, "run_a");
         assert_eq!(req.agenda_id, "wal-bloat-review");
         assert_eq!(req.evidence_hash, FAKE_EVIDENCE_HASH);
-        assert_eq!(req.policy_hash, "sha256:basis-abc");
+        assert_eq!(req.policy_hash, BASIS_HASH_DEFER_A);
         let block = req.horizon.as_ref().expect("horizon must be attached");
         assert_eq!(block.class, HorizonClass::Hours);
         assert_eq!(block.basis_id.as_deref(), Some("maintenance-window-042"));
-        assert_eq!(block.basis_hash.as_deref(), Some("sha256:basis-abc"));
+        assert_eq!(block.basis_hash.as_deref(), Some(BASIS_HASH_DEFER_A));
         assert_eq!(block.expiry, Some(expiry));
     }
 
@@ -671,7 +679,7 @@ mod tests {
             action: HorizonAction::Defer {
                 until: expiry,
                 basis_id: "b".into(),
-                basis_hash: "sha256:h".into(),
+                basis_hash: BASIS_HASH_DEFER_A.into(),
                 class: HorizonClass::Hours,
             },
             evidence_hash: Some(FAKE_EVIDENCE_HASH.into()),
