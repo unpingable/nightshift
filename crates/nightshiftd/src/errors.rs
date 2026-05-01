@@ -29,6 +29,13 @@ pub enum NightShiftError {
     #[error("run has no persisted bundle: {0}")]
     RunBundleMissing(String),
 
+    #[error("NQ finding inadmissible: finding_key={finding_key}, state={state}, reason={reason}")]
+    NqInadmissible {
+        finding_key: String,
+        state: String,
+        reason: String,
+    },
+
     #[error("store error: {0}")]
     Store(String),
 

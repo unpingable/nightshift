@@ -179,7 +179,7 @@ fn cli_source_rejects_drifted_schema_on_wire() {
     // Emit a single JSONL line that is structurally similar to a v1
     // snapshot but advertises a newer schema. parse_nq_line must
     // reject it; the error must surface, not pass through as None.
-    let drifted = r#"{"schema":"nq.finding_snapshot.v99","contract_version":1,"finding_key":"local/h/d/s","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":1,"severity":"info","condition_state":"open"}}"#;
+    let drifted = r#"{"schema":"nq.finding_snapshot.v99","contract_version":1,"finding_key":"local/h/d/s","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":1,"severity":"info","condition_state":"open"},"admissibility":{"state":"observable","reason":"none"}}"#;
     // The fake-nq script must produce the canonical key Night Shift
     // is asking about, so the drifted line is actually consumed
     // (otherwise the consumer skips non-matching keys silently).

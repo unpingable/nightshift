@@ -107,6 +107,14 @@ pub const NQ_EXPORT_CONTRACT_VERSION: u32 = 1;
 /// Shape of one NQ `FindingSnapshot` JSON object. Deserialize-only;
 /// we only pull the subset Night Shift actually translates.
 /// Unknown fields are ignored so NQ can add non-breaking detail.
+///
+/// `admissibility` is parsed and load-bearing: the wire ships
+/// `state ∈ {observable, suppressed_by_ancestor, suppressed_by_declaration,
+/// cannot_testify, stale}` per NQ's FINDING_EXPORT V1 surface, and Night
+/// Shift refuses non-observable findings at parse time. Relying on the
+/// CLI's `--include-suppressed=false` default to filter is not enough —
+/// admissibility is a contract claim about evidence shape, not a
+/// presentation flag.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NqExportDto {
     pub schema: String,
@@ -114,6 +122,17 @@ pub struct NqExportDto {
     pub finding_key: String,
     pub identity: NqIdentityDto,
     pub lifecycle: NqLifecycleDto,
+    pub admissibility: NqAdmissibilityDto,
+}
+
+/// Subset of NQ's `admissibility` block. Only `state` and `reason` are
+/// parsed in V1.2; `ancestor_finding_key` and `declaration_id` are
+/// ignored (forward-compat tolerant). The consumer's job here is the
+/// admit/refuse gate, not ancestor resolution.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NqAdmissibilityDto {
+    pub state: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +168,13 @@ pub fn parse_nq_line(line: &str) -> Result<NqExportDto> {
             "NQ export contract_version mismatch: expected {NQ_EXPORT_CONTRACT_VERSION}, got {}",
             dto.contract_version
         )));
+    }
+    if dto.admissibility.state != "observable" {
+        return Err(NightShiftError::NqInadmissible {
+            finding_key: dto.finding_key.clone(),
+            state: dto.admissibility.state.clone(),
+            reason: dto.admissibility.reason.clone(),
+        });
     }
     Ok(dto)
 }
@@ -522,7 +548,7 @@ mod tests {
 
     // ---- NQ CLI parser + translator tests ----
 
-    const SAMPLE_NQ_JSONL: &str = r#"{"schema":"nq.finding_snapshot.v1","contract_version":1,"finding_key":"local/labelwatch-host/wal_bloat/%2Fvar%2Flib%2Flabelwatch.sqlite","identity":{"scope":"local","host":"labelwatch-host","detector":"wal_bloat","subject":"/var/lib/labelwatch.sqlite","rule_hash":null},"lifecycle":{"first_seen_gen":39000,"first_seen_at":"2026-04-10T14:32:15Z","last_seen_gen":39532,"last_seen_at":"2026-04-17T03:00:00Z","consecutive_gens":6,"absent_gens":0,"severity":"warning","visibility_state":"visible","condition_state":"open","finding_class":"accumulation","stability":null,"peak_value":518.0,"message":"wal grew to 518MB"},"diagnosis":null,"regime":{"trajectory":null,"persistence":null,"recovery":null,"co_occurrence":null,"resolution":null},"observations":{"total_count":6,"recent":[]},"generation":{"generation_id":39532,"started_at":null,"completed_at":null,"status":null,"sources_expected":null,"sources_ok":null,"sources_failed":null},"export":{"exported_at":"2026-04-17T03:00:00Z","changed_since":null,"source":"nq","contract_version":1}}"#;
+    const SAMPLE_NQ_JSONL: &str = r#"{"schema":"nq.finding_snapshot.v1","contract_version":1,"finding_key":"local/labelwatch-host/wal_bloat/%2Fvar%2Flib%2Flabelwatch.sqlite","identity":{"scope":"local","host":"labelwatch-host","detector":"wal_bloat","subject":"/var/lib/labelwatch.sqlite","rule_hash":null},"lifecycle":{"first_seen_gen":39000,"first_seen_at":"2026-04-10T14:32:15Z","last_seen_gen":39532,"last_seen_at":"2026-04-17T03:00:00Z","consecutive_gens":6,"absent_gens":0,"severity":"warning","visibility_state":"visible","condition_state":"open","finding_class":"accumulation","stability":null,"peak_value":518.0,"message":"wal grew to 518MB"},"diagnosis":null,"regime":{"trajectory":null,"persistence":null,"recovery":null,"co_occurrence":null,"resolution":null},"observations":{"total_count":6,"recent":[]},"generation":{"generation_id":39532,"started_at":null,"completed_at":null,"status":null,"sources_expected":null,"sources_ok":null,"sources_failed":null},"export":{"exported_at":"2026-04-17T03:00:00Z","changed_since":null,"source":"nq","contract_version":1},"admissibility":{"state":"observable","reason":"none"}}"#;
 
     #[test]
     fn parse_accepts_expected_schema_and_version() {
@@ -537,7 +563,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_wrong_schema() {
-        let wrong = r#"{"schema":"nq.finding_snapshot.v2","contract_version":1,"finding_key":"x","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":0,"severity":"info","condition_state":"open"}}"#;
+        let wrong = r#"{"schema":"nq.finding_snapshot.v2","contract_version":1,"finding_key":"x","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":0,"severity":"info","condition_state":"open"},"admissibility":{"state":"observable","reason":"none"}}"#;
         let err = parse_nq_line(wrong).unwrap_err();
         assert!(
             format!("{err}").contains("schema mismatch"),
@@ -547,7 +573,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_wrong_contract_version() {
-        let wrong = r#"{"schema":"nq.finding_snapshot.v1","contract_version":999,"finding_key":"x","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":0,"severity":"info","condition_state":"open"}}"#;
+        let wrong = r#"{"schema":"nq.finding_snapshot.v1","contract_version":999,"finding_key":"x","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":0,"severity":"info","condition_state":"open"},"admissibility":{"state":"observable","reason":"none"}}"#;
         let err = parse_nq_line(wrong).unwrap_err();
         assert!(
             format!("{err}").contains("contract_version mismatch"),
