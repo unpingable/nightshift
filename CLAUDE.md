@@ -74,6 +74,7 @@ context bundles that revalidate their own premises before execution.
   - `GAP-slice-cycle.md` — *(candidate)* work-cycle cadence; keeper line + load-bearing invariant; reconciliation against lifecycle ladder pending review
   - `GAP-workflow-routing-boundary.md` — *(candidate)* cross-tool routing across NQ/NS/Standing/Verifier/Governor/Continuity; six keeper lines; "Route by claim type, not by tool identity"; claim-type taxonomy + later-check taxonomy
   - `GAP-architectural-promotion-boundary.md` — *(candidate)* roadmap ≠ authorization; three action classes (containment / tuning / architectural promotion); surface promotion pressure, do not ratify architecture; six keeper lines
+  - `GAP-solution-family-exhaustion.md` — *(candidate)* "repeated repair inside the same context is evidence against the context"; mitigation chain + failure-bucket migration; `may_execute: false` review-shaped signal; detect, do not resolve; five keeper lines
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
 ## Conventions
