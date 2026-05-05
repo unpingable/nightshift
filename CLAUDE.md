@@ -77,6 +77,7 @@ Night Shift preserves deferred operational obligations, prevents unresolved work
   - `GAP-workflow-routing-boundary.md` — *(candidate)* cross-tool routing across NQ/NS/Standing/Verifier/Governor/Continuity; six keeper lines; "Route by claim type, not by tool identity"; claim-type taxonomy + later-check taxonomy
   - `GAP-architectural-promotion-boundary.md` — *(candidate)* roadmap ≠ authorization; three action classes (containment / tuning / architectural promotion); surface promotion pressure, do not ratify architecture; six keeper lines
   - `GAP-solution-family-exhaustion.md` — *(candidate)* "repeated repair inside the same context is evidence against the context"; mitigation chain + failure-bucket migration; `may_execute: false` review-shaped signal; detect, do not resolve; five keeper lines
+  - `GAP-lesson-distillation-boundary.md` — *(candidate)* meta-meta: rules under which Night Shift may extract candidate lessons / motifs from reconciliation history without applying them as authority; five-stage pattern lifecycle (no skipping); inaugural seed bank with candidate-grade motifs; "pattern recognition is competence, pattern authority is where the furniture starts floating"
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
 ## Conventions
