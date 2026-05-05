@@ -9,6 +9,8 @@ Night Shift manages admissibility across time. Its job is not to decide whether 
 Schedules and resumes *intent* — not commands — under declared policy, with
 context bundles that revalidate their own premises before execution.
 
+Night Shift preserves deferred operational obligations, prevents unresolved work from masquerading as resolved, and detects when the kind of work has changed.
+
 ## What This Is Not
 
 - Not cron with opinions. Cron executes blindly; Night Shift reconciles before acting.
