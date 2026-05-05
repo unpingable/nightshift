@@ -346,6 +346,45 @@ Per YAGNI posture and the no-implementation constraint:
 
 A record is not authorization to build.
 
+## Transport is not governance
+
+If routing packets later move through a broker, queue, or bus, the
+transport layer must remain semantically subordinate to the routing
+boundary.
+
+A broker may preserve delivery state. It does not preserve decision
+state.
+
+Delivery guarantees do not imply any of:
+
+- current testimony
+- fresh evidence
+- standing
+- authorization
+- admissibility
+- consequence ownership
+- valid premises
+
+A queued packet may be durable while its premise has expired. A
+redelivered packet may be transport-valid while its authorization is
+stale. An ack confirms handling at the transport layer; it is not a
+Verifier verdict, a Governor authorization, or a Night Shift
+reconciliation result.
+
+Transport-safe keepers (caveat-scoped, not promoted into the doc's
+top-level keepers):
+
+> **Queue presence is not work authorization.**
+
+> **Delivery is not admissibility.**
+
+> **A broker preserves delivery state, not decision state.**
+
+This does not forbid RabbitMQ, AMQP, a database queue, cron, a run
+ledger, or any other carrier. It forbids treating the carrier's
+delivery semantics as routing, evidence, or authority semantics. The
+carrier moves bytes; the routing boundary still binds the claims.
+
 ## Trigger conditions for ratification
 
 Ratify (and consider building the routing envelope) when one of
