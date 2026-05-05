@@ -72,6 +72,7 @@ context bundles that revalidate their own premises before execution.
   - `GAP-backup-restore.md` — operational backup / restore for continuity-bearing workloads; Backup Contract; capture methods; off-host destinations; verification and restore drills; integration with Governor / NQ / Continuity boundaries
   - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
   - `GAP-slice-cycle.md` — *(candidate)* work-cycle cadence; keeper line + load-bearing invariant; reconciliation against lifecycle ladder pending review
+  - `GAP-workflow-routing-boundary.md` — *(candidate)* cross-tool routing across NQ/NS/Standing/Verifier/Governor/Continuity; six keeper lines; "Route by claim type, not by tool identity"; claim-type taxonomy + later-check taxonomy
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
 
 ## Conventions
