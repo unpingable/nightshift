@@ -6,13 +6,20 @@ use clap::{Parser, Subcommand};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
-use nightshiftd::liveness::{CliLivenessSource, LivenessSource};
+use nightshiftd::liveness::{
+    CliLivenessSource, LivenessSource, DEFAULT_STALENESS_THRESHOLD_SECONDS,
+};
+use nightshiftd::liveness_peek::{
+    render_peek_text as render_liveness_peek_text, LivenessPeekDocument, ThresholdSource,
+};
 use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqListFilter, NqSource};
 use nightshiftd::nq_peek::{render_peek_text, PeekDocument};
 use nightshiftd::pipeline::{
     capture_phase, reconcile_phase, run_watchbill_with_liveness, CaptureOutcome, PipelineOptions,
 };
-use nightshiftd::posture::{list_postures, load_posture, render_list_row, render_show, PostureFilter};
+use nightshiftd::posture::{
+    list_postures, load_posture, render_list_row, render_show, PostureFilter,
+};
 use nightshiftd::store::sqlite::SqliteStore;
 
 #[derive(Parser, Debug)]
@@ -88,6 +95,29 @@ enum Command {
     Nq {
         #[command(subcommand)]
         action: NqAction,
+    },
+    /// Inspection surface for the NQ liveness artifact (the same DTO
+    /// the pipeline gate consumes).
+    Liveness {
+        #[command(subcommand)]
+        action: LivenessAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LivenessAction {
+    /// Show what `nq liveness export` returns and what Night Shift's
+    /// gate would do with it. Both views appear side-by-side so the
+    /// operator can see when upstream `freshness.fresh` and Night
+    /// Shift's verdict diverge (the clock-skew wrinkle).
+    ///
+    /// Requires `--nq-liveness <path>` (global). Threshold defaults to
+    /// `DEFAULT_STALENESS_THRESHOLD_SECONDS` (90s) when
+    /// `--nq-liveness-threshold-secs` is not set.
+    Peek {
+        /// Output format: `text` (default) or `json`.
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -225,7 +255,35 @@ fn main() -> anyhow::Result<()> {
                 *show_raw,
             ),
         },
+        Command::Liveness { action } => match action {
+            LivenessAction::Peek { format } => liveness_peek_cmd(&cli, format),
+        },
     }
+}
+
+fn liveness_peek_cmd(cli: &Cli, format: &str) -> anyhow::Result<()> {
+    let path = cli
+        .nq_liveness
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("liveness peek requires --nq-liveness <path>"))?;
+    let mut src = CliLivenessSource::new(path);
+    if let Some(bin) = &cli.nq_bin {
+        src = src.with_nq_bin(bin);
+    }
+    let snapshot = src.current()?;
+    let (threshold, source) = match cli.nq_liveness_threshold_secs {
+        Some(n) => (n, ThresholdSource::Operator),
+        None => (
+            DEFAULT_STALENESS_THRESHOLD_SECONDS,
+            ThresholdSource::Default,
+        ),
+    };
+    let doc = LivenessPeekDocument::build(snapshot, threshold, source);
+    match format {
+        "json" => println!("{}", doc.to_json_pretty()),
+        _ => print!("{}", render_liveness_peek_text(&doc)),
+    }
+    Ok(())
 }
 
 fn nq_peek_cmd(
@@ -315,7 +373,11 @@ fn build_liveness_source(cli: &Cli) -> Option<Box<dyn LivenessSource>> {
     Some(Box::new(src))
 }
 
-fn run_watchbill_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyhow::Result<()> {
+fn run_watchbill_cmd(
+    cli: &Cli,
+    agenda_path: &std::path::Path,
+    finding: &str,
+) -> anyhow::Result<()> {
     let agenda = Agenda::from_yaml_file(agenda_path)?;
     let nq = build_nq_source(cli)?;
     let liveness = build_liveness_source(cli);
@@ -406,4 +468,3 @@ fn parse_finding_arg(s: &str) -> anyhow::Result<FindingKey> {
         _ => anyhow::bail!("finding must be `<source>:<detector>:<subject>`, got: {s}"),
     }
 }
-
