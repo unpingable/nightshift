@@ -39,9 +39,9 @@ load-bearing now, the implementation is still deferred.
 
 ## Keeper lines
 
-Six load-bearing lines. Each is the operational expression of one
-axis of the failure mode. If the rest of this doc evolves, these
-stay:
+Seven load-bearing lines. The first six are the axes of the failure
+mode; the seventh is a corollary on rollback as mutation. If the
+rest of this doc evolves, these stay:
 
 > **Trigger conditions authorize a question. They do not authorize an actor.**
 
@@ -51,9 +51,11 @@ stay:
 
 > **Ack-gated mutations create catch-up cascades. Time-bounded leases or refusal.**
 
-> **Live monitoring and live mutation must not share a single loose thread.**
+> **Live monitoring and live mutation must be ledgered separately.**
 
 > **An alarm may wake the operator. It may not become the operator.**
+
+> **Rollback is not repentance. It is another action.**
 
 Each is unpacked below.
 
@@ -104,6 +106,23 @@ This is the sixth GAP in this series whose witness traces back to
 the driftwatch / labelwatch operational fire. The cited-not-absorbed
 practice is what is keeping Night Shift doctrine generalizable
 instead of contracting to one neighborhood's incident shape.
+
+## Mechanism: context preserves procedure after authority expires
+
+The failure mode above has a single sentence underneath it:
+long-session context preserves procedure after its authority has
+expired. Call it *context-window poisoning*. The staged plan, the
+earlier ack, the operator's prior presence, the assumed control
+loop — all remain readable in conversational scrollback long after
+they have ceased to be live preconditions. The actor inherits them
+as background gravity rather than as facts requiring re-derivation.
+
+CLAUDE.md invariant 3 — *recheck is the gate, not metadata; every
+input passes through the Reconciler by virtue of the pipe it enters
+on* — is the structural antidote. The Reconciler refuses
+prior-context gravity standing in for current authority. This GAP
+names the disease the Reconciler treats; it does not expand the
+antidote.
 
 ## Six-axis decomposition of the failure mode
 
@@ -169,7 +188,7 @@ If a mutation sequence cannot complete within its lease, it stops
 and reports — it does not resume after the lease has lapsed, even if
 the original ack would have covered it.
 
-### 5. Live monitoring and live mutation must not share a single thread
+### 5. Live monitoring and live mutation must be ledgered separately
 
 In the labelwatch witness, monitor notifications buried the
 in-flight mutation in conversational scrollback. The session's model
@@ -177,7 +196,7 @@ of "what is the current action state" diverged from the actual
 system state. Action state was being carried by *vibes plus
 scrollback*, exactly what Night Shift exists to refuse.
 
-> **Live monitoring and live mutation must not share a single loose thread.**
+> **Live monitoring and live mutation must be ledgered separately.**
 
 Action state belongs in a ledger, not in chat history. This is the
 operational expression of CLAUDE.md invariant 4 (*every run produces
@@ -232,6 +251,26 @@ declared policies. Conflating actor quiescence with system quiescence
 is exactly the production-unsafe shorthand "stop monitoring when
 stable" — which trades one failure mode (acting on noise) for a
 worse one (going blind during the operator's absence).
+
+## Corollary: rollback is mutation
+
+The labelwatch witness ends with a rollback that rolled nothing
+back: the config edit had been staged but never affected the
+running container, so the rollback undid no production state while
+adding doctrinal noise. Rollback-as-reflex against discomfort is
+not safer than the original mutation; it is a *second* mutation,
+justified or unjustified on its own terms.
+
+> **Rollback is not repentance. It is another action.**
+
+Rollback inherits the same authority requirements as the forward
+action it nominally undoes — explicit autonomous-execution grant,
+action class, lease, fresh evidence, fresh ack. The default does
+not soften because the action is undoing rather than doing. A
+rollback that proceeds because "something is wrong" rather than
+because the rollback is itself authorized and warranted is the
+same failure mode as the forward action proceeding because the
+trigger fired.
 
 ## Required Night Shift behavior
 
@@ -339,7 +378,7 @@ spite of the plant, not because of it.
 
 ### Test-contract keepers
 
-These two lines are evaluation-shaped, distinct from the six
+These two lines are evaluation-shaped, distinct from the seven
 load-bearing keepers above. They state how the boundary is tested,
 not what the boundary is.
 
@@ -465,7 +504,7 @@ holds.
 ### CLAUDE.md invariant 4 (every run produces ledger events)
 
 Invariant 4 is the structural backstop for the fifth keeper (*live
-monitoring and live mutation must not share a single loose thread*).
+monitoring and live mutation must be ledgered separately*).
 Action state belongs in the ledger; chat scrollback is not a
 substitute. This GAP names that requirement specifically for
 sessions that mix observation with mutation.
@@ -562,9 +601,10 @@ happens:
    point the third keeper's TTL becomes operationally checkable
    rather than implicit.
 
-Until one of those triggers fires, this stays a candidate. The six
-keepers, the operational rule, and the field-shape sketch are the
-load-bearing parts; the implementation is deliberately deferred.
+Until one of those triggers fires, this stays a candidate. The
+seven keepers, the operational rule, and the field-shape sketch
+are the load-bearing parts; the implementation is deliberately
+deferred.
 
 ## Vocabulary overlaps with existing Night Shift docs
 
@@ -623,8 +663,9 @@ No vocabulary in this doc renames existing terminology. New
 introductions are: trigger authority vs execution authority,
 autonomous execution as positive grant, the lease, actor
 quiescence (narrowly scoped), alarm/remediation policy split,
-monitor/mutation separation, the six keeper lines, the plant /
-duty / operator role taxonomy, and negative-space scoring.
+monitor/mutation separation, the seven keeper lines, the plant /
+duty / operator role taxonomy, negative-space scoring, the rollback
+corollary, and context-window poisoning as named mechanism.
 
 ## Open questions (not load-bearing for the record)
 
