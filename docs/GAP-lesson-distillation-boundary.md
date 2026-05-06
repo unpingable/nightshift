@@ -161,6 +161,89 @@ operator prose at the *applied advisory* register without having
 passed through *candidate meta-pattern* and *ratified pattern* is
 the failure this lifecycle exists to prevent.
 
+## Candidate sharpening of the lifecycle: transitions, not nouns
+
+> Status: candidate / not ratified. Filed in repo text rather than
+> as its own GAP (premature promotion of this candidate into a
+> standalone GAP would itself violate the rule below — the rule
+> forbids unwitnessed promotion, not all standalone GAPs) and
+> rather than memory-only (see *retrieval-hook discipline* below).
+> The location of record is itself part of the discipline this
+> section names.
+
+The pattern lifecycle above answers *when* a candidate advances
+through stages. This section names a candidate sharpening of the
+*entry criterion* — what makes a pattern eligible for the lifecycle
+in the first place.
+
+### The candidate rule
+
+> **Do not mint a new primitive until you know what transition it governs.**
+
+Operational form. A candidate primitive earns lifecycle entry only
+when it names the transition it blocks, permits, classifies, or
+audits. A name that labels a noun without the transition stays
+unfiled.
+
+> **Do not promote an ensemble of new primitives faster than the
+> transition graph can absorb.**
+
+Volume caution. Each primitive may pass the transitions test
+alone; the ensemble forces graph-wide integration that may exceed
+what the existing transition graph holds without rewriting.
+
+### Witnesses
+
+- *Labelwatch autonomous-execution incident, 2026-05-06.* After
+  the `GAP-autonomous-execution-boundary.md` tightenings landed, a
+  fifteen-item enumeration of additional candidate primitives was
+  generated (operator-state model, stranded preparation, recovery
+  race, read-only cost classes, role identity drift, repeated-alarm
+  pressure, evidence-from-silence, and others). Most items
+  individually governed transitions. The threat was volume — the
+  set would have forced an ensemble-level transition-graph rewrite
+  faster than existing transitions could absorb. Three items
+  promoted (rollback-as-mutation corollary, keeper-5 reword,
+  context-window-poisoning mechanism note); twelve held.
+- *Primitive-chase → state-space framing*, the recurring prior
+  lesson. The shape rhymes; the rule generalizes.
+
+### Recursive self-check
+
+The rule's own transition is *candidate-pattern → load-bearing-
+doctrine* inside the pattern lifecycle above. It passes its own
+test, which is what makes it filable here. It does not pass into
+ratification by being filable; ratification waits for either
+explicit operator ratification or a second independent witness.
+
+### Non-authority
+
+- Does not authorize new GAP creation.
+- Not a roadmap, punch list, or benchmark spec.
+- Does not modify the pattern lifecycle text above. Lifecycle
+  modification is a separate move with its own ratification trigger.
+
+### Retrieval-hook discipline
+
+The pair of operative principles for *where* candidate work lives
+between recognition and filing:
+
+> **Record the candidate where it will be reviewed, not where it
+> will self-promote.**
+
+> **"Later" is the unsecured S3 bucket of cognition.**
+
+Deferral requires a retrieval hook — repo text, a memory pointer,
+an index entry, or an explicit review surface in the GAP it would
+eventually amend. Otherwise deferral becomes silent deletion. A
+candidate held only in conversational memory or in the operator's
+recollection is not deferred; it is leaked.
+
+For this rule specifically, repo text is the primary review surface
+(the next GAP-author consults this file before filing). The
+original memory pointer (`memory/project_transitions_not_nouns.md`)
+is preserved as a backup handle, not as the primary record.
+
 ## What Night Shift may safely do
 
 Inside this boundary, Night Shift's pattern-related competence
