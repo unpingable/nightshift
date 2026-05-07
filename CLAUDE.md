@@ -81,6 +81,7 @@ Night Shift preserves deferred operational obligations, prevents unresolved work
   - `GAP-autonomous-execution-boundary.md` — *(candidate, real witness)* trigger conditions ≠ execution authority; staged plan transfers procedure, not autonomy; alarm-vs-remediation policy split (alarms persist when operator absent, mutation does not); lease + fresh-ack semantics; "an alarm may wake the operator, it may not become the operator"; six keeper lines + rollback corollary; test contract (plant/duty/operator) and context-window-poisoning mechanism note added 2026-05-06
   - `GAP-rumination-boundary.md` — *(candidate, no internal witness)* memory-domain analogue of trigger ≠ authority: synthesis ≠ standing; three-actor split (NS triggers retrospect / Ruminate synthesizes / Governor or Continuity grants memory-standing); "a dream may propose memory; it may not become memory without standing"; skeleton scope only — output-class taxonomy and migration phases held in memory until a witness fires
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
+  - `AUDIT-BACKLOG.md` — audit-owed breadcrumbs only. Not GAPs, not accepted doctrine, not implementation plans. Promote an entry only after repo-local audit finds an actual construction/provenance boundary or laundering vector.
 
 ## Conventions
 
