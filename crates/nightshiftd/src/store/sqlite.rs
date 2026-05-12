@@ -621,6 +621,8 @@ diagnosis: { mode: self_check }
             snapshot_generation: 1,
             captured_at: Utc::now(),
             evidence_hash: String::new(),
+            origin: None,
+            silence: None,
         }
     }
 

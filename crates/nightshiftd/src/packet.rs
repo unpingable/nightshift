@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agenda::AuthorityLevel;
 use crate::bundle::ReconciliationSummary;
-use crate::finding::{EvidenceState, FindingKey, Severity};
+use crate::finding::{EvidenceState, FindingKey, FindingOrigin, FindingSilence, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +52,18 @@ pub struct FindingSummary {
     pub persistence_generations: u32,
     pub first_seen_at: DateTime<Utc>,
     pub current_status: EvidenceState,
+    /// `DURABLE_ARTIFACT_SUBSTRATE_GAP` V1 (Slice A visibility-only):
+    /// origin envelope passed through from the underlying snapshot.
+    /// Present for ingested findings; absent for native NQ findings.
+    /// Visibility-only — Night Shift does not branch on this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<FindingOrigin>,
+    /// SILENCE_UNIFICATION shared envelope passed through. V1
+    /// populates only on `extraction_stale`; legacy silence detectors
+    /// omit pending migration. Visibility-only — Night Shift does
+    /// not branch on this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silence: Option<FindingSilence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

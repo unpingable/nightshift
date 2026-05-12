@@ -101,6 +101,8 @@ fn capture_input_for(key: &FindingKey, captured_at: DateTime<Utc>) -> CaptureInp
         snapshot_generation: 39000,
         captured_at,
         evidence_hash: "sha256:baseline".into(),
+        origin: None,
+        silence: None,
     };
     CaptureInput {
         input_id: input_id_for(key),

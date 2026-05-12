@@ -527,6 +527,8 @@ mod tests {
             snapshot_generation: 39000 + u64::from(hash_seed),
             captured_at: Utc.with_ymd_and_hms(2026, 4, 17, 3, 0, 0).unwrap(),
             evidence_hash: String::new(),
+            origin: None,
+            silence: None,
         }
     }
 

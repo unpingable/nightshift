@@ -82,7 +82,7 @@ identifies one of:
 2. A laundering vector at an NS wire boundary — a path where shape
    conformance is sufficient for downstream consumers to honor the
    bytes as NS-emitted.
-3. A forcing case — an actual incident where laundered input
+3. A live case — an actual incident where laundered input
    produced a non-trivially-bounded NS action.
 
 Until one of those, this entry holds the question.

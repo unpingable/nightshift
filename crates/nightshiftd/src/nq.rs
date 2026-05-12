@@ -21,7 +21,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::errors::{NightShiftError, Result};
-use crate::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity};
+use crate::finding::{
+    EvidenceState, FindingKey, FindingOrigin, FindingSilence, FindingSnapshot, Severity,
+};
 
 /// Trait for pulling the current snapshot of a finding by stable identity.
 pub trait NqSource: Send + Sync {
@@ -123,6 +125,16 @@ pub struct NqExportDto {
     pub identity: NqIdentityDto,
     pub lifecycle: NqLifecycleDto,
     pub admissibility: NqAdmissibilityDto,
+    /// Forward-compat: `DURABLE_ARTIFACT_SUBSTRATE_GAP` V1. Absent
+    /// for native NQ findings; present with `source = "import"` for
+    /// findings ingested via `nq.finding_import.v1`.
+    #[serde(default)]
+    pub origin: Option<NqOriginDto>,
+    /// Forward-compat: SILENCE_UNIFICATION shared envelope. V1
+    /// populates only on `extraction_stale`. Absent on legacy
+    /// silence detectors pending migration.
+    #[serde(default)]
+    pub silence: Option<NqSilenceDto>,
 }
 
 /// Subset of NQ's `admissibility` block. Only `state` and `reason` are
@@ -152,6 +164,32 @@ pub struct NqLifecycleDto {
     pub consecutive_gens: i64,
     pub severity: String,
     pub condition_state: String,
+}
+
+/// NQ's `origin` envelope on the wire (`DURABLE_ARTIFACT_SUBSTRATE_GAP`
+/// V1). Present only when the finding was ingested via
+/// `nq.finding_import.v1`. Forward-compat: NS reads but does not yet
+/// branch on any field — per Slice A visibility-only constraints.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NqOriginDto {
+    pub source: String,
+    pub producer_id: String,
+    pub extraction_run_id: String,
+    pub producer_extraction_time: String,
+    pub import_contract_version: u32,
+}
+
+/// NQ's `silence` envelope on the wire (SILENCE_UNIFICATION shared
+/// contract). V1: populated only on `extraction_stale`. Absent on
+/// legacy silence detectors pending migration — absence is "not yet
+/// unified", not "not silence." Forward-compat: NS reads but does
+/// not yet branch.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NqSilenceDto {
+    pub scope: String,
+    pub basis: String,
+    pub duration_s: i64,
+    pub expected: String,
 }
 
 /// Parse one NQ JSONL line into the DTO.
@@ -233,6 +271,39 @@ pub fn translate_nq(dto: &NqExportDto) -> Result<FindingSnapshot> {
         subject: format!("{}:{}", dto.identity.host, dto.identity.subject),
     };
 
+    // DURABLE_ARTIFACT_SUBSTRATE_GAP V1 (Slice A visibility-only): pass
+    // origin and silence envelopes through to the NS-internal model.
+    // No branching on either — see Deferred semantics in
+    // `tests/durable_artifact_substrate_v1.rs`.
+    let origin = dto
+        .origin
+        .as_ref()
+        .map(|o| -> Result<FindingOrigin> {
+            let producer_extraction_time =
+                DateTime::parse_from_rfc3339(&o.producer_extraction_time)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .map_err(|e| {
+                        NightShiftError::InvalidAgenda(format!(
+                            "NQ origin.producer_extraction_time not RFC3339: {e}"
+                        ))
+                    })?;
+            Ok(FindingOrigin {
+                source: o.source.clone(),
+                producer_id: o.producer_id.clone(),
+                extraction_run_id: o.extraction_run_id.clone(),
+                producer_extraction_time,
+                import_contract_version: o.import_contract_version,
+            })
+        })
+        .transpose()?;
+
+    let silence = dto.silence.as_ref().map(|s| FindingSilence {
+        scope: s.scope.clone(),
+        basis: s.basis.clone(),
+        duration_s: s.duration_s,
+        expected: s.expected.clone(),
+    });
+
     Ok(FindingSnapshot {
         finding_key,
         host: dto.identity.host.clone(),
@@ -244,6 +315,8 @@ pub fn translate_nq(dto: &NqExportDto) -> Result<FindingSnapshot> {
         snapshot_generation,
         captured_at: last_seen_at,
         evidence_hash: String::new(),
+        origin,
+        silence,
     })
 }
 
@@ -518,6 +591,8 @@ mod tests {
             snapshot_generation: 39532,
             captured_at: Utc.with_ymd_and_hms(2026, 4, 16, 22, 0, 0).unwrap(),
             evidence_hash: String::new(),
+            origin: None,
+            silence: None,
         }
     }
 

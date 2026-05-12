@@ -56,6 +56,18 @@ pub struct TranslatedView {
     pub first_seen_at: String,
     pub last_seen_at: String,
     pub evidence_hash: String,
+    /// `DURABLE_ARTIFACT_SUBSTRATE_GAP` V1 (Slice A visibility-only):
+    /// origin envelope from NQ wire shape, surfaced to the operator
+    /// so both clocks are visible side-by-side (`last_seen_at` =
+    /// NQ ingest clock; `origin.producer_extraction_time` = producer
+    /// clock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::finding::FindingOrigin>,
+    /// SILENCE_UNIFICATION shared envelope. V1: populated on
+    /// `extraction_stale`; legacy silence detectors omit pending
+    /// migration. Surfaced for operator visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silence: Option<crate::finding::FindingSilence>,
 }
 
 impl PeekDocument {
@@ -87,6 +99,8 @@ impl PeekDocument {
                     first_seen_at: snap.first_seen_at.to_rfc3339(),
                     last_seen_at: snap.captured_at.to_rfc3339(),
                     evidence_hash: snap.evidence_hash.clone(),
+                    origin: snap.origin.clone(),
+                    silence: snap.silence.clone(),
                 };
                 let raw = if show_raw {
                     serde_json::from_str::<serde_json::Value>(&item.raw_line).ok()
@@ -145,6 +159,24 @@ pub fn render_peek_text(doc: &PeekDocument, show_raw: bool) -> String {
             t.first_seen_at, t.last_seen_at
         ));
         out.push_str(&format!("  evidence_hash: {}\n", t.evidence_hash));
+        // DURABLE_ARTIFACT_SUBSTRATE_GAP V1 (visibility-only): both
+        // clocks and the silence envelope, when present.
+        if let Some(o) = &t.origin {
+            out.push_str(&format!(
+                "  origin: source={}   producer_id={}   extraction_run_id={}\n",
+                o.source, o.producer_id, o.extraction_run_id
+            ));
+            out.push_str(&format!(
+                "    producer_extraction_time: {}   (last_seen above is NQ ingest clock)\n",
+                o.producer_extraction_time.to_rfc3339()
+            ));
+        }
+        if let Some(s) = &t.silence {
+            out.push_str(&format!(
+                "  silence: scope={}   basis={}   duration_s={}   expected={}\n",
+                s.scope, s.basis, s.duration_s, s.expected
+            ));
+        }
         if show_raw {
             if let Some(raw) = &f.raw {
                 out.push_str("  raw (NQ): ");
@@ -180,6 +212,8 @@ mod tests {
             snapshot_generation: generation,
             captured_at: Utc.with_ymd_and_hms(2026, 4, 17, 0, 0, 0).unwrap(),
             evidence_hash: format!("sha256:{generation:08x}"),
+            origin: None,
+            silence: None,
         };
         let raw_line = format!(
             r#"{{"schema":"nq.finding_snapshot.v1","contract_version":1,"finding_key":"local/{host}/{detector}/{subject}","placeholder":true}}"#

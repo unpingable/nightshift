@@ -540,6 +540,8 @@ fn build_success_packet(
         persistence_generations: current_snapshot.persistence_generations,
         first_seen_at: current_snapshot.first_seen_at,
         current_status: current_snapshot.current_status,
+        origin: current_snapshot.origin.clone(),
+        silence: current_snapshot.silence.clone(),
     };
 
     let (diagnosis, proposed_action) = build_verdict_surfaces(
@@ -726,6 +728,8 @@ fn hold_for_preflight(
         persistence_generations: captured_snapshot.persistence_generations,
         first_seen_at: captured_snapshot.first_seen_at,
         current_status: captured_snapshot.current_status,
+        origin: captured_snapshot.origin.clone(),
+        silence: captured_snapshot.silence.clone(),
     };
 
     let reconciliation_summary = crate::bundle::ReconciliationSummary {
@@ -887,6 +891,10 @@ fn liveness_gate_failed(
         persistence_generations: 0,
         first_seen_at: snapshot.export.exported_at,
         current_status: EvidenceState::Stale,
+        // Liveness gate failure path: no underlying NQ finding to
+        // carry origin/silence from. Both absent by construction.
+        origin: None,
+        silence: None,
     };
 
     let reconciliation_summary = crate::bundle::ReconciliationSummary {

@@ -310,6 +310,8 @@ mod tests {
                 snapshot_generation: 100,
                 captured_at: Utc.with_ymd_and_hms(2026, 4, 23, 11, 0, 0).unwrap(),
                 evidence_hash: hash.into(),
+                origin: None,
+                silence: None,
             }),
         }
     }
