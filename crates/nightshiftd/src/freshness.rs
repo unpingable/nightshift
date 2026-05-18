@@ -104,31 +104,126 @@ pub struct FreshnessOutcome {
 ///
 /// Native findings (no `origin` block) return
 /// `FreshnessBasis::NativeLifecycle` + `FreshnessAssessment::Fresh`
-/// with reason `"none"` — this is the regression path and must not
-/// change Slice B behavior for native findings.
+/// with reason `"none"` — this is the regression path and Slice B
+/// introduces no new behavior for native findings.
 ///
 /// Imported findings (`origin.source = "import"`) walk the five
 /// cases in `docs/GAP-imported-basis-freshness.md` §"Five cases."
 pub fn assess_freshness(
-    _snap: &FindingSnapshot,
-    _reconciled_at: DateTime<Utc>,
-    _window_seconds: u64,
-    _skew_seconds: u64,
+    snap: &FindingSnapshot,
+    reconciled_at: DateTime<Utc>,
+    window_seconds: u64,
+    skew_seconds: u64,
 ) -> FreshnessOutcome {
-    todo!("Slice B implementation lands in commit 3 (see GAP-imported-basis-freshness.md)")
+    let custody_at = snap.captured_at;
+
+    let Some(origin) = snap.origin.as_ref() else {
+        // Native finding — Slice B introduces no new behavior.
+        // first_seen_at is the audit-bearing basis timestamp; the
+        // assessment is Fresh by construction (the pre-existing
+        // freshness path applies for any further checks).
+        return FreshnessOutcome {
+            basis: FreshnessBasis::NativeLifecycle {
+                timestamp: snap.first_seen_at,
+            },
+            assessment: FreshnessAssessment::Fresh,
+            reason: "none",
+            custody_at,
+            import_lag_seconds: None,
+        };
+    };
+
+    // Imported finding. Classify the producer clock first; only an
+    // admissible ProducerExtraction basis is eligible for the
+    // age-vs-window comparison.
+    let basis = classify_producer_clock(origin, custody_at, reconciled_at, skew_seconds);
+
+    match &basis {
+        FreshnessBasis::ProducerExtraction { timestamp } => {
+            let evidence_age = reconciled_at - *timestamp;
+            let import_lag_seconds = Some((custody_at - *timestamp).num_seconds());
+            let window_secs = i64::try_from(window_seconds).unwrap_or(i64::MAX);
+            if evidence_age.num_seconds() > window_secs {
+                FreshnessOutcome {
+                    basis,
+                    assessment: FreshnessAssessment::Stale,
+                    reason: "imported_producer_basis_stale",
+                    custody_at,
+                    import_lag_seconds,
+                }
+            } else {
+                FreshnessOutcome {
+                    basis,
+                    assessment: FreshnessAssessment::Fresh,
+                    reason: "none",
+                    custody_at,
+                    import_lag_seconds,
+                }
+            }
+        }
+        FreshnessBasis::MissingProducerExtraction => FreshnessOutcome {
+            basis,
+            assessment: FreshnessAssessment::CannotAssess,
+            reason: "imported_producer_basis_missing",
+            custody_at,
+            import_lag_seconds: None,
+        },
+        FreshnessBasis::IncoherentProducerExtraction => FreshnessOutcome {
+            basis,
+            assessment: FreshnessAssessment::CannotAssess,
+            reason: "imported_producer_clock_incoherent",
+            custody_at,
+            // Lag is undefined when the producer clock is incoherent;
+            // do not surface a value that would launder the
+            // incoherence into audit material.
+            import_lag_seconds: None,
+        },
+        // NativeLifecycle should never be produced for an imported
+        // finding by classify_producer_clock; surfacing here means
+        // the classifier broke its contract.
+        FreshnessBasis::NativeLifecycle { .. } => FreshnessOutcome {
+            basis,
+            assessment: FreshnessAssessment::CannotAssess,
+            reason: "imported_producer_clock_incoherent",
+            custody_at,
+            import_lag_seconds: None,
+        },
+    }
 }
 
-/// Helper: classify the producer clock against custody + decision
-/// clocks under the skew budget. Returns the basis variant only;
-/// the freshness comparison happens separately because the window
-/// only applies once we know the basis is admissible.
-#[allow(dead_code)]
+/// Classify an imported finding's producer clock against custody +
+/// decision clocks under the skew budget. The classification is
+/// orthogonal to the window-based freshness check: it determines
+/// whether the producer clock is *admissible* as a basis at all.
 fn classify_producer_clock(
     origin: &FindingOrigin,
     captured_at: DateTime<Utc>,
     reconciled_at: DateTime<Utc>,
     skew_seconds: u64,
 ) -> FreshnessBasis {
-    let _ = (origin, captured_at, reconciled_at, skew_seconds);
-    todo!("Slice B implementation lands in commit 3")
+    let skew = chrono::Duration::seconds(i64::try_from(skew_seconds).unwrap_or(i64::MAX));
+
+    match (
+        origin.producer_extraction_time,
+        origin.producer_extraction_time_raw.as_ref(),
+    ) {
+        // Absent in JSON.
+        (None, None) => FreshnessBasis::MissingProducerExtraction,
+        // Present in JSON but unparseable.
+        (None, Some(_)) => FreshnessBasis::IncoherentProducerExtraction,
+        // Parsed cleanly — check the two skew relations.
+        (Some(t), _) => {
+            // Future relative to decision clock.
+            if t > reconciled_at + skew {
+                return FreshnessBasis::IncoherentProducerExtraction;
+            }
+            // Producer claims to have extracted after Night Shift
+            // captured the finding — impossible ordering beyond
+            // skew tolerance.
+            if t > captured_at + skew {
+                return FreshnessBasis::IncoherentProducerExtraction;
+            }
+            FreshnessBasis::ProducerExtraction { timestamp: t }
+        }
+    }
 }
