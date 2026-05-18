@@ -280,6 +280,8 @@ fn origin_envelope_preserved_in_finding_snapshot() {
     assert_eq!(
         origin
             .producer_extraction_time
+            .as_ref()
+            .expect("producer_extraction_time is present in this fixture")
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "2026-05-12T10:00:00Z",
         "producer clock is preserved separately from NQ ingest clock"

@@ -103,7 +103,23 @@ pub struct FindingOrigin {
     /// underlying corpus state. Distinct from `FindingSnapshot.captured_at`
     /// (which grounds in NQ ingest time). Two-clock provenance per
     /// NQ gap §"Two-clock provenance is load-bearing."
-    pub producer_extraction_time: DateTime<Utc>,
+    ///
+    /// `None` when the JSON field was absent OR present but
+    /// unparseable. The companion field
+    /// `producer_extraction_time_raw` distinguishes the two cases:
+    /// `None` raw means the field was absent in JSON; `Some(s)` raw
+    /// means it was present but failed to parse as RFC3339. This
+    /// distinction matters for `GAP-imported-basis-freshness.md`
+    /// receipt reasons (`imported_producer_basis_missing` vs
+    /// `imported_producer_clock_incoherent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_extraction_time: Option<DateTime<Utc>>,
+    /// Raw `producer_extraction_time` string from the NQ wire, used
+    /// to distinguish "absent in JSON" (`None`) from "present but
+    /// unparseable" (`Some(_)` with `producer_extraction_time =
+    /// None`). See `GAP-imported-basis-freshness.md` time semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_extraction_time_raw: Option<String>,
     pub import_contract_version: u32,
 }
 

@@ -175,7 +175,13 @@ pub struct NqOriginDto {
     pub source: String,
     pub producer_id: String,
     pub extraction_run_id: String,
-    pub producer_extraction_time: String,
+    /// Optional on the wire (`GAP-imported-basis-freshness.md`). NQ
+    /// V1 always populates it for `source = "import"`, but Night
+    /// Shift accepts absence so Slice B's freshness assessment can
+    /// distinguish "missing" from "unparseable" downstream instead
+    /// of refusing the export.
+    #[serde(default)]
+    pub producer_extraction_time: Option<String>,
     pub import_contract_version: u32,
 }
 
@@ -273,29 +279,33 @@ pub fn translate_nq(dto: &NqExportDto) -> Result<FindingSnapshot> {
 
     // DURABLE_ARTIFACT_SUBSTRATE_GAP V1 (Slice A visibility-only): pass
     // origin and silence envelopes through to the NS-internal model.
-    // No branching on either — see Deferred semantics in
-    // `tests/durable_artifact_substrate_v1.rs`.
-    let origin = dto
-        .origin
-        .as_ref()
-        .map(|o| -> Result<FindingOrigin> {
-            let producer_extraction_time =
-                DateTime::parse_from_rfc3339(&o.producer_extraction_time)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .map_err(|e| {
-                        NightShiftError::InvalidAgenda(format!(
-                            "NQ origin.producer_extraction_time not RFC3339: {e}"
-                        ))
-                    })?;
-            Ok(FindingOrigin {
-                source: o.source.clone(),
-                producer_id: o.producer_id.clone(),
-                extraction_run_id: o.extraction_run_id.clone(),
-                producer_extraction_time,
-                import_contract_version: o.import_contract_version,
-            })
-        })
-        .transpose()?;
+    // No reconciliation branching on either field at this layer —
+    // Slice B's freshness assessment (`crate::freshness`) consumes the
+    // origin envelope; this translation only shapes the wire facts.
+    //
+    // `producer_extraction_time` is preserved as both the parsed
+    // timestamp (when parseable) and the raw string (when present).
+    // Parse failures are NOT a refusal at this layer — Slice B's
+    // freshness assessment maps them to `clock_incoherent`. The
+    // alternative (refusing the export on parse failure) would let a
+    // malformed producer clock take the entire ingested finding off
+    // the wire, which is the wrong blast radius.
+    let origin = dto.origin.as_ref().map(|o| {
+        let raw = o.producer_extraction_time.clone();
+        let parsed = raw.as_deref().and_then(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        });
+        FindingOrigin {
+            source: o.source.clone(),
+            producer_id: o.producer_id.clone(),
+            extraction_run_id: o.extraction_run_id.clone(),
+            producer_extraction_time: parsed,
+            producer_extraction_time_raw: raw,
+            import_contract_version: o.import_contract_version,
+        }
+    });
 
     let silence = dto.silence.as_ref().map(|s| FindingSilence {
         scope: s.scope.clone(),

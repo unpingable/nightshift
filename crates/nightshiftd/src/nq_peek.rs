@@ -166,10 +166,18 @@ pub fn render_peek_text(doc: &PeekDocument, show_raw: bool) -> String {
                 "  origin: source={}   producer_id={}   extraction_run_id={}\n",
                 o.source, o.producer_id, o.extraction_run_id
             ));
-            out.push_str(&format!(
-                "    producer_extraction_time: {}   (last_seen above is NQ ingest clock)\n",
-                o.producer_extraction_time.to_rfc3339()
-            ));
+            match (&o.producer_extraction_time, &o.producer_extraction_time_raw) {
+                (Some(ts), _) => out.push_str(&format!(
+                    "    producer_extraction_time: {}   (last_seen above is NQ ingest clock)\n",
+                    ts.to_rfc3339()
+                )),
+                (None, Some(raw)) => out.push_str(&format!(
+                    "    producer_extraction_time: (unparseable: {raw})   (last_seen above is NQ ingest clock)\n"
+                )),
+                (None, None) => out.push_str(
+                    "    producer_extraction_time: (missing)   (last_seen above is NQ ingest clock)\n",
+                ),
+            }
         }
         if let Some(s) = &t.silence {
             out.push_str(&format!(
