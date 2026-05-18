@@ -25,10 +25,14 @@
 //!   (NOT live evidence — see `tests/fixtures/README.md`).
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+use chrono::{TimeZone, Utc};
 
 use nightshiftd::agenda::Agenda;
-use nightshiftd::errors::NightShiftError;
-use nightshiftd::finding::FindingKey;
+use nightshiftd::bundle::InputStatus;
+use nightshiftd::errors::{NightShiftError, Result};
+use nightshiftd::finding::{EvidenceState, FindingKey, FindingOrigin, FindingSnapshot, Severity};
 use nightshiftd::nq::{parse_nq_line, CliNqSource, NqSource};
 use nightshiftd::pipeline::{capture_phase, reconcile_phase, CaptureOutcome, PipelineOptions};
 use nightshiftd::store::sqlite::SqliteStore;
@@ -301,40 +305,233 @@ fn b1_fresh_imported_finding_receipt_records_both_clocks() {
     );
 }
 
-/// **The B.1 killshot.** An ingested finding whose producer extracted
-/// months ago lands a freshness receipt of `stale` with reason
-/// `imported_producer_basis_stale` under the default window. The
-/// reconciler regime is unaffected — visibility, not steering.
+/// **The B.2 killshot.** An ingested finding whose producer extracted
+/// months ago is mutated into the Slice 5 advise/revalidate-only
+/// pathway via `InputStatus::Stale` → `RelianceClass::Historical`.
+/// The receipt (B.1) is still populated for audit. Missing /
+/// incoherent producer clocks are deliberately *not* bound this way
+/// — those stay at `cannot_assess` (covered by separate tests).
 #[test]
-fn b1_stale_producer_basis_surfaces_on_receipt_without_steering_regime() {
-    let (_bundle, packet, receipt) = freshness_receipt_for_fixture(
+fn b2_stale_imported_basis_drives_slice5_revalidate_only_path() {
+    let (bundle, packet, receipt) = freshness_receipt_for_fixture(
         "nq-findings-import-stale.jsonl",
         stale_producer_target(),
         None, // default window (1h) — producer is 4+ months old, way past
     );
+
+    // Receipt still populated (B.1 visibility preserved under B.2).
     let r = receipt.expect("freshness receipt must populate for stale-producer ingest");
-    assert_eq!(
-        r.assessment, "stale",
-        "B.1 must report stale on the receipt when producer basis exceeds window"
-    );
+    assert_eq!(r.assessment, "stale");
     assert_eq!(r.reason, "imported_producer_basis_stale");
     assert_eq!(r.freshness_basis.kind, "producer_extraction_time");
-    assert!(
-        r.import_lag_seconds.unwrap_or(0) > 1_000_000,
-        "import lag is recorded for audit (millions of seconds for this fixture)"
-    );
+    assert!(r.import_lag_seconds.unwrap_or(0) > 1_000_000);
 
-    // The headline observe-only invariant: regime is NOT mutated by
-    // the freshness verdict. The capture and reconcile pass see the
-    // same fixture line, so the regime is the existing
-    // `committed` shape — unchanged by B.1.
+    // B.2: regime is now driven through the Slice 5 stale path.
     assert!(
-        packet.diagnosis.regime.starts_with("committed"),
-        "B.1 visibility-only: regime must NOT be steered by freshness verdict; got {:?}",
+        packet.diagnosis.regime.starts_with("stale"),
+        "B.2 must drive a stale regime when producer basis is stale; got {:?}",
         packet.diagnosis.regime
     );
     assert!(
+        packet
+            .proposed_action
+            .steps
+            .iter()
+            .any(|s| s.contains("revalidate")),
+        "B.2 stale-basis packet must propose revalidation; got steps {:?}",
+        packet.proposed_action.steps
+    );
+
+    // B.2: result-level mutation visible on the persisted bundle.
+    let result = bundle
+        .reconciliation
+        .as_ref()
+        .and_then(|r| r.results.first())
+        .expect("bundle has one NQ result");
+    assert!(
+        matches!(result.status, InputStatus::Stale),
+        "result.status must be Stale; got {:?}",
+        result.status
+    );
+    assert!(
+        result
+            .notes
+            .as_ref()
+            .map(|n| n.contains("imported producer basis stale"))
+            .unwrap_or(false),
+        "stale note must surface the basis reason; got notes {:?}",
+        result.notes
+    );
+
+    // B.2 explicitly does NOT flip ok_to_proceed for stale (per the
+    // v1 Slice 5 stance: only Invalidated blocks). The downgrade
+    // shows up in the `downgraded` list instead.
+    assert!(
         packet.reconciliation_summary.ok_to_proceed,
-        "B.1 must not block the run on the freshness verdict alone"
+        "Stale (not Invalidated) does not block ok_to_proceed per Slice 5; \
+         downgrade is recorded in the summary instead"
+    );
+    assert!(
+        !packet.reconciliation_summary.downgraded.is_empty(),
+        "stale-bound input lands in the downgraded list"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// 5. B.2 — missing / incoherent producer clocks do NOT launder into Stale
+// -----------------------------------------------------------------------------
+//
+// Stale means *age known and too old*. Missing / incoherent means
+// *no admissible basis clock*. B.2 deliberately keeps them distinct:
+// only `imported_producer_basis_stale` triggers the Slice 5 stale
+// pathway. Other cannot-assess pathologies stay on the receipt for
+// visibility but do not steer the regime.
+
+struct ScriptedNqSource {
+    snapshots: Mutex<Vec<Option<FindingSnapshot>>>,
+}
+
+impl ScriptedNqSource {
+    fn new(script: Vec<Option<FindingSnapshot>>) -> Self {
+        assert!(!script.is_empty());
+        Self {
+            snapshots: Mutex::new(script),
+        }
+    }
+}
+
+impl NqSource for ScriptedNqSource {
+    fn snapshot(&self, _key: &FindingKey) -> Result<Option<FindingSnapshot>> {
+        let mut s = self.snapshots.lock().unwrap();
+        if s.len() > 1 {
+            Ok(s.remove(0))
+        } else {
+            Ok(s[0].clone())
+        }
+    }
+}
+
+fn synthesized_target() -> FindingKey {
+    FindingKey {
+        source: "nq".into(),
+        detector: "imported_corpus_health".into(),
+        subject: "synth-host:claim:synth".into(),
+    }
+}
+
+fn snapshot_with_origin(origin: FindingOrigin) -> FindingSnapshot {
+    let captured_at = Utc.with_ymd_and_hms(2026, 5, 12, 10, 0, 30).unwrap();
+    FindingSnapshot {
+        finding_key: synthesized_target(),
+        host: "synth-host".into(),
+        severity: Severity::Warning,
+        domain: None,
+        persistence_generations: 1,
+        first_seen_at: captured_at,
+        current_status: EvidenceState::Active,
+        snapshot_generation: 1,
+        captured_at,
+        evidence_hash: String::new(),
+        origin: Some(origin),
+        silence: None,
+    }
+}
+
+fn run_pipeline_with_snapshot(
+    snap: FindingSnapshot,
+) -> (
+    nightshiftd::bundle::Bundle,
+    nightshiftd::packet::Packet,
+) {
+    let nq = ScriptedNqSource::new(vec![Some(snap.clone()), Some(snap)]);
+    let store = SqliteStore::open_in_memory().unwrap();
+    let target = synthesized_target();
+    let run_id = match capture_phase(&agenda(), &target, &nq, None, &store, &opts()).unwrap() {
+        CaptureOutcome::Captured { run_id } => run_id,
+        CaptureOutcome::HeldPacket(pkt) => panic!("synthesized fixture must capture: {pkt:?}"),
+    };
+    let packet = reconcile_phase(&run_id, &nq, &store, &opts()).unwrap();
+    let bundle = store.get_bundle(&run_id).unwrap().unwrap();
+    (bundle, packet)
+}
+
+#[test]
+fn b2_missing_imported_basis_does_not_drive_stale() {
+    let origin = FindingOrigin {
+        source: "import".into(),
+        producer_id: "synth-producer".into(),
+        extraction_run_id: "synth-run".into(),
+        producer_extraction_time: None,
+        producer_extraction_time_raw: None, // absent in JSON
+        import_contract_version: 1,
+    };
+    let (bundle, packet) = run_pipeline_with_snapshot(snapshot_with_origin(origin));
+
+    let result = bundle
+        .reconciliation
+        .as_ref()
+        .and_then(|r| r.results.first())
+        .expect("bundle has one NQ result");
+
+    // The receipt should reflect missing-basis (cannot_assess).
+    let r = result
+        .freshness
+        .as_ref()
+        .expect("B.1 receipt is populated even when cannot_assess");
+    assert_eq!(r.assessment, "cannot_assess");
+    assert_eq!(r.reason, "imported_producer_basis_missing");
+
+    // B.2 invariant: missing producer time does NOT launder into Stale.
+    assert!(
+        !matches!(result.status, InputStatus::Stale),
+        "missing producer time must not set InputStatus::Stale; got {:?}",
+        result.status
+    );
+    // Captured and current are the same snapshot → Committed regime.
+    assert!(
+        packet.diagnosis.regime.starts_with("committed"),
+        "regime should reflect unchanged-snapshot reconciliation, not stale; got {:?}",
+        packet.diagnosis.regime
+    );
+}
+
+#[test]
+fn b2_clock_incoherent_imported_basis_does_not_drive_stale() {
+    // Producer claims to have extracted in the year 2030 — clearly
+    // in the future of any plausible reconciliation clock.
+    let future = Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap();
+    let origin = FindingOrigin {
+        source: "import".into(),
+        producer_id: "synth-producer".into(),
+        extraction_run_id: "synth-run".into(),
+        producer_extraction_time: Some(future),
+        producer_extraction_time_raw: Some("2030-01-01T00:00:00Z".into()),
+        import_contract_version: 1,
+    };
+    let (bundle, packet) = run_pipeline_with_snapshot(snapshot_with_origin(origin));
+
+    let result = bundle
+        .reconciliation
+        .as_ref()
+        .and_then(|r| r.results.first())
+        .expect("bundle has one NQ result");
+
+    let r = result
+        .freshness
+        .as_ref()
+        .expect("B.1 receipt populated for incoherent producer time");
+    assert_eq!(r.assessment, "cannot_assess");
+    assert_eq!(r.reason, "imported_producer_clock_incoherent");
+
+    // B.2 invariant: incoherent producer time does NOT launder into Stale.
+    assert!(
+        !matches!(result.status, InputStatus::Stale),
+        "incoherent producer time must not set InputStatus::Stale; got {:?}",
+        result.status
+    );
+    assert!(
+        packet.diagnosis.regime.starts_with("committed"),
+        "regime should reflect unchanged-snapshot reconciliation, not stale; got {:?}",
+        packet.diagnosis.regime
     );
 }

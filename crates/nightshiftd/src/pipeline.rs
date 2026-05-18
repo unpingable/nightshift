@@ -25,7 +25,7 @@ use chrono::Utc;
 use crate::agenda::{Agenda, AuthorityLevel, CriticalityClass};
 use crate::bundle::{
     Bundle, CaptureInput, CapturePhase, Freshness, InputStatus, InvalidationRule,
-    ReconciliationPhase,
+    ReconciliationPhase, RelianceClass, ValidFor,
 };
 use crate::coordination::{classify_risky, preflight, scope_key, CoordinationOutcome};
 use crate::errors::{NightShiftError, Result};
@@ -408,15 +408,27 @@ pub fn reconcile_phase_with_horizon(
     let mut reconciliation =
         reconciler::adjudicate(&captured_bundle, &acquisition, &PolicyFingerprint::default());
 
-    // 4a. Slice B.1 (observe-only): attach an Imported Basis
-    //     Freshness receipt to each result with a current snapshot.
-    //     This makes the producer-vs-custody clock seam visible on
-    //     the bundle/packet without (yet) mutating EvidenceState or
-    //     branching reconciliation. See
-    //     `docs/GAP-imported-basis-freshness.md`. The window applies
-    //     only to imported findings; native findings always assess
-    //     as fresh and the receipt is still attached for symmetry
-    //     (so consumers can see the basis kind that was used).
+    // 4a. Imported Basis Freshness — assessment + binding.
+    //     See `docs/GAP-imported-basis-freshness.md`.
+    //
+    //     B.1 (observe-only): a freshness receipt is attached to
+    //     every result that has a current snapshot. Receipt shows
+    //     the basis kind, both clocks, assessment, reason, and
+    //     import lag.
+    //
+    //     B.2 (steer the clean case only): when assessment is
+    //     `Stale` AND reason is `imported_producer_basis_stale`,
+    //     the result is mutated into the Slice 5 stale pathway —
+    //     `InputStatus::Stale`, `RelianceClass::Historical`,
+    //     `valid_for = [PacketContext]`. This reuses the existing
+    //     advise(revalidate-only) packet shape.
+    //
+    //     Deliberately NOT bound: `MissingProducerExtraction` and
+    //     `IncoherentProducerExtraction` (future / after-custody /
+    //     unparseable) stay at `CannotAssess`. Stale means
+    //     *age known and too old*; missing/incoherent means *no
+    //     admissible basis clock*. Different basement, same smell.
+    //     The reason code on the receipt preserves the distinction.
     let freshness_window = opts
         .imported_basis_freshness_window_seconds
         .unwrap_or(crate::freshness::DEFAULT_IMPORTED_BASIS_FRESHNESS_WINDOW_SECONDS);
@@ -428,9 +440,34 @@ pub fn reconcile_phase_with_horizon(
                 freshness_window,
                 crate::freshness::DEFAULT_SKEW_BUDGET_SECONDS,
             );
+
+            // B.2: bind the imported-producer-basis-stale case only.
+            // Other cannot-assess pathologies remain visible on the
+            // receipt but do not steer the reconciliation regime.
+            if outcome.assessment == crate::freshness::FreshnessAssessment::Stale
+                && outcome.reason == "imported_producer_basis_stale"
+            {
+                let note = format!(
+                    "imported producer basis stale: producer extracted before freshness window (lag {}s)",
+                    outcome.import_lag_seconds.unwrap_or(0)
+                );
+                result.notes = Some(match result.notes.as_ref() {
+                    Some(existing) => format!("{existing}; {note}"),
+                    None => note,
+                });
+                result.status = InputStatus::Stale;
+                result.reliance_class = RelianceClass::Historical;
+                result.scope.valid_for = vec![ValidFor::PacketContext];
+            }
+
             result.freshness = Some(crate::freshness::FreshnessReceipt::from(&outcome));
         }
     }
+
+    // B.2: result statuses may have changed above; rebuild the
+    // summary so `admissible_for_*` / `downgraded` reflect the
+    // post-binding state. `build_summary` is idempotent and pure.
+    reconciliation.summary = reconciler::build_summary(&reconciliation.results);
 
     let reconciled_bundle = Bundle {
         reconciliation: Some(reconciliation.clone()),

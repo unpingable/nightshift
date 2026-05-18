@@ -423,7 +423,7 @@ pub fn reconcile_bundle(bundle: &Bundle, nq: &dyn NqSource) -> Result<Reconcilia
     Ok(adjudicate(bundle, &acquisition, &PolicyFingerprint::default()))
 }
 
-fn build_summary(results: &[ReconciliationResult]) -> ReconciliationSummary {
+pub(crate) fn build_summary(results: &[ReconciliationResult]) -> ReconciliationSummary {
     let mut s = ReconciliationSummary {
         ok_to_proceed: true,
         ..Default::default()
