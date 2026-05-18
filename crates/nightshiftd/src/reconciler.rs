@@ -397,6 +397,10 @@ pub fn adjudicate(
             notes,
             concurrent_activity: None,
             current_finding_snapshot: current_snapshot,
+            // Slice B.1: populated by the pipeline after adjudicate
+            // returns. The reconciler itself does not branch on
+            // freshness; this field is observe-only.
+            freshness: None,
         });
     }
 

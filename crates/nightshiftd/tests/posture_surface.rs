@@ -46,6 +46,7 @@ fn opts(continuity_configured: bool) -> PipelineOptions {
         continuity_configured,
         trigger: None,
         liveness_threshold_seconds: None,
+        imported_basis_freshness_window_seconds: None,
     }
 }
 

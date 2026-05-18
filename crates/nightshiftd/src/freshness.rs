@@ -26,6 +26,7 @@
 //!    and never in cross-system comparisons.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::finding::{FindingOrigin, FindingSnapshot};
 
@@ -98,6 +99,80 @@ pub struct FreshnessOutcome {
     /// assessment itself per the spec ("import lag is audit, not
     /// basis").
     pub import_lag_seconds: Option<i64>,
+}
+
+/// Wire-format projection of a freshness assessment, suitable for
+/// serialization onto `bundle::ReconciliationResult`. Slice B.1
+/// surfaces this on the reconciliation receipt **without** changing
+/// `EvidenceState` semantics — the seam is made visible before it is
+/// made binding.
+///
+/// Field layout matches `docs/GAP-imported-basis-freshness.md`
+/// §"Receipt fields."
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreshnessReceipt {
+    /// `"fresh"`, `"stale"`, or `"cannot_assess"`.
+    pub assessment: String,
+    /// Stable reason string per `FreshnessOutcome::reason`.
+    pub reason: String,
+    pub freshness_basis: ClockReference,
+    pub custody_basis: ClockReference,
+    /// `captured_at - producer_extraction_time` in seconds; omitted
+    /// (`None`) when no producer clock is available or when its
+    /// coherence with custody is undefined. Audit material only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_lag_seconds: Option<i64>,
+}
+
+/// Named reference to one of Slice B's four clock roles. The `kind`
+/// string is stable and audit-friendly; `timestamp` is `None` when
+/// the clock is missing or incoherent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockReference {
+    /// `"native_lifecycle"` | `"producer_extraction_time"` |
+    /// `"missing_producer_extraction"` |
+    /// `"incoherent_producer_extraction"` |
+    /// `"finding_snapshot.captured_at"`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+impl From<&FreshnessOutcome> for FreshnessReceipt {
+    fn from(o: &FreshnessOutcome) -> Self {
+        let (basis_kind, basis_timestamp) = match &o.basis {
+            FreshnessBasis::NativeLifecycle { timestamp } => {
+                ("native_lifecycle", Some(*timestamp))
+            }
+            FreshnessBasis::ProducerExtraction { timestamp } => {
+                ("producer_extraction_time", Some(*timestamp))
+            }
+            FreshnessBasis::MissingProducerExtraction => {
+                ("missing_producer_extraction", None)
+            }
+            FreshnessBasis::IncoherentProducerExtraction => {
+                ("incoherent_producer_extraction", None)
+            }
+        };
+        let assessment = match o.assessment {
+            FreshnessAssessment::Fresh => "fresh",
+            FreshnessAssessment::Stale => "stale",
+            FreshnessAssessment::CannotAssess => "cannot_assess",
+        };
+        FreshnessReceipt {
+            assessment: assessment.into(),
+            reason: o.reason.into(),
+            freshness_basis: ClockReference {
+                kind: basis_kind.into(),
+                timestamp: basis_timestamp,
+            },
+            custody_basis: ClockReference {
+                kind: "finding_snapshot.captured_at".into(),
+                timestamp: Some(o.custody_at),
+            },
+            import_lag_seconds: o.import_lag_seconds,
+        }
+    }
 }
 
 /// Assess imported-basis freshness for a single finding.

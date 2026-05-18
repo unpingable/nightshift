@@ -146,6 +146,7 @@ fn opts(threshold: u64) -> PipelineOptions {
         continuity_configured: false,
         trigger: None,
         liveness_threshold_seconds: Some(threshold),
+        imported_basis_freshness_window_seconds: None,
     }
 }
 

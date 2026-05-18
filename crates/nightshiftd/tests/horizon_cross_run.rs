@@ -143,6 +143,7 @@ fn reconciliation_phase_for(input_id: &str, at: DateTime<Utc>) -> Reconciliation
             notes: None,
             concurrent_activity: None,
             current_finding_snapshot: None,
+            freshness: None,
         }],
         summary: ReconciliationSummary {
             ok_to_proceed: true,

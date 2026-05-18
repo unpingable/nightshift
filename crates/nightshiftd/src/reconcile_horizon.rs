@@ -330,6 +330,7 @@ mod tests {
             notes: None,
             concurrent_activity: None,
             current_finding_snapshot: None,
+            freshness: None,
         }
     }
 

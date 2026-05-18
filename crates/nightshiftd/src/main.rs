@@ -454,6 +454,7 @@ fn pipeline_opts(cli: &Cli) -> PipelineOptions {
         continuity_configured: cli.continuity_configured,
         trigger: None,
         liveness_threshold_seconds: cli.nq_liveness_threshold_secs,
+        imported_basis_freshness_window_seconds: None,
     }
 }
 

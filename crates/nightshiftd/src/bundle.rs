@@ -123,6 +123,17 @@ pub struct ReconciliationResult {
     /// `GAP-deferred-run-split.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_finding_snapshot: Option<FindingSnapshot>,
+    /// Imported Basis Freshness receipt (Slice B.1, observe-only).
+    /// Populated for each NQ-backed input whose `current_finding_snapshot`
+    /// is present; `None` otherwise. Records what the freshness
+    /// assessment WOULD have said about this finding under the
+    /// configured window and skew. Per `docs/GAP-imported-basis-freshness.md`
+    /// §"Build shape": the seam is made visible before it is made
+    /// binding — this field surfaces the verdict on the receipt
+    /// without (yet) mutating `EvidenceState` or the
+    /// `ReliacenClass` derived from `status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness: Option<crate::freshness::FreshnessReceipt>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

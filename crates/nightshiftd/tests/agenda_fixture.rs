@@ -69,6 +69,7 @@ fn v1_pipeline_produces_advise_packet_without_governor() {
         continuity_configured: false,
         trigger: None,
         liveness_threshold_seconds: None,
+        imported_basis_freshness_window_seconds: None,
     };
 
     let packet = run_watchbill(&agenda, &target, &nq, &store, &opts).expect("pipeline must succeed");
@@ -118,6 +119,7 @@ fn protected_class_agenda_without_continuity_holds_at_preflight() {
         continuity_configured: false, // <— the condition that triggers hold
         trigger: None,
         liveness_threshold_seconds: None,
+        imported_basis_freshness_window_seconds: None,
     };
 
     let packet = run_watchbill(&agenda, &target, &nq, &store, &opts).expect("hold path returns a packet");
@@ -183,6 +185,7 @@ fn protected_class_agenda_with_continuity_clears_preflight() {
         continuity_configured: true,
         trigger: None,
         liveness_threshold_seconds: None,
+        imported_basis_freshness_window_seconds: None,
     };
 
     let packet = run_watchbill(&agenda, &target, &nq, &store, &opts).unwrap();
@@ -215,6 +218,7 @@ fn same_finding_across_two_runs_persists_and_is_queryable() {
         continuity_configured: false,
         trigger: None,
         liveness_threshold_seconds: None,
+        imported_basis_freshness_window_seconds: None,
     };
 
     let p1 = run_watchbill(&agenda, &target, &nq, &store, &opts).unwrap();

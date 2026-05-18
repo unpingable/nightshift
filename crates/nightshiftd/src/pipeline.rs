@@ -63,6 +63,20 @@ pub struct PipelineOptions {
     /// supplied to `run_watchbill`. `None` ⇒ default
     /// `DEFAULT_STALENESS_THRESHOLD_SECONDS`. See `liveness.rs`.
     pub liveness_threshold_seconds: Option<u64>,
+    /// Freshness window for imported findings, in seconds. Applied
+    /// only to ingested findings (`origin.source = "import"`) by
+    /// `crate::freshness::assess_freshness`. `None` ⇒
+    /// `DEFAULT_IMPORTED_BASIS_FRESHNESS_WINDOW_SECONDS`. Independent
+    /// from `liveness_threshold_seconds` (different concern: liveness
+    /// artifact age vs. finding-evidence age) and from NQ's own
+    /// `extraction_stale` detector policy. See
+    /// `docs/GAP-imported-basis-freshness.md` §"Freshness window."
+    ///
+    /// B.1 (observe-only): the assessment is recorded on the
+    /// reconciliation receipt but does NOT yet mutate `EvidenceState`.
+    /// Steering integration is deferred to a B.2 follow-on; the seam
+    /// is made visible before it is made binding.
+    pub imported_basis_freshness_window_seconds: Option<u64>,
 }
 
 /// Outcome of the capture phase.
@@ -391,8 +405,32 @@ pub fn reconcile_phase_with_horizon(
 
     // 4. Pure adjudication. Deterministic over bundle + acquisition +
     //    policy fingerprint; no further live reads.
-    let reconciliation =
+    let mut reconciliation =
         reconciler::adjudicate(&captured_bundle, &acquisition, &PolicyFingerprint::default());
+
+    // 4a. Slice B.1 (observe-only): attach an Imported Basis
+    //     Freshness receipt to each result with a current snapshot.
+    //     This makes the producer-vs-custody clock seam visible on
+    //     the bundle/packet without (yet) mutating EvidenceState or
+    //     branching reconciliation. See
+    //     `docs/GAP-imported-basis-freshness.md`. The window applies
+    //     only to imported findings; native findings always assess
+    //     as fresh and the receipt is still attached for symmetry
+    //     (so consumers can see the basis kind that was used).
+    let freshness_window = opts
+        .imported_basis_freshness_window_seconds
+        .unwrap_or(crate::freshness::DEFAULT_IMPORTED_BASIS_FRESHNESS_WINDOW_SECONDS);
+    for result in &mut reconciliation.results {
+        if let Some(snap) = result.current_finding_snapshot.as_ref() {
+            let outcome = crate::freshness::assess_freshness(
+                snap,
+                acquisition.acquired_at,
+                freshness_window,
+                crate::freshness::DEFAULT_SKEW_BUDGET_SECONDS,
+            );
+            result.freshness = Some(crate::freshness::FreshnessReceipt::from(&outcome));
+        }
+    }
 
     let reconciled_bundle = Bundle {
         reconciliation: Some(reconciliation.clone()),

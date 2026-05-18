@@ -109,6 +109,7 @@ fn opts() -> PipelineOptions {
         continuity_configured: false,
         trigger: None,
         liveness_threshold_seconds: None,
+        imported_basis_freshness_window_seconds: None,
     }
 }
 
