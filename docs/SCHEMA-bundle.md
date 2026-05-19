@@ -168,8 +168,36 @@ reconciliation:
     hints_only: [operator:note:..., continuity:prior_decision:...]
     blocked: []
     downgraded: [continuity:prior_decision:...]
-  ok_to_proceed: true
+  ok_to_proceed: true   # NOT an authorization summary — see below
 ```
+
+**Consumer caution: `ok_to_proceed` is not "go for it."**
+
+Under v1 semantics, `ok_to_proceed = true` means *no input was
+hard-invalidated*. It does **not** mean every input is fresh, current,
+or admissible for the action under consideration. A run with stale or
+downgraded inputs will leave this field `true` and surface the caution
+through `ProposedAction` (e.g., revalidate-only steps),
+`Attention.evidence_state` (e.g., `Stale`), and `summary.downgraded`.
+
+For example, in the snippet above the `continuity:prior_decision:...`
+input is in `downgraded` even though `ok_to_proceed = true`. A
+consumer that branches solely on `ok_to_proceed` will miss that
+caution.
+
+Consumers must inspect:
+
+- `result.reliance_class` and `result.scope.valid_for` for the
+  specific input they care about
+- `Attention.evidence_state` on the packet
+- `ProposedAction.kind` (`Advisory` for revalidate-only) and `.steps`
+- `result.freshness` (the Imported Basis Freshness receipt, when
+  present) for the producer-vs-custody clock distinction
+
+See `crates/nightshiftd/src/bundle.rs::ReconciliationSummary` for the
+doc-comment version, and
+`docs/GAP-imported-basis-freshness.md` §"Closeout" for the Slice B
+provenance of this rule.
 
 ## Lifecycle
 

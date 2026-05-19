@@ -136,6 +136,17 @@ pub struct ReconciliationResult {
     pub freshness: Option<crate::freshness::FreshnessReceipt>,
 }
 
+/// Cross-input summary of a reconciliation pass.
+///
+/// **Read all fields before acting.** No single field is an
+/// authorization summary. The presence of an input in
+/// `admissible_for_authorization` does not imply the run should
+/// proceed (other inputs may be invalidated); the absence of an
+/// input from `blocked` does not imply it is fresh (it may have
+/// been downgraded). Per Slice 5 / `GAP-imported-basis-freshness.md`
+/// (Slice B): consumers must inspect `reliance_class`, `valid_for`,
+/// `Attention.evidence_state`, `ProposedAction`, and the freshness
+/// receipt — not summary booleans in isolation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReconciliationSummary {
     #[serde(default)]
@@ -152,6 +163,31 @@ pub struct ReconciliationSummary {
     pub downgraded: Vec<String>,
     #[serde(default)]
     pub coordination_gating: Vec<String>,
+    /// **`ok_to_proceed` is NOT an authorization summary.** Under v1
+    /// semantics it means exactly *"no input was hard-invalidated."*
+    /// It does **not** mean:
+    ///
+    /// - all evidence is fresh (stale inputs land in `downgraded`
+    ///   with `ok_to_proceed = true`)
+    /// - all inputs are admissible for the action under consideration
+    ///   (an input may be Historical / `PacketContext` only)
+    /// - the run is safe to act on without revalidation (Slice 5's
+    ///   advise/revalidate-only pathway leaves this field `true` and
+    ///   surfaces the caution through `ProposedAction` and
+    ///   `Attention.evidence_state` instead)
+    ///
+    /// Concretely: an ingested finding whose producer extracted
+    /// before the freshness window emits
+    /// `InputStatus::Stale` + `RelianceClass::Historical` +
+    /// `EvidenceState::Stale` + `regime: "stale: …"` + a revalidate-
+    /// only `ProposedAction`, while this field stays `true` because
+    /// nothing was invalidated. See
+    /// `docs/GAP-imported-basis-freshness.md` §"Closeout."
+    ///
+    /// Consumers that branch on this field alone are misreading the
+    /// contract. The sentinel test
+    /// `b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`
+    /// in `tests/nq_integration.rs` pins this invariant.
     pub ok_to_proceed: bool,
 }
 

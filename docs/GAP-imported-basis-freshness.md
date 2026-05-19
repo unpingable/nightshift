@@ -454,17 +454,74 @@ Slice B explicitly does *not*:
 
 ## Build shape
 
-Three commits:
+Three commits for the primitive:
 
-1. **This spec doc** (you are here).
-2. **Red tests + fixtures.** The six tests above, plus any new
-   fixtures (likely one with `producer_extraction_time` set deep
-   in the past, and one with `producer_extraction_time` set in
-   the future). Tests fail until commit 3 lands.
-3. **Implementation.** New `FreshnessBasis` /
-   `FreshnessAssessment` types; pipeline step computing the
-   assessment between translation and reconcile; receipt fields
-   exposed on the reconciliation result; the config knob and its
+1. **This spec doc.**
+2. **Red tests + fixtures** — the eight tests above; tests fail until commit 3 lands.
+3. **Implementation** — new `FreshnessBasis` / `FreshnessAssessment`
+   types; the primitive `assess_freshness`; the config knob and its
    default.
 
+Then two more commits for behavior:
+
+4. **B.1 — observe-only integration** (`8821efd`). The pipeline calls
+   `assess_freshness` between adjudicate and packet build; the
+   verdict lands on `bundle::ReconciliationResult.freshness` as a
+   `FreshnessReceipt`; `EvidenceState` is not yet mutated. *Make the
+   clock seam visible before making it binding.*
+5. **B.2 — bind stale imported basis to the Slice 5 path** (`f510a44`).
+   `FreshnessOutcome::Stale` with reason
+   `imported_producer_basis_stale` is mutated into
+   `InputStatus::Stale` + `RelianceClass::Historical` + `valid_for =
+   [PacketContext]`; `Attention.evidence_state` cascades to
+   `EvidenceState::Stale`; the packet's regime starts with `stale`
+   and `ProposedAction` proposes revalidate-only steps.
+   `MissingProducerExtraction` and `IncoherentProducerExtraction`
+   stay at `cannot_assess` with their distinct receipt reasons;
+   Stale does not eat clock failures.
+
 Slice C remains untouched.
+
+## Closeout (2026-05-19)
+
+Slice B is behavior-complete for the producer-stale case. One
+consumer-safety invariant pinned during closeout audit, recorded
+here as Slice B provenance:
+
+> **`reconciliation_summary.ok_to_proceed` is NOT an authorization
+> summary.** Under v1 semantics it means exactly *"no input was
+> hard-invalidated."* A run with stale imported basis (or any other
+> downgraded input) leaves `ok_to_proceed = true` and surfaces the
+> caution through `ProposedAction` (revalidate-only),
+> `Attention.evidence_state` (`Stale`), `result.reliance_class`
+> (`Historical`), `result.scope.valid_for` (`[PacketContext]` only),
+> and `summary.downgraded`.
+
+The audit reached the following findings:
+
+- No production NS code branches on `ok_to_proceed` alone. The field
+  is informational + ledger material; production action requires
+  Governor authorization, which keys on receipts, not on this bool.
+- The `ReconciliationSummary` struct had no doc comments before
+  this audit. A future Rust consumer reading the type alone could
+  plausibly misread the field. Fixed: doc comments added to both
+  the struct and the `ok_to_proceed` field naming what they do and
+  don't promise.
+- `SCHEMA-bundle.md` showed an example with `ok_to_proceed: true`
+  alongside `downgraded: [...]` populated, with no disambiguation.
+  Fixed: an inline note next to the example pins the consumer
+  caution and points readers at the fields they must inspect.
+- A sentinel test
+  (`b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`)
+  asserts the full gating surface in one place. If a future change
+  flips `ok_to_proceed = false` on Stale (which would be a Slice 5
+  doctrine change, not a Slice B change), this test must be
+  updated deliberately.
+
+No semantics were changed during closeout. The audit confirmed the
+contract; the doc and test changes document and tripwire it.
+
+Slice B status: **behavior-complete; consumer caution pinned.** Slice
+C (silence posture / ack lineage) remains untouched; its design space
+is left in its current `cannot_assess`-visible-only state under
+Slice B.

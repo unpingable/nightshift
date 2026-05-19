@@ -30,10 +30,11 @@ use std::sync::Mutex;
 use chrono::{TimeZone, Utc};
 
 use nightshiftd::agenda::Agenda;
-use nightshiftd::bundle::InputStatus;
+use nightshiftd::bundle::{InputStatus, RelianceClass, ValidFor};
 use nightshiftd::errors::{NightShiftError, Result};
 use nightshiftd::finding::{EvidenceState, FindingKey, FindingOrigin, FindingSnapshot, Severity};
 use nightshiftd::nq::{parse_nq_line, CliNqSource, NqSource};
+use nightshiftd::packet::ProposedActionKind;
 use nightshiftd::pipeline::{capture_phase, reconcile_phase, CaptureOutcome, PipelineOptions};
 use nightshiftd::store::sqlite::SqliteStore;
 use nightshiftd::store::Store;
@@ -534,4 +535,147 @@ fn b2_clock_incoherent_imported_basis_does_not_drive_stale() {
         "regime should reflect unchanged-snapshot reconciliation, not stale; got {:?}",
         packet.diagnosis.regime
     );
+}
+
+// -----------------------------------------------------------------------------
+// 6. Slice B closeout sentinel — ok_to_proceed is NOT an authorization summary
+// -----------------------------------------------------------------------------
+//
+// This test is a doctrine fence. It pins, in one place, the full
+// gating surface that a consumer MUST inspect alongside (or
+// instead of) `ok_to_proceed` when an ingested finding's producer
+// basis is stale. Under v1 Slice 5 semantics:
+//
+//   `ok_to_proceed = true`        — yes, because Stale ≠ Invalidated
+//   `result.status = Stale`        — surfaces the caution
+//   `result.reliance_class = Historical`
+//   `result.scope.valid_for = [PacketContext]` only
+//   `summary.downgraded` contains the input_id
+//   `summary.admissible_for_authorization` does NOT contain it
+//   `packet.diagnosis.regime` starts with "stale"
+//   `packet.proposed_action.kind = Advisory`
+//   `packet.proposed_action.steps` contains "revalidate"
+//   `packet.attention.evidence_state = EvidenceState::Stale`
+//   `result.freshness.assessment = "stale"`
+//   `result.freshness.reason = "imported_producer_basis_stale"`
+//
+// A consumer that reads only `ok_to_proceed` will see `true` and
+// miss every one of the cautions above. That misread is the
+// exact failure mode this test exists to prevent from re-emerging
+// silently in future changes.
+//
+// If a future change flips `ok_to_proceed = false` on Stale (which
+// would be a Slice 5 doctrine change, not a Slice B change), this
+// test must be updated deliberately. The deliberate update is the
+// signal that the doctrine moved.
+//
+// See `crates/nightshiftd/src/bundle.rs::ReconciliationSummary`,
+// `docs/SCHEMA-bundle.md` §"Consumer caution," and
+// `docs/GAP-imported-basis-freshness.md` §"Closeout."
+
+#[test]
+fn b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization() {
+    let (bundle, packet, _receipt) = freshness_receipt_for_fixture(
+        "nq-findings-import-stale.jsonl",
+        stale_producer_target(),
+        None,
+    );
+
+    // The single NQ input under reconciliation.
+    let result = bundle
+        .reconciliation
+        .as_ref()
+        .and_then(|r| r.results.first())
+        .expect("bundle has one NQ result");
+    let input_id = result.input_id.clone();
+    let summary = &packet.reconciliation_summary;
+
+    // 1. ok_to_proceed is true. This is the trap to disarm.
+    assert!(
+        summary.ok_to_proceed,
+        "ok_to_proceed must stay true on Stale per v1 Slice 5; flipping it \
+         is a doctrine change that requires deliberate review"
+    );
+
+    // 2. ...but the input is downgraded.
+    assert!(
+        summary.downgraded.contains(&input_id),
+        "stale-bound input must land in summary.downgraded; got {:?}",
+        summary.downgraded
+    );
+
+    // 3. ...and is NOT in admissible_for_authorization.
+    assert!(
+        !summary.admissible_for_authorization.contains(&input_id),
+        "stale-bound input must NOT appear in admissible_for_authorization; \
+         got {:?}",
+        summary.admissible_for_authorization
+    );
+    assert!(
+        !summary.admissible_for_proposal.contains(&input_id),
+        "stale-bound input must NOT appear in admissible_for_proposal; got {:?}",
+        summary.admissible_for_proposal
+    );
+    assert!(
+        !summary.admissible_for_diagnosis.contains(&input_id),
+        "stale-bound input must NOT appear in admissible_for_diagnosis; got {:?}",
+        summary.admissible_for_diagnosis
+    );
+
+    // 4. Result-level invariants: Stale / Historical / PacketContext only.
+    assert!(
+        matches!(result.status, InputStatus::Stale),
+        "result.status must be Stale; got {:?}",
+        result.status
+    );
+    assert!(
+        matches!(result.reliance_class, RelianceClass::Historical),
+        "result.reliance_class must be Historical for stale imported basis; \
+         got {:?}",
+        result.reliance_class
+    );
+    assert_eq!(
+        result.scope.valid_for,
+        vec![ValidFor::PacketContext],
+        "stale imported basis must restrict valid_for to PacketContext only; \
+         no Authorization / Proposal / Diagnosis admissibility"
+    );
+
+    // 5. Packet-level invariants: stale regime, Advisory action, revalidate steps.
+    assert!(
+        packet.diagnosis.regime.starts_with("stale"),
+        "packet.diagnosis.regime must start with `stale`; got {:?}",
+        packet.diagnosis.regime
+    );
+    assert!(
+        matches!(packet.proposed_action.kind, ProposedActionKind::Advisory),
+        "stale-bound packet must propose Advisory only; got {:?}",
+        packet.proposed_action.kind
+    );
+    assert!(
+        packet
+            .proposed_action
+            .steps
+            .iter()
+            .any(|s| s.contains("revalidate")),
+        "stale-bound packet must propose revalidate-only steps; got {:?}",
+        packet.proposed_action.steps
+    );
+
+    // 6. Attention.evidence_state cascades to Stale (per pipeline.rs:661).
+    assert_eq!(
+        packet.attention.evidence_state,
+        EvidenceState::Stale,
+        "Attention.evidence_state must cascade to Stale when input is Stale"
+    );
+
+    // 7. The freshness receipt itself is still populated and audit-bearing.
+    let r = result
+        .freshness
+        .as_ref()
+        .expect("freshness receipt must be present on the result");
+    assert_eq!(r.assessment, "stale");
+    assert_eq!(r.reason, "imported_producer_basis_stale");
+    assert_eq!(r.freshness_basis.kind, "producer_extraction_time");
+    assert_eq!(r.custody_basis.kind, "finding_snapshot.captured_at");
 }
