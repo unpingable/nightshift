@@ -452,8 +452,8 @@ signals.
   the chain is named, does the signal expire? On what — a human
   decision landing, runway extending, the premise being explicitly
   reaffirmed? Probably operator decision lands a typed disposition
-  (per the re-ack doctrine) that closes the signal; defer until a
-  real case.
+  (per `GAP-reack-doctrine.md`) that closes the signal; defer until
+  a real case.
 - **Interaction with `--no-governor` degraded mode.** Per
   `GAP-governor-contract.md`, degraded mode lowers promotion
   ceiling. Exhaustion detection is observational; the doc's posture

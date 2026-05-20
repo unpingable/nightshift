@@ -536,7 +536,8 @@ underlying invariant, different prior-planning shape.
 ### GAP-attention-state.md and the re-ack doctrine
 
 The fourth keeper (*ack-gated mutations create catch-up cascades*)
-sits adjacent to the re-ack doctrine (re-ack as mini re-triage).
+sits adjacent to the re-ack doctrine (re-ack as mini re-triage,
+ratified in `GAP-reack-doctrine.md`).
 Catch-up cascades happen partly because a single old ack is being
 treated as continuing authorization across a sequence of
 consequential actions. The re-ack doctrine says ack is not closure;
@@ -690,7 +691,8 @@ corollary, and context-window poisoning as named mechanism.
 - **Operator-presence freshness.** Operator presence is a
   precondition. How fresh must "the operator is in the loop" be
   for a non-autonomous action's fresh-ack to be meaningful? This
-  is adjacent to the re-ack doctrine but not identical. Defer.
+  is adjacent to the re-ack doctrine (`GAP-reack-doctrine.md`)
+  but not identical. Defer.
 - **Monitor/mutation channel separation in practice.** What is
   the minimal Night Shift wire surface that keeps these distinct?
   Separate ledgers? Separate stream prefixes? A `channel_class`

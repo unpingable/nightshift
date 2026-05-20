@@ -373,27 +373,24 @@ These must be answered before implementation. The first is the soft
 blocker that justifies "spec-first only" instead of "ready to
 implement."
 
-### 1. **Re-ack doctrine: file it or fall back?** *(soft blocker)*
+### 1. ~~**Re-ack doctrine: file it or fall back?**~~ *(resolved 2026-05-20)*
 
-Slice C's ack-lineage story leans on re-ack doctrine ("re-ack = mini
-re-triage with typed disposition"). That doctrine is referenced in
-two existing GAPs but lives only in memory
-(`project_reack_doctrine.md`). Two paths:
+**Resolved 2026-05-20:** the maintainer chose the **hybrid path** —
+file re-ack doctrine as a prerequisite repo artifact, then run
+Slice C.1 as **surface-only** under that doctrine.
 
-- **(a) File re-ack doctrine as a sibling GAP first.** Either
-  `GAP-reack-doctrine.md` or an addition to `GAP-attention-state.md`.
-  Then Slice C extends it with class-aware disposition values.
-- **(b) Slice C falls back to surface-only.** Adds `posture_class`
-  to `ReconciliationResult` / `FindingSummary` / `Attention`,
-  modifies notification language and regime prefixes, but does NOT
-  extend re-ack disposition values. The mechanical ack-lineage
-  separation (finding_key) is sufficient for v1; the disposition
-  enum extension waits for re-ack doctrine to ratify.
+`GAP-reack-doctrine.md` was filed 2026-05-20 as a sibling GAP and
+this file's references now point at it. Slice C.1 is no longer
+blocked by Open Q1; it proceeds under the surface-only fallback
+(option b in the original framing): `PostureClass` visible on
+`ReconciliationResult`, `FindingSummary`, and `Attention`; regime
+prefix and notification language updated; **no disposition-enum
+extension** in v1.
 
-**Recommendation: (b) for v1.** The class is visible; consumers can
-already separate ack lineage by finding_key. The disposition enum
-extension is downstream of a doctrine that hasn't cooled into repo
-text yet.
+Class-aware disposition values (silence-ack vs incident-ack
+dispositions on `GAP-reack-doctrine.md`'s six-value enum) remain a
+deferred extension conditional on operator review of v1 re-ack
+flows. Not in scope for Slice C.1 or any near-term commit.
 
 ### 2. **`AttentionState::Silenced` naming collision.** *(naming question)*
 
@@ -463,27 +460,43 @@ Receipt-rendering order matters only for human readability. Picks:
 **Recommendation: freshness first (existing order), posture second.**
 Receipts are listed in slice-landing order; matches commit history.
 
-## Recommendation: spec-first only
+## Recommendation: Slice C.1 may proceed (surface-only)
 
-**Implementation is blocked by Open Question 1.** The re-ack
-doctrine is referenced in repo text but not filed. Slice C *can*
-proceed with the fallback (surface-only, no disposition enum
-extension), but the maintainer should make that decision
-explicitly rather than have it land by default.
+**Updated 2026-05-20** after `GAP-reack-doctrine.md` landed.
 
-Open Questions 2–6 are naming / ordering choices that should be
-resolved in the same review pass; they are not deep blockers.
+Open Question 1 is **resolved**: re-ack doctrine is now in repo
+text. The hybrid path was chosen — file re-ack first, then run
+Slice C as surface-only under that doctrine.
 
-**Recommended next move:** review this design, decide Open Q1 (fall
-back vs. file re-ack first), settle Open Q2–Q6, then file Slice
-C.spec.md and proceed with the three-commit pattern that worked
-for Slice B (spec → scaffolding+red-tests → implementation).
+**Slice C.1 (surface-only) may proceed.** Scope:
 
-**Not recommended:** building Slice C without resolving Open Q1.
-The re-ack doctrine has been referenced by name three times in
-existing GAPs; adding a fourth load-bearing reference without
-filing it would itself be a corpus-mutation that the grep-before-
-governance discipline names against.
+- `PostureClass` enum (`IncidentShape | SilenceShape | Unknown`)
+  added with the derivation rule and the legacy-detector allowlist.
+- `posture_class` field added to `ReconciliationResult`,
+  `FindingSummary`, and `Attention`.
+- Regime prefix and `ProposedAction.steps` language updated for
+  `SilenceShape` findings.
+- Eight acceptance tests across the three families (derivation /
+  ack-lineage / boolean-laundering refusals).
+- **No disposition-enum extension.** `GAP-reack-doctrine.md`'s
+  six-value enum stays frozen for v1. Class-aware disposition
+  (silence-ack vs incident-ack dispositions) is a downstream
+  extension conditional on operator review.
+
+Open Questions 2–6 (naming / ordering choices) should be settled
+in the Slice C.1 spec commit, not as separate decisions:
+
+- Q2: accept the `AttentionState::Silenced` collision; document
+  carefully (recommended).
+- Q3: regime prefix `"silence: …"` (recommended).
+- Q4: leave `OperationalUrgency` untouched (recommended).
+- Q5: hardcoded legacy-detector allowlist (recommended).
+- Q6: freshness first, posture second (recommended).
+
+**Recommended next move:** spec-first commit (`GAP-silence-aware-
+posture.md` is already that spec — just amend to reflect Q1
+resolution if needed), then scaffolding + red tests, then
+implementation. Three-commit pattern as for Slice B.
 
 ## Provenance
 
@@ -492,7 +505,9 @@ governance discipline names against.
 - Builds on Slice A (visibility) and Slice B (clock freshness).
 - Sibling doctrine: `GAP-attention-state.md`,
   `GAP-imported-basis-freshness.md`.
-- Adjacent unfiled doctrine: re-ack
-  (`memory/project_reack_doctrine.md`).
+- Sibling doctrine: re-ack (`GAP-reack-doctrine.md`, filed
+  2026-05-20). The memory provenance
+  (`memory/project_reack_doctrine.md`) is preserved as the
+  pre-promotion source.
 - No code, no tests, no schema changes in this commit. The design
   surface cools in repo text before any implementation commits.
