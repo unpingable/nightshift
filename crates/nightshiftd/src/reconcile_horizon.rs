@@ -331,6 +331,7 @@ mod tests {
             concurrent_activity: None,
             current_finding_snapshot: None,
             freshness: None,
+            posture_class: crate::posture_class::PostureClass::Unknown,
         }
     }
 

@@ -401,6 +401,11 @@ pub fn adjudicate(
             // returns. The reconciler itself does not branch on
             // freshness; this field is observe-only.
             freshness: None,
+            // Slice C.1: populated by the pipeline after adjudicate
+            // returns (same pattern as freshness). Defaults to
+            // Unknown — the reconciler itself does not derive
+            // posture class, per the surface-only contract.
+            posture_class: crate::posture_class::PostureClass::Unknown,
         });
     }
 

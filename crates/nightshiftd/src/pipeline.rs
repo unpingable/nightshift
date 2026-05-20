@@ -615,6 +615,7 @@ fn build_success_packet(
         persistence_generations: current_snapshot.persistence_generations,
         first_seen_at: current_snapshot.first_seen_at,
         current_status: current_snapshot.current_status,
+        posture_class: crate::posture_class::PostureClass::Unknown,
         origin: current_snapshot.origin.clone(),
         silence: current_snapshot.silence.clone(),
     };
@@ -699,6 +700,7 @@ fn build_success_packet(
             _ => current_snapshot.current_status,
         },
         attention_state,
+        posture_class: crate::posture_class::PostureClass::Unknown,
         operational_urgency,
         owner: None,
         last_touched_by: None,
@@ -803,6 +805,7 @@ fn hold_for_preflight(
         persistence_generations: captured_snapshot.persistence_generations,
         first_seen_at: captured_snapshot.first_seen_at,
         current_status: captured_snapshot.current_status,
+        posture_class: crate::posture_class::PostureClass::Unknown,
         origin: captured_snapshot.origin.clone(),
         silence: captured_snapshot.silence.clone(),
     };
@@ -867,6 +870,7 @@ fn hold_for_preflight(
         attention_key: target.clone(),
         evidence_state: captured_snapshot.current_status,
         attention_state: AttentionState::Unowned,
+        posture_class: crate::posture_class::PostureClass::Unknown,
         operational_urgency: urgency_from(
             captured_snapshot.severity,
             agenda.criticality.class,
@@ -966,6 +970,7 @@ fn liveness_gate_failed(
         persistence_generations: 0,
         first_seen_at: snapshot.export.exported_at,
         current_status: EvidenceState::Stale,
+        posture_class: crate::posture_class::PostureClass::Unknown,
         // Liveness gate failure path: no underlying NQ finding to
         // carry origin/silence from. Both absent by construction.
         origin: None,
@@ -1038,6 +1043,7 @@ fn liveness_gate_failed(
         attention_key: target.clone(),
         evidence_state: EvidenceState::Stale,
         attention_state: AttentionState::Unowned,
+        posture_class: crate::posture_class::PostureClass::Unknown,
         operational_urgency: OperationalUrgency::Medium,
         owner: None,
         last_touched_by: None,

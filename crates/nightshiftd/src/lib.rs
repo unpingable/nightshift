@@ -21,6 +21,7 @@ pub mod nq_peek;
 pub mod packet;
 pub mod pipeline;
 pub mod posture;
+pub mod posture_class;
 pub mod reconcile_horizon;
 pub mod reconciler;
 pub mod store;

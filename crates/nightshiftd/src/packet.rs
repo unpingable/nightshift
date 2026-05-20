@@ -64,6 +64,13 @@ pub struct FindingSummary {
     /// not branch on this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silence: Option<FindingSilence>,
+    /// Slice C.1 posture class (surface-only). Derived from the
+    /// finding's wire shape. Defaults to `Unknown` per the
+    /// SILENCE_UNIFICATION rule: absence of envelope is "not yet
+    /// unified," not "not silence." See
+    /// `docs/GAP-silence-aware-posture.md`.
+    #[serde(default)]
+    pub posture_class: crate::posture_class::PostureClass,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +151,29 @@ pub struct Attention {
     pub attention_key: FindingKey,
     pub evidence_state: EvidenceState,
     pub attention_state: AttentionState,
+    /// Slice C.1 posture class (surface-only). Distinct from
+    /// `attention_state` — `attention_state` is the operator's
+    /// view of the finding's lifecycle (Unowned / Acknowledged /
+    /// Investigating / WatchUntil / Silenced=operator-silenced);
+    /// `posture_class` is the *shape* of the finding itself
+    /// (IncidentShape / SilenceShape / Unknown).
+    ///
+    /// **`AttentionState::Silenced` and `PostureClass::SilenceShape`
+    /// are different concepts that happen to share a word.**
+    /// The former is "operator suppressed this attention row"; the
+    /// latter is "the finding's evidence is shape-of-absence." A
+    /// row can be `attention_state = Acknowledged` AND
+    /// `posture_class = SilenceShape` simultaneously (an operator
+    /// acked a silence-shaped finding).
+    ///
+    /// Per `docs/GAP-reack-doctrine.md` invariants 3–4: an ack on
+    /// this row applies only to this `attention_key`'s lineage; it
+    /// does not transfer to attention rows for other findings,
+    /// regardless of whether those rows have the same or different
+    /// `posture_class`. The field surfaces the class so consumers
+    /// can see what kind of ack the row carries.
+    #[serde(default)]
+    pub posture_class: crate::posture_class::PostureClass,
     pub operational_urgency: OperationalUrgency,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,

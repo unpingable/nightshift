@@ -134,6 +134,22 @@ pub struct ReconciliationResult {
     /// `ReliacenClass` derived from `status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness: Option<crate::freshness::FreshnessReceipt>,
+    /// Silence-Aware Posture class (Slice C.1, surface-only).
+    /// Derived from the finding's wire shape via
+    /// `crate::posture_class::derive_posture_class`. Per
+    /// `docs/GAP-silence-aware-posture.md` and
+    /// `docs/GAP-reack-doctrine.md` invariants 3–5: a silence-shaped
+    /// finding's ack lineage is distinct from an active-finding's
+    /// ack lineage; this field surfaces the class so downstream
+    /// consumers can tell which kind of ack the row carries.
+    ///
+    /// **Defaults to `Unknown`**, never to `IncidentShape`. Per the
+    /// SILENCE_UNIFICATION rule: absence of the silence envelope is
+    /// "not yet unified," not "not silence." Slice C.1 does NOT
+    /// flip `EvidenceState`, `InputStatus`, or `RelianceClass` based
+    /// on this field — those remain owned by Slice 5 / Slice B.
+    #[serde(default)]
+    pub posture_class: crate::posture_class::PostureClass,
 }
 
 /// Cross-input summary of a reconciliation pass.
