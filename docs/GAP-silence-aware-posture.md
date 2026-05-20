@@ -1,12 +1,17 @@
 # GAP: Silence-Aware Posture (Slice C of DURABLE_ARTIFACT_SUBSTRATE consumption)
 
-> Status: **design — not ready for implementation.** Filed 2026-05-19
-> as the design output of the Slice B closeout audit. Slice C is the
-> next deliberate move after Slice B, but it has at least one soft
-> doctrine blocker and one explicit naming-collision question that
-> must be resolved before code lands. This file is the design surface
-> for those decisions; the implementation slices (C.0 / C.1 / C.2)
-> follow only after the open questions below are settled.
+> Status: **Slice C.1 ratified for surface-only implementation
+> 2026-05-20.** Filed 2026-05-19 as the design output of the Slice B
+> closeout audit. Open Q1 (re-ack doctrine) resolved 2026-05-20 by
+> filing `GAP-reack-doctrine.md` as a sibling prerequisite. Open Q2–Q6
+> ratified per the recommendations in §"Recommendation: Slice C.1
+> may proceed (surface-only)" below. Slice C.1 implementation
+> proceeds under the surface-only path: `PostureClass` visible on
+> `ReconciliationResult`, `FindingSummary`, and `Attention`; regime
+> prefix `"silence: …"`; **no disposition-enum extension** in v1.
+> Slice C.2 (class-aware disposition extension on
+> `GAP-reack-doctrine.md`'s frozen six-value enum) remains deferred
+> per the design's non-goals.
 
 ## The deep rule
 
