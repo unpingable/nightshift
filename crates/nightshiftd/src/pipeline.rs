@@ -434,6 +434,11 @@ pub fn reconcile_phase_with_horizon(
         .unwrap_or(crate::freshness::DEFAULT_IMPORTED_BASIS_FRESHNESS_WINDOW_SECONDS);
     for result in &mut reconciliation.results {
         if let Some(snap) = result.current_finding_snapshot.as_ref() {
+            // Slice C.1: derive posture class from the snapshot.
+            // Surface-only — posture_class does NOT mutate status,
+            // reliance_class, or evidence_state.
+            result.posture_class = crate::posture_class::derive_posture_class(snap);
+
             let outcome = crate::freshness::assess_freshness(
                 snap,
                 acquisition.acquired_at,
@@ -605,6 +610,8 @@ fn build_success_packet(
         .clone()
         .unwrap_or_else(|| captured_snapshot.clone());
 
+    let posture_class = crate::posture_class::derive_posture_class(&current_snapshot);
+
     let finding_summary = FindingSummary {
         source: current_snapshot.finding_key.source.clone(),
         detector: current_snapshot.finding_key.detector.clone(),
@@ -615,7 +622,7 @@ fn build_success_packet(
         persistence_generations: current_snapshot.persistence_generations,
         first_seen_at: current_snapshot.first_seen_at,
         current_status: current_snapshot.current_status,
-        posture_class: crate::posture_class::PostureClass::Unknown,
+        posture_class,
         origin: current_snapshot.origin.clone(),
         silence: current_snapshot.silence.clone(),
     };
@@ -628,6 +635,7 @@ fn build_success_packet(
             .notes
             .as_deref()
             .unwrap_or("no reconciler note recorded"),
+        posture_class,
     );
 
     let ceiling_changed = effective_ceiling != agenda.promotion_ceiling;
@@ -700,7 +708,7 @@ fn build_success_packet(
             _ => current_snapshot.current_status,
         },
         attention_state,
-        posture_class: crate::posture_class::PostureClass::Unknown,
+        posture_class,
         operational_urgency,
         owner: None,
         last_touched_by: None,
@@ -805,7 +813,7 @@ fn hold_for_preflight(
         persistence_generations: captured_snapshot.persistence_generations,
         first_seen_at: captured_snapshot.first_seen_at,
         current_status: captured_snapshot.current_status,
-        posture_class: crate::posture_class::PostureClass::Unknown,
+        posture_class: crate::posture_class::derive_posture_class(captured_snapshot),
         origin: captured_snapshot.origin.clone(),
         silence: captured_snapshot.silence.clone(),
     };
@@ -870,7 +878,7 @@ fn hold_for_preflight(
         attention_key: target.clone(),
         evidence_state: captured_snapshot.current_status,
         attention_state: AttentionState::Unowned,
-        posture_class: crate::posture_class::PostureClass::Unknown,
+        posture_class: crate::posture_class::derive_posture_class(captured_snapshot),
         operational_urgency: urgency_from(
             captured_snapshot.severity,
             agenda.criticality.class,
@@ -1143,6 +1151,113 @@ pub fn effective_ceiling(declared: AuthorityLevel, no_governor: bool) -> Authori
 /// - **Observed** — should not appear at packet build time; treat as
 ///   an internal contract bug.
 fn build_verdict_surfaces(
+    target: &FindingKey,
+    current: &FindingSnapshot,
+    status: InputStatus,
+    reconciler_note: &str,
+    posture_class: crate::posture_class::PostureClass,
+) -> (Diagnosis, ProposedAction) {
+    // Slice C.1: when posture is SilenceShape, route the
+    // incident-shape verdict surfaces through a silence-aware
+    // rewriter that prepends `"silence: …"` to the regime and
+    // replaces ProposedAction.steps with silence-verification
+    // language that does NOT imply recovery, safety, or active
+    // resolution. The underlying status (Committed / Stale / etc.)
+    // still drives the structural decision; posture is the layer
+    // on top.
+    let (diagnosis, action) =
+        build_verdict_surfaces_incident_shape(target, current, status, reconciler_note);
+    if posture_class == crate::posture_class::PostureClass::SilenceShape {
+        return silence_shape_rewrite(diagnosis, action, target, current);
+    }
+    (diagnosis, action)
+}
+
+/// Rewrite an incident-shape verdict into a silence-shape verdict.
+///
+/// Preserves the underlying `InputStatus`-derived authority level
+/// and `kind` (Advisory). Prepends `"silence: "` to the regime
+/// string with a description of the silence basis when available.
+/// Replaces the steps with silence-verification language that
+/// explicitly does NOT imply recovery, safety, or active
+/// resolution — those phrases would launder
+/// `silence_present ⇒ incident_absent` per
+/// `docs/GAP-silence-aware-posture.md`.
+fn silence_shape_rewrite(
+    incident_diag: Diagnosis,
+    incident_action: ProposedAction,
+    target: &FindingKey,
+    current: &FindingSnapshot,
+) -> (Diagnosis, ProposedAction) {
+    let target_str = target.as_string();
+    let silence_detail = match current.silence.as_ref() {
+        Some(s) => format!(
+            "silence scope={} basis={} duration_s={} expected={}",
+            s.scope, s.basis, s.duration_s, s.expected
+        ),
+        None => "silence envelope absent on current snapshot".to_string(),
+    };
+
+    let regime = format!(
+        "silence: {} — underlying status: {}",
+        silence_detail, incident_diag.regime
+    );
+
+    // Silence-shape steps: verify whether silence is expected; never
+    // imply recovery or safety. The trailing line is the explicit
+    // anti-laundering note required by the GAP doctrine.
+    let mut steps: Vec<String> = vec![
+        format!(
+            "verify whether the producer behind {target_str} is intentionally quiet \
+             (declared maintenance, scheduled snapshot cadence, planned downtime)"
+        ),
+        "check the producer's extraction loop or scheduler for hangs / errors"
+            .into(),
+        "if the producer should be live, restore extraction and re-run; if the silence \
+         is expected, declare maintenance per MAINTENANCE_DECLARATION"
+            .into(),
+        "do NOT infer absence of incident, recovery, safety, or active resolution from \
+         this silence — `silence_present ≠ incident_absent`"
+            .into(),
+    ];
+    // If the underlying status carried additional steps (e.g.,
+    // Slice B's revalidate-only on a stale producer basis), keep
+    // them — they compose orthogonally. Filter out any incident-
+    // shape phrases that would launder.
+    for s in incident_action.steps {
+        let lc = s.to_lowercase();
+        if lc.contains("resolved")
+            || lc.contains("recovered")
+            || lc.contains("safe to ignore")
+            || lc.contains("no action needed")
+            || lc.contains("no action required")
+            || lc.contains("all clear")
+        {
+            // Explicitly drop any laundering phrasing the incident-
+            // shape branch may have produced.
+            continue;
+        }
+        steps.push(s);
+    }
+
+    let diagnosis = Diagnosis {
+        regime,
+        evidence: incident_diag.evidence,
+        confidence: incident_diag.confidence,
+        alternatives_considered: incident_diag.alternatives_considered,
+    };
+    let action = ProposedAction {
+        kind: incident_action.kind,
+        steps,
+        risk_notes: incident_action.risk_notes,
+        reversible: incident_action.reversible,
+        blast_radius: incident_action.blast_radius,
+        requested_authority_level: incident_action.requested_authority_level,
+    };
+    (diagnosis, action)
+}
+
+fn build_verdict_surfaces_incident_shape(
     target: &FindingKey,
     current: &FindingSnapshot,
     status: InputStatus,

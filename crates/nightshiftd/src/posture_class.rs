@@ -110,9 +110,19 @@ pub fn is_legacy_silence_detector(detector: &str) -> bool {
 /// derives the same posture class. Slice C.1 wires this into the
 /// pipeline at three surfaces (ReconciliationResult, FindingSummary,
 /// Attention).
-pub fn derive_posture_class(_snap: &FindingSnapshot) -> PostureClass {
-    todo!(
-        "Slice C.1 implementation lands in the next commit \
-         (see docs/GAP-silence-aware-posture.md)"
-    )
+pub fn derive_posture_class(snap: &FindingSnapshot) -> PostureClass {
+    // Slice C.1 derivation rule. Order matters: envelope presence
+    // wins over detector-name heuristic, so a future NQ migration
+    // that adds the envelope to a legacy detector promotes it from
+    // Unknown to SilenceShape without code changes here.
+    if snap.silence.is_some() {
+        return PostureClass::SilenceShape;
+    }
+    if is_legacy_silence_detector(&snap.finding_key.detector) {
+        // Legacy NQ silence detector whose unified envelope hasn't
+        // arrived yet. Surface as Unknown rather than silently
+        // classifying as IncidentShape.
+        return PostureClass::Unknown;
+    }
+    PostureClass::IncidentShape
 }
