@@ -18,19 +18,37 @@ Pair with NQ (premise-movement detection) and Governor (authorization decisions)
 ## Quick start
 
 ```bash
-# TBD — project is in framing stage
-# Rust: cargo build && cargo test
-# Python: pip install -e '.[dev]' && pytest
+cargo build
+cargo test
+cargo run --bin nightshift -- --help
 ```
+
+End-to-end Watchbill run against the bundled NQ fixture:
+
+```bash
+cargo run --bin nightshift -- watchbill run \
+    tests/fixtures/wal-bloat-review.yaml \
+    --finding nq:wal_bloat:labelwatch-host:/var/lib/db
+```
+
+The Tier-2 horizon path (cross-run tolerance lineage → Governor
+receipts) activates when both `--horizon-policy <path>` and
+`--governor-socket <path>` are supplied. Either flag alone is a
+configuration error.
 
 ## Tests
 
 ```bash
-cargo test          # Rust
-pytest              # Python
+cargo test
 ```
 
-Always run tests before proposing commits. Never claim tests pass without running them.
+One integration test (`tests/governor_rpc_live.rs`) is `#[ignore]`d
+by default — it requires a live `agent_gov` daemon on a Unix
+socket. Run it explicitly with `cargo test -- --ignored
+governor_rpc_live` when you have the daemon running.
+
+Always run tests before proposing commits. Never claim tests pass
+without running them.
 
 ---
 
@@ -52,18 +70,31 @@ Always run tests before proposing commits. Never claim tests pass without runnin
 
 ## Repository layout
 
+v1 is effectively Rust-only. The DESIGN.md Rust+Python split is
+preserved as the architectural target for Code mode, but no Python
+package exists yet — `pyproject.toml` is a placeholder.
+
 ```
-crates/                     Rust workspace
-  nightshift-core/          Agenda, bundle, reconciler, promotion primitives
-  nightshift-daemon/        Scheduler daemon, execution leases
-  nightshift-nq/            NQ client / findings integration
-  nightshift-ledger/        Run ledger, receipt emission
-src/nightshift/             Python package
-  workflows/                LLM/interferometry orchestration
-  analysis/                 Diagnosis plugins, repair generation
-  reports/                  Packet rendering, output formatting
-tests/                      Test suites
-docs/                       Design documents, architecture decisions
+crates/nightshiftd/         Rust crate — daemon + library
+  src/
+    agenda.rs               Agenda declaration + YAML loader
+    bundle.rs               Capture + reconciliation DTOs
+    reconciler.rs           Pure adjudicate over (bundle, acquisition)
+    pipeline.rs             capture → reconcile → packet
+    nq.rs                   NQ source (fixture + CLI-backed)
+    liveness.rs             NQ liveness gate
+    freshness.rs            Imported-basis freshness (Slice B)
+    posture_class.rs        Silence-aware posture (Slice C.1)
+    horizon.rs              Tolerability-horizon decision logic
+    horizon_policy.rs       NS-local horizon declarations
+    reconcile_horizon.rs    Horizon phase: policy + tolerance + receipt
+    governor_client.rs      JSON-RPC client (record_receipt today)
+    store/sqlite.rs         SQLite persistence
+    packet.rs               Review-packet schema
+    main.rs                 `nightshift` CLI entry
+  tests/                    Integration tests
+tests/fixtures/             Agenda + NQ fixtures
+docs/                       Design documents, GAP specs, schemas
 ```
 
 ---
@@ -71,7 +102,6 @@ docs/                       Design documents, architecture decisions
 ## Coding conventions
 
 - Rust: stable toolchain, clippy clean, no unsafe without justification
-- Python: 3.10+, type hints, pytest >=8.0
 - Receipts: content-addressed, append-only, deterministic
 - Governor integration: required for any mode above `observe`
 

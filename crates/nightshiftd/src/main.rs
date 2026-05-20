@@ -6,6 +6,8 @@ use clap::{Parser, Subcommand};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
+use nightshiftd::governor_client::{GovernorClient, JsonRpcGovernorClient};
+use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonPolicySource};
 use nightshiftd::liveness::{
     CliLivenessSource, LivenessSource, DEFAULT_STALENESS_THRESHOLD_SECONDS,
 };
@@ -15,7 +17,8 @@ use nightshiftd::liveness_peek::{
 use nightshiftd::nq::{CliNqSource, FixtureNqSource, NqListFilter, NqSource};
 use nightshiftd::nq_peek::{render_peek_text, PeekDocument};
 use nightshiftd::pipeline::{
-    capture_phase, reconcile_phase, run_watchbill_with_liveness, CaptureOutcome, PipelineOptions,
+    capture_phase, reconcile_phase, reconcile_phase_with_horizon, run_watchbill_with_liveness,
+    CaptureOutcome, PipelineOptions,
 };
 use nightshiftd::posture::{
     list_postures, load_posture, render_list_row, render_show, PostureFilter,
@@ -74,6 +77,25 @@ struct Cli {
     /// cadence).
     #[arg(long, global = true)]
     nq_liveness_threshold_secs: Option<u64>,
+
+    /// Path to a horizon-policy fixture JSON manifest declaring
+    /// per-finding tolerance windows. When set, `watchbill run` and
+    /// `watchbill reconcile` invoke `reconcile_phase_with_horizon`,
+    /// which writes tolerance records on `Defer`, promotes packet
+    /// Attention to `WatchUntil`, and forwards declarations to
+    /// Governor via `record_receipt`. Requires `--governor-socket`.
+    /// See `docs/GAP-imported-basis-freshness.md` and
+    /// `src/horizon_policy.rs`.
+    #[arg(long, global = true)]
+    horizon_policy: Option<PathBuf>,
+
+    /// Path to the Governor JSON-RPC Unix socket. Required together
+    /// with `--horizon-policy` to activate the horizon path —
+    /// horizon-driven deferrals emit `record_receipt` calls so the
+    /// tolerance declaration shows up in Governor's receipt chain.
+    /// One fresh connection per call; no persistent connection.
+    #[arg(long, global = true)]
+    governor_socket: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -373,6 +395,33 @@ fn build_liveness_source(cli: &Cli) -> Option<Box<dyn LivenessSource>> {
     Some(Box::new(src))
 }
 
+/// Paired horizon dependencies: the NS-local policy source and the
+/// Governor RPC client that archives the resulting tolerance
+/// receipts. Always either both or neither.
+type HorizonDeps = (Box<dyn HorizonPolicySource>, Box<dyn GovernorClient>);
+
+/// Resolve the horizon dependencies from CLI flags. Both
+/// `--horizon-policy` and `--governor-socket` must be set together;
+/// either flag alone is a configuration error per
+/// `src/horizon_policy.rs` module docs (horizon is NS-declared,
+/// archived through Governor's `record_receipt`).
+fn build_horizon_deps(cli: &Cli) -> anyhow::Result<Option<HorizonDeps>> {
+    match (&cli.horizon_policy, &cli.governor_socket) {
+        (Some(policy_path), Some(socket_path)) => {
+            let policy = FixtureHorizonPolicySource::load(policy_path)?;
+            let governor = JsonRpcGovernorClient::new(socket_path.clone());
+            Ok(Some((Box::new(policy), Box::new(governor))))
+        }
+        (Some(_), None) => {
+            anyhow::bail!("--horizon-policy requires --governor-socket (horizon receipts are forwarded via Governor)")
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("--governor-socket requires --horizon-policy (no firing site without a policy source)")
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 fn run_watchbill_cmd(
     cli: &Cli,
     agenda_path: &std::path::Path,
@@ -383,17 +432,43 @@ fn run_watchbill_cmd(
     let liveness = build_liveness_source(cli);
     let store = SqliteStore::open(&cli.store)?;
     let target = parse_finding_arg(finding)?;
+    let horizon_deps = build_horizon_deps(cli)?;
 
     let opts = pipeline_opts(cli);
 
-    let packet = run_watchbill_with_liveness(
-        &agenda,
-        &target,
-        nq.as_ref(),
-        liveness.as_deref(),
-        &store,
-        &opts,
-    )?;
+    let packet = match horizon_deps {
+        // No horizon configured — original same-generation path.
+        None => run_watchbill_with_liveness(
+            &agenda,
+            &target,
+            nq.as_ref(),
+            liveness.as_deref(),
+            &store,
+            &opts,
+        )?,
+        // Horizon configured — compose capture + horizon-aware
+        // reconcile by hand. Matches the deferred CLI path
+        // (`capture` + `reconcile`) per
+        // `docs/GAP-deferred-run-split.md`.
+        Some((policy, governor)) => match capture_phase(
+            &agenda,
+            &target,
+            nq.as_ref(),
+            liveness.as_deref(),
+            &store,
+            &opts,
+        )? {
+            CaptureOutcome::HeldPacket(packet) => *packet,
+            CaptureOutcome::Captured { run_id } => reconcile_phase_with_horizon(
+                &run_id,
+                nq.as_ref(),
+                Some(policy.as_ref()),
+                Some(governor.as_ref()),
+                &store,
+                &opts,
+            )?,
+        },
+    };
 
     // v1: emit packet to stdout as YAML.
     let rendered = serde_yaml::to_string(&packet)?;
@@ -439,10 +514,21 @@ fn capture_cmd(cli: &Cli, agenda_path: &std::path::Path, finding: &str) -> anyho
 fn reconcile_cmd(cli: &Cli, run_id: &str) -> anyhow::Result<()> {
     let nq = build_nq_source(cli)?;
     let store = SqliteStore::open(&cli.store)?;
+    let horizon_deps = build_horizon_deps(cli)?;
 
     let opts = pipeline_opts(cli);
 
-    let packet = reconcile_phase(run_id, nq.as_ref(), &store, &opts)?;
+    let packet = match horizon_deps {
+        None => reconcile_phase(run_id, nq.as_ref(), &store, &opts)?,
+        Some((policy, governor)) => reconcile_phase_with_horizon(
+            run_id,
+            nq.as_ref(),
+            Some(policy.as_ref()),
+            Some(governor.as_ref()),
+            &store,
+            &opts,
+        )?,
+    };
     let rendered = serde_yaml::to_string(&packet)?;
     println!("{rendered}");
     Ok(())

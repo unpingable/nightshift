@@ -1,10 +1,13 @@
 # GAP: Deferred capture → reconcile split
 
-> Status: specified, in flight. Surfaced 2026-04-20 during the first
-> e2e watchbill run against a real NQ VM snapshot (`wal-bloat-review`
-> agenda, `nq:wal_bloat:labelwatch-host:...`). Mechanics work; the
-> deferral they exist to serve does not yet — this slice makes the
-> deferral real.
+> **Status: landed.** Surfaced 2026-04-20 during the first e2e
+> watchbill run against a real NQ VM snapshot (`wal-bloat-review`
+> agenda, `nq:wal_bloat:labelwatch-host:...`). Implementation shipped
+> as `watchbill capture` + `watchbill reconcile` CLI verbs (see
+> `src/main.rs`) over `capture_phase` / `reconcile_phase` /
+> `reconcile_phase_with_horizon` in `src/pipeline.rs`. Acceptance
+> tests: `tests/deferred_run_split.rs` (22 tests). The original brief
+> below is preserved for provenance.
 
 ## Core problem
 

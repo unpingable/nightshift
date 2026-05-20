@@ -226,22 +226,21 @@ unavailable, Night Shift continues with degraded output:
 3. **Constellation** — Governed + NQ + Continuity + MCP + observatory
    adapters. Ecosystem mode.
 
-## Language split
+## Language
 
-- **Rust**: scheduler daemon, agenda state machine, run ledger, receipt
-  emission, policy binding, execution leases, concurrency, NQ integration
-- **Python**: LLM/interferometry orchestration, analysis plugins,
-  candidate repair generation, report writing, prompt experiments
+v1 is Rust-only. The single crate `crates/nightshiftd` houses the
+scheduler, agenda state machine, reconciler, run ledger, packet
+emission, NQ + liveness consumption, horizon logic, and the
+Governor JSON-RPC client.
 
-Rust binary invokes Python workflows as controlled subprocesses.
-
-**Python workflow boundary (invariant):** Python workflows do not
-receive production credentials, mutable tool handles, or unrestricted
-shell access. They read context JSON and emit proposal JSON.
-Night Shift and Governor decide whether any proposed operation is
-staged, applied, or published.
-
-Python can be weird without being sovereign.
+The DESIGN.md Rust+Python split is preserved as the architectural
+target for Code mode (deferred coding sessions that emit reviewable
+diffs). When that ships, Python workflows will be invoked as
+controlled subprocesses under a hardened boundary: they read
+context JSON and emit proposal JSON — never production credentials,
+mutable tool handles, or unrestricted shell. Night Shift and
+Governor decide whether any proposed operation is staged, applied,
+or published.
 
 ## License
 

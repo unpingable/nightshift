@@ -1,17 +1,20 @@
 # GAP: Silence-Aware Posture (Slice C of DURABLE_ARTIFACT_SUBSTRATE consumption)
 
-> Status: **Slice C.1 ratified for surface-only implementation
-> 2026-05-20.** Filed 2026-05-19 as the design output of the Slice B
-> closeout audit. Open Q1 (re-ack doctrine) resolved 2026-05-20 by
-> filing `GAP-reack-doctrine.md` as a sibling prerequisite. Open Q2–Q6
-> ratified per the recommendations in §"Recommendation: Slice C.1
-> may proceed (surface-only)" below. Slice C.1 implementation
-> proceeds under the surface-only path: `PostureClass` visible on
-> `ReconciliationResult`, `FindingSummary`, and `Attention`; regime
-> prefix `"silence: …"`; **no disposition-enum extension** in v1.
-> Slice C.2 (class-aware disposition extension on
+> **Status: Slice C.1 landed.** Filed 2026-05-19 as the design output
+> of the Slice B closeout audit; ratified 2026-05-20 (ca181a1);
+> scaffolding + red tests 2026-05-20 (b15fe54); implementation
+> 2026-05-20 (ccd21d5). Open Q1 (re-ack doctrine) resolved 2026-05-20
+> by filing `GAP-reack-doctrine.md` as a sibling prerequisite (now
+> doctrine). Slice C.1 shipped surface-only as designed: `PostureClass`
+> visible on `ReconciliationResult`, `FindingSummary`, and `Attention`
+> (`src/posture_class.rs`); regime prefix `"silence: …"`; **no
+> disposition-enum extension** in v1. Acceptance tests:
+> `tests/silence_aware_posture.rs` (25 tests, all green as of
+> 2026-05-20). Slice C.2 (class-aware disposition extension on
 > `GAP-reack-doctrine.md`'s frozen six-value enum) remains deferred
-> per the design's non-goals.
+> with three named unlock triggers (see memory:
+> project_substrate_consumption_chain). The original brief below is
+> preserved for provenance.
 
 ## The deep rule
 

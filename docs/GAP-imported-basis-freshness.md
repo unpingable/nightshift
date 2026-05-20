@@ -1,13 +1,19 @@
 # GAP: Imported Basis Freshness (Slice B of DURABLE_ARTIFACT_SUBSTRATE consumption)
 
-> Status: spec / pre-implementation. Filed 2026-05-18. Slice B of
-> Night Shift's consumption of NQ's
-> `DURABLE_ARTIFACT_SUBSTRATE_GAP` V1 substrate. Slice A
-> (visibility-only, landed 250fc5d) plumbed `origin` and `silence`
-> through the NS internal model; Slice B introduces the smallest
+> **Status: landed.** Filed 2026-05-18 as spec; Slice B.1
+> (observe-only freshness receipt, 8821efd) and Slice B.2 (bind
+> `imported_producer_basis_stale` into the Slice-5 revalidate-only
+> path, f510a44) shipped 2026-05-19, with closeout 821933d pinning
+> `ok_to_proceed` as "NOT an authorization summary" through doc + a
+> sentinel test. The eight-test acceptance contract below is green
+> as of 2026-05-20 (`tests/imported_basis_freshness.rs`,
+> `tests/nq_integration.rs`). The original brief below is preserved
+> unchanged for provenance; nothing in the brief overrides the code.
+>
+> Slice A (visibility-only, landed 250fc5d) plumbed `origin` and
+> `silence` through the NS internal model. Slice B is the smallest
 > useful semantic consumption: producer-clock-aware freshness for
-> ingested findings. Implementation follows immediately under the
-> six-test contract below.
+> ingested findings.
 
 ## The deep rule
 
