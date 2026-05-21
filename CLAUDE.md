@@ -50,15 +50,31 @@ Night Shift preserves deferred operational obligations, prevents unresolved work
 ## Quick Start
 
 ```bash
-# TBD — project is in framing stage
+cargo build
+cargo test
+cargo run --bin nightshift -- --help
 ```
+
+Tier-2 horizon path (cross-run tolerance + Governor receipts)
+requires `--horizon-policy <path>` AND `--governor-socket <path>`
+in pair. Without both, the pipeline runs in Tier-1 observe/advise
+mode against the NQ source + liveness gate.
 
 ## Project Structure
 
-- `crates/` — Rust workspace: daemon, agenda state machine, ledger, NQ integration (not yet created)
-- `src/nightshift/` — Python package: workflows, LLM orchestration, analysis plugins (not yet created)
-- `tests/` — Test suites (Rust: cargo test, Python: pytest)
+- `crates/nightshiftd/` — single Rust crate (daemon + library);
+  agenda, bundle, reconciler, pipeline, NQ + liveness consumer,
+  freshness (Slice B), posture_class (Slice C.1), horizon,
+  horizon_policy, reconcile_horizon, governor_client, store,
+  packet, main.rs CLI entry. ~216 tests.
+- `tests/fixtures/` — agenda + NQ fixtures used by integration tests
 - `docs/` — Design and specification
+
+The Rust+Python language split in DESIGN.md is preserved as the
+architectural target for **Code mode** (deferred coding sessions
+that produce reviewable diffs). v1 is effectively Rust-only —
+`pyproject.toml` is a placeholder; no `src/nightshift/` Python
+package exists.
   - `DESIGN.md` — canonical architecture document
   - `SCHEMA-agenda.md` — agenda declaration schema (v0 draft)
   - `SCHEMA-bundle.md` — context bundle schema (v0 draft)
@@ -83,7 +99,7 @@ Night Shift preserves deferred operational obligations, prevents unresolved work
   - `GAP-rumination-boundary.md` — *(candidate, no internal witness)* memory-domain analogue of trigger ≠ authority: synthesis ≠ standing; three-actor split (NS triggers retrospect / Ruminate synthesizes / Governor or Continuity grants memory-standing); "a dream may propose memory; it may not become memory without standing"; skeleton scope only — output-class taxonomy and migration phases held in memory until a witness fires
   - `GAP-narrowing-posture-transition.md` — *(candidate, witness pair + live counterexample)* coordination posture for when narrowing-posture flips across a workstream transition; diagnostic-as-deliverable, not enum/field; "the same narrowing move can finish one workstream and abort another"; "narrow after contact, do not narrow before contact"; five named transitions (pre-contact→post-contact, exploration→ratification, apparent-scope-creep→category-requirement, ratification→execution, execution→maintenance); explicit refusal of `work_phase`/`narrowing_role` fields per *transitions, not nouns* (live counterexample of enum-trap surfaced during filing)
   - `GAP-imported-basis-freshness.md` — *(landed; Slice B behavior-complete + closeout)* DURABLE_ARTIFACT_SUBSTRATE consumption Slice B; "NQ lifecycle/custody time cannot launder upstream observation time" / "captured_at proves when NS saw the finding, not when the world was observed"; FreshnessBasis enum (NativeLifecycle / ProducerExtraction / MissingProducerExtraction / IncoherentProducerExtraction); five reconciliation cases; B.1 observe-only receipt + B.2 stale-imported-basis bound to Slice 5 advise(revalidate-only); closeout pins "ok_to_proceed is NOT an authorization summary"
-  - `GAP-silence-aware-posture.md` — *(design only, not implemented; Slice C.1 unblocked 2026-05-20)* Slice C of DURABLE_ARTIFACT_SUBSTRATE; NQ owns truth/classification, NS owns posture + ack; "a silence ack is not an active-finding ack"; three anti-laundering invariants (silence_present ≠ incident_absent, acked_silence ≠ acked_incident, no_new_evidence ≠ resolved); proposed PostureClass enum (IncidentShape / SilenceShape / Unknown) with envelope-presence derivation rule; surface-only Slice C.1 path now open under GAP-reack-doctrine
+  - `GAP-silence-aware-posture.md` — *(Slice C.1 landed 2026-05-20)* Slice C of DURABLE_ARTIFACT_SUBSTRATE; NQ owns truth/classification, NS owns posture + ack; "a silence ack is not an active-finding ack"; three anti-laundering invariants (silence_present ≠ incident_absent, acked_silence ≠ acked_incident, no_new_evidence ≠ resolved); PostureClass enum (IncidentShape / SilenceShape / Unknown) with envelope-presence derivation rule; surface-only Slice C.1 wired at ReconciliationResult / FindingSummary / Attention; Slice C.2 deferred with three named unlock triggers
   - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
   - `AUDIT-BACKLOG.md` — audit-owed breadcrumbs only. Not GAPs, not accepted doctrine, not implementation plans. Promote an entry only after repo-local audit finds an actual construction/provenance boundary or laundering vector.
 
@@ -91,8 +107,8 @@ Night Shift preserves deferred operational obligations, prevents unresolved work
 
 - License: Apache-2.0
 - Rust: stable toolchain, clippy clean, no unsafe without justification
-- Python: 3.10+, type hints, pytest
 - Receipts: content-addressed, append-only, deterministic
+- Python tooling is deferred until Code mode lands (see DESIGN.md).
 
 ## Neighboring projects
 
