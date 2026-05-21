@@ -202,45 +202,40 @@ Obligation vocabulary Night Shift will request:
 - `LOG_HIGH_PRIORITY`
 - `COOLDOWN` (agenda-level rate limiting)
 
-## Pipe-through debt: `receipt_id` from `record_receipt`
+## Pipe-through: `receipt_id` from `record_receipt`
 
-> Status: captured during 2026-04-28 dogfood pass against agent_gov
-> commit 23dba99 (Night Shift adapter from 9b0c2e5 + later fixes).
-> Not yet wired.
+> **Status: landed.** Captured as pipe-through debt 2026-04-28
+> during the dogfood pass against agent_gov Commit B (23dba99);
+> closed 2026-05-21 in commit 61a5789 after the verdict-observable
+> audit found Defer was authorized but the receipt_id was
+> unaddressable from NS output. The trip-wire in the live test
+> fired exactly as designed.
 
 When Night Shift defers under a horizon, it forwards an
 `action.authorized` lifecycle event to Governor via
 `nightshift.record_receipt`. Governor returns
 `{receipt_id, receipt_hash}` (`nightshift_adapter.py:RecordReceiptResponse`).
-Night Shift currently **drops the response**.
+Night Shift now captures both and surfaces them on two surfaces:
 
-Drop site: `crates/nightshiftd/src/reconcile_horizon.rs` —
-`apply_horizon_outcomes` calls `governor.record_receipt(&request)?;`
-and discards the return value.
+1. **Packet** — `Packet.receipt_references.governor_receipts:
+   Vec<String>` carries the `receipt_id` for every Defer outcome on
+   the target finding. Populated in `pipeline.rs::build_success_packet`
+   from the `Vec<HorizonReceipt>` returned by `apply_horizon_outcomes`.
+2. **Run ledger** — one `RunLedgerEventKind::RunHorizonOutcome` per
+   outcome, payload carries `action`, `finding_key`, `basis_id`,
+   `basis_hash`, `expires_at`, plus `receipt_id` + `receipt_hash`
+   when a Governor receipt was emitted. `runs show` renders it via
+   the existing event-row formatter — operator sees the receipt_id
+   in the timeline.
 
-Natural landing site: `Packet.receipt_references.governor_receipts:
-Vec<String>` in `packet.rs`. The field exists for exactly this
-purpose, and the success-packet builder in `pipeline.rs` hardcodes it
-to `vec![]`. Two other packet-construction sites (preflight hold,
-liveness fail) also hardcode empty; those don't call `record_receipt`
-yet so they're correct.
-
-Seam shape (when wired):
-1. `apply_horizon_outcomes` returns the `RecordReceiptResponse` per
-   outcome (or attaches it onto a richer `HorizonOutcome` variant —
-   today the struct has no place to carry the receipt back).
-2. `reconcile_phase_with_horizon` flows the response(s) into
-   `build_success_packet` alongside the existing `target_horizon_outcome`.
-3. `build_success_packet` populates `governor_receipts` with the
-   receipt_id strings (one per Defer outcome on this run; v1 has at
-   most one).
+The two non-horizon packet-construction sites (preflight hold,
+liveness fail) still hardcode `governor_receipts: vec![]` —
+correct, because those paths never reach `apply_horizon_outcomes`.
 
 The dogfood test
 `crates/nightshiftd/tests/governor_rpc_live.rs::live_horizon_defer_pipeline_round_trips`
-asserts `governor_receipts.is_empty()` to document the current
-behavior. When the seam is closed, that assertion flips and the
-comment on it becomes stale — that's the trip-wire that the work
-landed.
+now asserts the receipt_id is **non-empty** on both surfaces and
+the two values agree. Trip-wire fulfilled.
 
 ### Adjacent finding: fixture/real validation drift
 

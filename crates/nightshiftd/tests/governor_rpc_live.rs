@@ -45,6 +45,7 @@ use nightshiftd::pipeline::{
     capture_phase, reconcile_phase_with_horizon, CaptureOutcome, PipelineOptions,
 };
 use nightshiftd::store::sqlite::SqliteStore;
+use nightshiftd::ledger::RunLedgerEventKind;
 use nightshiftd::store::Store;
 
 const SOCKET_ENV: &str = "NIGHTSHIFT_GOVERNOR_SOCKET";
@@ -154,14 +155,12 @@ fn fixtures_dir() -> PathBuf {
 /// `FixtureGovernorClient` for the real `JsonRpcGovernorClient`.
 ///
 /// Acceptance: pipeline returns a packet whose Attention is
-/// `WatchUntil` (proving the horizon phase ran), and the live daemon
-/// returned a non-empty `receipt_id` (proving the wire carried the
-/// declaration). The receipt_id is currently dropped at
-/// `reconcile_horizon.rs` (apply_horizon_outcomes discards
-/// `RecordReceiptResponse`); the packet's `receipt_references
-/// .governor_receipts` stays empty even though the daemon emitted a
-/// receipt. That seam is the captured pipe-through debt — see the
-/// dogfood pass notes.
+/// `WatchUntil` (proving the horizon phase ran), the live daemon
+/// returned a `receipt_id`, and that `receipt_id` is now visible
+/// on the packet's `receipt_references.governor_receipts` — the
+/// pipe-through debt closed in commit 61a5789. Plus the run
+/// ledger carries a `RunHorizonOutcome` event with the same
+/// receipt_id so `runs show` exposes it in the timeline.
 #[test]
 fn live_horizon_defer_pipeline_round_trips() {
     let Some(socket_path) = governor_socket() else {
@@ -265,19 +264,44 @@ fn live_horizon_defer_pipeline_round_trips() {
     assert_eq!(tol.expires_at, expiry);
     assert_eq!(tol.granted_in_run_id, run_id);
 
-    // Captured pipe-through debt: the daemon emitted a real receipt,
-    // but `apply_horizon_outcomes` discards the response, so the
-    // packet's `governor_receipts` is empty. This assertion documents
-    // the current behavior. When the seam is fixed, this assertion
-    // flips to non-empty and the assertion comment becomes stale.
+    // Pipe-through debt closed (commit 61a5789): the live daemon's
+    // receipt_id must now reach the packet. Exactly one Defer fired
+    // on the target finding, so exactly one receipt_id appears.
+    assert_eq!(
+        packet.receipt_references.governor_receipts.len(),
+        1,
+        "live Defer must surface the daemon's receipt_id on the packet"
+    );
+    let live_receipt_id = &packet.receipt_references.governor_receipts[0];
     assert!(
-        packet.receipt_references.governor_receipts.is_empty(),
-        "current behavior: receipt_id from live daemon is dropped at \
-         reconcile_horizon.rs apply_horizon_outcomes; flip this when the seam closes"
+        !live_receipt_id.is_empty(),
+        "live daemon receipt_id must be non-empty"
+    );
+
+    // The same receipt_id must appear in the run-ledger event so
+    // `runs show` exposes it in the timeline (not only on the
+    // packet). Verdict observable on both surfaces.
+    let events = store.list_events(&run_id).unwrap();
+    let horizon_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.kind, RunLedgerEventKind::RunHorizonOutcome))
+        .collect();
+    assert_eq!(
+        horizon_events.len(),
+        1,
+        "live Defer must emit exactly one RunHorizonOutcome event"
+    );
+    assert_eq!(
+        horizon_events[0]
+            .payload
+            .get("receipt_id")
+            .and_then(|v| v.as_str()),
+        Some(live_receipt_id.as_str()),
+        "ledger receipt_id must equal packet receipt_id"
     );
 
     eprintln!(
         "live horizon-defer pipeline OK → run_id={run_id} attention_state=WatchUntil \
-         (receipt_id from daemon is currently discarded)"
+         receipt_id={live_receipt_id}"
     );
 }
