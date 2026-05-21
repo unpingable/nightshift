@@ -40,6 +40,29 @@ use crate::horizon::{action_for, HorizonAction};
 use crate::horizon_policy::HorizonPolicySource;
 use crate::store::{Store, ToleranceRecord};
 
+/// One Governor receipt captured during the horizon phase. Returned
+/// by `apply_horizon_outcomes` so the pipeline can fold the
+/// `receipt_id` into the packet's `receipt_references.governor_receipts`
+/// and the run-ledger event payload — closing the
+/// "authority executed but not addressable" gap.
+///
+/// In B.1, receipts are only emitted on the `Defer` arm; the
+/// escalate and render variants do their store side effects but
+/// emit no Governor event. A future B.2 may extend this set.
+#[derive(Debug, Clone)]
+pub struct HorizonReceipt {
+    pub finding_key: FindingKey,
+    pub receipt_id: String,
+    pub receipt_hash: String,
+    /// The action that produced this receipt. Always
+    /// `HorizonAction::Defer { .. }` in B.1; the field carries it
+    /// for forward compatibility and so callers don't need to
+    /// re-derive it from the outcome list.
+    pub action: HorizonAction,
+    pub basis_id: String,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// One horizon decision for one finding in one run, after acquiring
 /// the horizon declaration and any prior tolerance grant.
 ///
@@ -179,6 +202,15 @@ const ZERO_EVIDENCE_HASH: &str =
 /// `run_id` and `agenda_id` identify the emitting run on both the
 /// tolerance record and any receipts. `granted_at` is used as the
 /// tolerance record's grant timestamp.
+///
+/// Returns the Governor receipts captured during this call, in
+/// emission order — empty when no `Defer` outcomes occurred. The
+/// caller is expected to fold these into the packet's
+/// `receipt_references.governor_receipts` and the run-ledger event
+/// payload so the receipt_id is addressable from NS output.
+/// Run-ledger event emission is the caller's responsibility (it
+/// already owns the run row + event stream); this function returns
+/// the data needed.
 pub fn apply_horizon_outcomes(
     outcomes: &[HorizonOutcome],
     store: &dyn Store,
@@ -186,7 +218,8 @@ pub fn apply_horizon_outcomes(
     run_id: &str,
     agenda_id: &str,
     granted_at: DateTime<Utc>,
-) -> Result<()> {
+) -> Result<Vec<HorizonReceipt>> {
+    let mut receipts = Vec::new();
     for outcome in outcomes {
         match &outcome.action {
             HorizonAction::Defer {
@@ -229,7 +262,15 @@ pub fn apply_horizon_outcomes(
                     to_level: None,
                     horizon: Some(block),
                 };
-                governor.record_receipt(&request)?;
+                let response = governor.record_receipt(&request)?;
+                receipts.push(HorizonReceipt {
+                    finding_key: outcome.finding_key.clone(),
+                    receipt_id: response.receipt_id,
+                    receipt_hash: response.receipt_hash,
+                    action: outcome.action.clone(),
+                    basis_id: basis_id.clone(),
+                    expires_at: *until,
+                });
             }
             HorizonAction::EscalateExpired { .. }
             | HorizonAction::EscalateBasisInvalidated { .. } => {
@@ -246,7 +287,116 @@ pub fn apply_horizon_outcomes(
             }
         }
     }
-    Ok(())
+    Ok(receipts)
+}
+
+/// Stable wire string for a `HorizonAction` discriminant, used in
+/// the `RunHorizonOutcome` ledger payload so consumers can match on
+/// a snake_case enum value rather than parsing prose.
+pub fn horizon_action_kind(action: &HorizonAction) -> &'static str {
+    match action {
+        HorizonAction::ActOnVerdict { .. } => "act_on_verdict",
+        HorizonAction::Defer { .. } => "defer",
+        HorizonAction::EscalateExpired { .. } => "escalate_expired",
+        HorizonAction::EscalateBasisInvalidated { .. } => "escalate_basis_invalidated",
+        HorizonAction::RenderNoIntervene { .. } => "render_no_intervene",
+        HorizonAction::RenderHolding { .. } => "render_holding",
+    }
+}
+
+/// Build the JSON payload for a `RunHorizonOutcome` ledger event.
+/// `finding_key`, `action`, and the per-action basis / expiry
+/// fields are always present when applicable; `receipt_id` and
+/// `receipt_hash` are present only when a Governor receipt was
+/// emitted for this outcome (Defer in B.1).
+pub fn outcome_event_payload(
+    outcome: &HorizonOutcome,
+    receipt: Option<&HorizonReceipt>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "action".into(),
+        serde_json::Value::String(horizon_action_kind(&outcome.action).into()),
+    );
+    obj.insert(
+        "finding_key".into(),
+        serde_json::Value::String(outcome.finding_key.as_string()),
+    );
+    match &outcome.action {
+        HorizonAction::Defer {
+            until,
+            basis_id,
+            basis_hash,
+            ..
+        } => {
+            obj.insert(
+                "basis_id".into(),
+                serde_json::Value::String(basis_id.clone()),
+            );
+            obj.insert(
+                "basis_hash".into(),
+                serde_json::Value::String(basis_hash.clone()),
+            );
+            obj.insert(
+                "expires_at".into(),
+                serde_json::Value::String(until.to_rfc3339()),
+            );
+        }
+        HorizonAction::EscalateExpired { prior } => {
+            obj.insert(
+                "basis_id".into(),
+                serde_json::Value::String(prior.basis_id.clone()),
+            );
+            obj.insert(
+                "basis_hash".into(),
+                serde_json::Value::String(prior.basis_hash.clone()),
+            );
+            obj.insert(
+                "expires_at".into(),
+                serde_json::Value::String(prior.expired_at.to_rfc3339()),
+            );
+        }
+        HorizonAction::EscalateBasisInvalidated {
+            prior,
+            current_basis_hash,
+        } => {
+            obj.insert(
+                "basis_id".into(),
+                serde_json::Value::String(prior.basis_id.clone()),
+            );
+            obj.insert(
+                "basis_hash".into(),
+                serde_json::Value::String(prior.basis_hash.clone()),
+            );
+            obj.insert(
+                "current_basis_hash".into(),
+                serde_json::Value::String(current_basis_hash.clone()),
+            );
+            obj.insert(
+                "expires_at".into(),
+                serde_json::Value::String(prior.expired_at.to_rfc3339()),
+            );
+        }
+        HorizonAction::RenderNoIntervene { basis_id }
+        | HorizonAction::RenderHolding { basis_id } => {
+            obj.insert(
+                "basis_id".into(),
+                serde_json::Value::String(basis_id.clone()),
+            );
+        }
+        HorizonAction::ActOnVerdict { .. } => {}
+    }
+    if let Some(r) = receipt {
+        obj.insert(
+            "receipt_id".into(),
+            serde_json::Value::String(r.receipt_id.clone()),
+        );
+        obj.insert(
+            "receipt_hash".into(),
+            serde_json::Value::String(r.receipt_hash.clone()),
+        );
+    }
+    serde_json::Value::Object(obj)
 }
 
 #[cfg(test)]

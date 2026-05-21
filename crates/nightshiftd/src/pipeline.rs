@@ -41,7 +41,9 @@ use crate::packet::{
     DiagnosisReview, DiagnosisReviewMode, FindingSummary, OperationalUrgency, Packet,
     ProposedAction, ProposedActionKind, ReceiptReferences,
 };
-use crate::reconcile_horizon::{apply_horizon_outcomes, process_horizon, HorizonOutcome};
+use crate::reconcile_horizon::{
+    apply_horizon_outcomes, outcome_event_payload, process_horizon, HorizonOutcome, HorizonReceipt,
+};
 use crate::reconciler::{self, PolicyFingerprint};
 use crate::store::{RunTrigger, Store};
 
@@ -493,10 +495,14 @@ pub fn reconcile_phase_with_horizon(
     // 5. Horizon phase (optional). Runs only when both a policy
     //    source and a Governor client are configured. Computes the
     //    four-way A5 outcome per input, writes tolerance records on
-    //    Defer, emits Governor receipts on Defer, and surfaces the
-    //    target's outcome to the packet builder so Attention can be
-    //    promoted to WatchUntil on deferral.
-    let target_outcome = match (horizon_policy, governor) {
+    //    Defer, emits Governor receipts on Defer, surfaces the
+    //    target's outcome to the packet builder (Attention →
+    //    WatchUntil on deferral), and folds each Governor receipt's
+    //    `receipt_id` into both the packet's
+    //    `receipt_references.governor_receipts` and a
+    //    `RunHorizonOutcome` ledger event — so "authority executed"
+    //    is also "authority addressable" from NS output.
+    let (target_outcome, target_governor_receipts) = match (horizon_policy, governor) {
         (Some(policy), Some(gov)) => {
             let outcomes = process_horizon(
                 &reconciliation,
@@ -505,7 +511,7 @@ pub fn reconcile_phase_with_horizon(
                 store,
                 acquisition.acquired_at,
             )?;
-            apply_horizon_outcomes(
+            let receipts = apply_horizon_outcomes(
                 &outcomes,
                 store,
                 gov,
@@ -513,11 +519,37 @@ pub fn reconcile_phase_with_horizon(
                 &agenda.agenda_id,
                 acquisition.acquired_at,
             )?;
-            outcomes
+
+            // Emit one `RunHorizonOutcome` ledger event per outcome,
+            // each carrying its receipt_id when a Governor receipt
+            // was emitted for it. Receipts are indexed by finding_key
+            // (one per finding per run in v1, but the type carries
+            // a Vec so multi-finding agendas don't require a rewrite).
+            let receipt_by_key: std::collections::HashMap<&FindingKey, &HorizonReceipt> =
+                receipts.iter().map(|r| (&r.finding_key, r)).collect();
+            for outcome in &outcomes {
+                let receipt = receipt_by_key.get(&outcome.finding_key).copied();
+                store.append_run_event(&new_event(
+                    run_id,
+                    RunLedgerEventKind::RunHorizonOutcome,
+                    outcome_event_payload(outcome, receipt),
+                ))?;
+            }
+
+            // Carry the target's Governor receipt_id(s) into the
+            // packet. Vec, not singleton, so future multi-finding
+            // agendas don't need a schema change.
+            let target_governor_receipts: Vec<String> = receipts
+                .iter()
+                .filter(|r| r.finding_key == target)
+                .map(|r| r.receipt_id.clone())
+                .collect();
+            let target_outcome = outcomes
                 .into_iter()
-                .find(|o| o.finding_key == target)
+                .find(|o| o.finding_key == target);
+            (target_outcome, target_governor_receipts)
         }
-        _ => None,
+        _ => (None, Vec::new()),
     };
 
     // 6. Build the packet from persisted bundle state — no live reads.
@@ -530,6 +562,7 @@ pub fn reconcile_phase_with_horizon(
         effective_ceiling,
         opts,
         target_outcome.as_ref(),
+        target_governor_receipts,
     )?;
 
     store.save_packet(run_id, &packet)?;
@@ -589,6 +622,7 @@ fn build_success_packet(
     effective_ceiling: AuthorityLevel,
     opts: &PipelineOptions,
     target_horizon_outcome: Option<&HorizonOutcome>,
+    target_governor_receipts: Vec<String>,
 ) -> Result<Packet> {
     let nq_result = reconciliation
         .results
@@ -744,7 +778,7 @@ fn build_success_packet(
         attention,
         receipt_references: ReceiptReferences {
             run_ledger: Some(format!("ledger://nightshift/runs/{run_id}")),
-            governor_receipts: vec![],
+            governor_receipts: target_governor_receipts,
             evidence_bundle: Some(format!("bundle://{run_id}")),
         },
     })

@@ -34,6 +34,7 @@ use nightshiftd::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity}
 use nightshiftd::governor_client::FixtureGovernorClient;
 use nightshiftd::horizon::{HorizonBlock, HorizonClass};
 use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
+use nightshiftd::ledger::RunLedgerEventKind;
 use nightshiftd::nq::NqSource;
 use nightshiftd::packet::AttentionState;
 use nightshiftd::pipeline::{
@@ -436,5 +437,248 @@ fn horizon_disabled_preserves_pre_horizon_behavior() {
     assert!(
         store.load_tolerance(&target).unwrap().is_none(),
         "horizon phase skipped when policy/governor absent"
+    );
+
+    // No-horizon path must also leave receipt_references.governor_receipts
+    // empty and emit zero RunHorizonOutcome events. This is the
+    // anchor against "governor_receipts populated by accident."
+    assert!(
+        packet.receipt_references.governor_receipts.is_empty(),
+        "horizon disabled must leave packet.receipt_references.governor_receipts empty"
+    );
+    let events = store.list_events(&run_id).unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.kind, RunLedgerEventKind::RunHorizonOutcome)),
+        "horizon disabled must emit no RunHorizonOutcome events"
+    );
+}
+
+/// Verdict-observability anchor: a Defer on the target finding must
+/// surface the Governor receipt_id both in the packet's
+/// `receipt_references.governor_receipts` and in a
+/// `RunHorizonOutcome` ledger event whose payload carries
+/// receipt_id, receipt_hash, action="defer", basis_id, expires_at,
+/// and finding_key. Without this, the verdict is executed but not
+/// addressable — Tier 2 dishonest.
+#[test]
+fn defer_makes_governor_receipt_observable_in_packet_and_ledger() {
+    let nq = StableNqSource::new();
+    let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
+    let (agenda, target) = agenda_and_target();
+
+    let expiry = Utc::now() + chrono::Duration::hours(4);
+    let policy = policy_with_expiry(&target, expiry);
+
+    let run_id = match capture_phase(&agenda, &target, &nq, None, &store, &opts()).unwrap() {
+        CaptureOutcome::Captured { run_id } => run_id,
+        CaptureOutcome::HeldPacket(_) => panic!("capture unexpectedly held"),
+    };
+    let packet = reconcile_phase_with_horizon(
+        &run_id,
+        &nq,
+        Some(&policy),
+        Some(&governor),
+        &store,
+        &opts(),
+    )
+    .unwrap();
+
+    // The receipt Governor returned for run A's Defer is the only
+    // receipt the FixtureGovernorClient produced; capture it so we
+    // can compare both surfaces below.
+    let recorded = governor.recorded_calls();
+    assert_eq!(recorded.len(), 1, "Defer emits exactly one receipt");
+
+    // -- Surface 1: packet receipt_references.governor_receipts --
+    assert_eq!(
+        packet.receipt_references.governor_receipts.len(),
+        1,
+        "Defer must surface exactly one Governor receipt in the packet"
+    );
+    let packet_receipt = &packet.receipt_references.governor_receipts[0];
+    assert!(
+        packet_receipt.starts_with("fixture_receipt_"),
+        "packet must carry the receipt_id Governor returned, got {packet_receipt}"
+    );
+
+    // -- Surface 2: RunHorizonOutcome ledger event --
+    let events = store.list_events(&run_id).unwrap();
+    let horizon_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.kind, RunLedgerEventKind::RunHorizonOutcome))
+        .collect();
+    assert_eq!(
+        horizon_events.len(),
+        1,
+        "Defer must emit exactly one RunHorizonOutcome event"
+    );
+    let payload = &horizon_events[0].payload;
+    assert_eq!(
+        payload.get("action").and_then(|v| v.as_str()),
+        Some("defer"),
+        "ledger payload must carry action=defer"
+    );
+    assert_eq!(
+        payload.get("finding_key").and_then(|v| v.as_str()),
+        Some(target.as_string().as_str()),
+        "ledger payload must carry the finding_key"
+    );
+    assert_eq!(
+        payload.get("receipt_id").and_then(|v| v.as_str()),
+        Some(packet_receipt.as_str()),
+        "ledger event receipt_id must equal the packet's receipt_id"
+    );
+    let receipt_hash = payload
+        .get("receipt_hash")
+        .and_then(|v| v.as_str())
+        .expect("ledger payload must include receipt_hash");
+    assert!(
+        receipt_hash.starts_with("sha256:"),
+        "receipt_hash must be sha256-prefixed, got {receipt_hash}"
+    );
+    assert_eq!(
+        payload.get("basis_id").and_then(|v| v.as_str()),
+        Some(BASIS_ID),
+        "ledger payload must carry basis_id"
+    );
+    assert_eq!(
+        payload.get("basis_hash").and_then(|v| v.as_str()),
+        Some(BASIS_HASH),
+        "ledger payload must carry basis_hash"
+    );
+    let expires_str = payload
+        .get("expires_at")
+        .and_then(|v| v.as_str())
+        .expect("ledger payload must include expires_at");
+    let expires_at: chrono::DateTime<Utc> = expires_str
+        .parse()
+        .expect("expires_at must be parseable rfc3339");
+    assert_eq!(
+        expires_at, expiry,
+        "ledger expires_at must equal the horizon block's expiry"
+    );
+
+    // Existing WatchUntil fields remain populated — adding
+    // observability must not regress prior surface.
+    assert_eq!(
+        packet.attention.attention_state,
+        AttentionState::WatchUntil
+    );
+    assert_eq!(packet.attention.re_alert_after, Some(expiry));
+    assert_eq!(
+        packet.attention.tolerance_basis_id.as_deref(),
+        Some(BASIS_ID)
+    );
+    assert_eq!(
+        packet.attention.tolerance_basis_hash.as_deref(),
+        Some(BASIS_HASH)
+    );
+}
+
+/// EscalateExpired emits a `RunHorizonOutcome` event without any
+/// Governor receipt fields, and leaves `governor_receipts` empty —
+/// Phase B.1 keeps escalation silent on Governor's receipt chain.
+/// This pins the "ledger event ≠ Governor receipt" distinction:
+/// the timeline tells the operator the escalation happened; the
+/// absence of receipt_id tells them no Governor archival occurred.
+#[test]
+fn escalate_expired_emits_event_without_receipt_fields() {
+    let nq = StableNqSource::new();
+    let store = SqliteStore::open_in_memory().unwrap();
+    let governor = FixtureGovernorClient::new();
+    let (agenda, target) = agenda_and_target();
+
+    // Short-future expiry so run A defers, then a sleep crosses
+    // expiry before run B reconciles.
+    let expiry = Utc::now() + chrono::Duration::milliseconds(150);
+    let policy = policy_with_expiry(&target, expiry);
+
+    // Run A: defer.
+    let run_a_id = match capture_phase(&agenda, &target, &nq, None, &store, &opts()).unwrap() {
+        CaptureOutcome::Captured { run_id } => run_id,
+        CaptureOutcome::HeldPacket(_) => panic!("run A held"),
+    };
+    let _ = reconcile_phase_with_horizon(
+        &run_a_id,
+        &nq,
+        Some(&policy),
+        Some(&governor),
+        &store,
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(governor.call_count(), 1, "run A emits one receipt");
+
+    // Cross the expiry boundary.
+    sleep(Duration::from_millis(300));
+    assert!(Utc::now() > expiry);
+
+    // Run B: EscalateExpired.
+    let run_b_id = match capture_phase(&agenda, &target, &nq, None, &store, &opts()).unwrap() {
+        CaptureOutcome::Captured { run_id } => run_id,
+        CaptureOutcome::HeldPacket(_) => panic!("run B held"),
+    };
+    let packet_b = reconcile_phase_with_horizon(
+        &run_b_id,
+        &nq,
+        Some(&policy),
+        Some(&governor),
+        &store,
+        &opts(),
+    )
+    .unwrap();
+
+    // Receipt count must not advance.
+    assert_eq!(
+        governor.call_count(),
+        1,
+        "EscalateExpired is silent on record_receipt in B.1"
+    );
+
+    // Packet must surface no Governor receipts (no Defer fired
+    // this run, so no archival happened).
+    assert!(
+        packet_b.receipt_references.governor_receipts.is_empty(),
+        "EscalateExpired must not populate packet.governor_receipts"
+    );
+
+    // Ledger must still record the outcome — operator needs the
+    // timeline breadcrumb even when no Governor receipt exists.
+    let events = store.list_events(&run_b_id).unwrap();
+    let horizon_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.kind, RunLedgerEventKind::RunHorizonOutcome))
+        .collect();
+    assert_eq!(
+        horizon_events.len(),
+        1,
+        "run B must emit one RunHorizonOutcome for the escalation"
+    );
+    let payload = &horizon_events[0].payload;
+    assert_eq!(
+        payload.get("action").and_then(|v| v.as_str()),
+        Some("escalate_expired"),
+        "action must be escalate_expired"
+    );
+    assert_eq!(
+        payload.get("finding_key").and_then(|v| v.as_str()),
+        Some(target.as_string().as_str())
+    );
+    assert!(
+        payload.get("receipt_id").is_none(),
+        "EscalateExpired must NOT carry a receipt_id (no Governor archival happened)"
+    );
+    assert!(
+        payload.get("receipt_hash").is_none(),
+        "EscalateExpired must NOT carry a receipt_hash"
+    );
+    // Basis fields come from the prior tolerance record so the
+    // operator can see what was being tolerated.
+    assert_eq!(
+        payload.get("basis_id").and_then(|v| v.as_str()),
+        Some(BASIS_ID)
     );
 }

@@ -38,6 +38,19 @@ pub enum RunLedgerEventKind {
     /// this is the only reconcile-time live dependency; after this
     /// event the run has no further live NQ dependency.
     RunCurrentSnapshotAcquired,
+    /// One outcome of the horizon phase: the
+    /// `HorizonAction` chosen for one finding, plus the Governor
+    /// receipt (`receipt_id`, `receipt_hash`) when one was emitted
+    /// (Defer only in B.1). Emitted once per outcome produced by
+    /// `process_horizon`, after `apply_horizon_outcomes` has finished
+    /// its store + Governor side effects for that outcome. This is
+    /// the run-side breadcrumb that makes "authority executed" also
+    /// "authority addressable" — without it, a Defer succeeds but
+    /// the operator cannot quote which Governor receipt archived it.
+    /// **Run-ledger events are NOT authority receipts**: Governor
+    /// emits the receipt; this event merely records that NS observed
+    /// the response and ties the receipt_id into the run timeline.
+    RunHorizonOutcome,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
