@@ -1,5 +1,5 @@
 //! Imported Basis Freshness — Slice B of `DURABLE_ARTIFACT_SUBSTRATE`
-//! consumption. See `docs/GAP-imported-basis-freshness.md`.
+//! consumption. See `docs/working/gaps/GAP-imported-basis-freshness.md`.
 //!
 //! **The deep rule:** Night Shift may consume NQ findings; it cannot
 //! upgrade custody into basis.
@@ -107,7 +107,7 @@ pub struct FreshnessOutcome {
 /// `EvidenceState` semantics — the seam is made visible before it is
 /// made binding.
 ///
-/// Field layout matches `docs/GAP-imported-basis-freshness.md`
+/// Field layout matches `docs/working/gaps/GAP-imported-basis-freshness.md`
 /// §"Receipt fields."
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreshnessReceipt {
@@ -183,7 +183,7 @@ impl From<&FreshnessOutcome> for FreshnessReceipt {
 /// introduces no new behavior for native findings.
 ///
 /// Imported findings (`origin.source = "import"`) walk the five
-/// cases in `docs/GAP-imported-basis-freshness.md` §"Five cases."
+/// cases in `docs/working/gaps/GAP-imported-basis-freshness.md` §"Five cases."
 pub fn assess_freshness(
     snap: &FindingSnapshot,
     reconciled_at: DateTime<Utc>,

@@ -84,7 +84,7 @@ struct Cli {
     /// which writes tolerance records on `Defer`, promotes packet
     /// Attention to `WatchUntil`, and forwards declarations to
     /// Governor via `record_receipt`. Requires `--governor-socket`.
-    /// See `docs/GAP-imported-basis-freshness.md` and
+    /// See `docs/working/gaps/GAP-imported-basis-freshness.md` and
     /// `src/horizon_policy.rs`.
     #[arg(long, global = true)]
     horizon_policy: Option<PathBuf>,
@@ -218,7 +218,7 @@ enum WatchbillAction {
     /// closed immediately with a held packet. On success, prints
     /// the new run_id to stdout (consumable by `reconcile`).
     ///
-    /// See `docs/GAP-deferred-run-split.md`.
+    /// See `docs/working/gaps/GAP-deferred-run-split.md`.
     Capture {
         /// Path to an agenda YAML file.
         agenda_path: PathBuf,
@@ -449,7 +449,7 @@ fn run_watchbill_cmd(
         // Horizon configured — compose capture + horizon-aware
         // reconcile by hand. Matches the deferred CLI path
         // (`capture` + `reconcile`) per
-        // `docs/GAP-deferred-run-split.md`.
+        // `docs/working/gaps/GAP-deferred-run-split.md`.
         Some((policy, governor)) => match capture_phase(
             &agenda,
             &target,

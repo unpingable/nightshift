@@ -72,7 +72,7 @@ pub struct PipelineOptions {
     /// from `liveness_threshold_seconds` (different concern: liveness
     /// artifact age vs. finding-evidence age) and from NQ's own
     /// `extraction_stale` detector policy. See
-    /// `docs/GAP-imported-basis-freshness.md` §"Freshness window."
+    /// `docs/working/gaps/GAP-imported-basis-freshness.md` §"Freshness window."
     ///
     /// B.1 (observe-only): the assessment is recorded on the
     /// reconciliation receipt but does NOT yet mutate `EvidenceState`.
@@ -411,7 +411,7 @@ pub fn reconcile_phase_with_horizon(
         reconciler::adjudicate(&captured_bundle, &acquisition, &PolicyFingerprint::default());
 
     // 4a. Imported Basis Freshness — assessment + binding.
-    //     See `docs/GAP-imported-basis-freshness.md`.
+    //     See `docs/working/gaps/GAP-imported-basis-freshness.md`.
     //
     //     B.1 (observe-only): a freshness receipt is attached to
     //     every result that has a current snapshot. Receipt shows
@@ -1216,7 +1216,7 @@ fn build_verdict_surfaces(
 /// explicitly does NOT imply recovery, safety, or active
 /// resolution — those phrases would launder
 /// `silence_present ⇒ incident_absent` per
-/// `docs/GAP-silence-aware-posture.md`.
+/// `docs/working/gaps/GAP-silence-aware-posture.md`.
 fn silence_shape_rewrite(
     incident_diag: Diagnosis,
     incident_action: ProposedAction,

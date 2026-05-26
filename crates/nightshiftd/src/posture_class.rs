@@ -1,6 +1,6 @@
 //! Silence-Aware Posture — Slice C.1 (surface-only).
 //!
-//! See `docs/GAP-silence-aware-posture.md`.
+//! See `docs/working/gaps/GAP-silence-aware-posture.md`.
 //!
 //! **The deep rule:** NQ owns truth and evidence classification.
 //! Night Shift owns posture, attention, and ack obligation. A
@@ -96,7 +96,7 @@ pub fn is_legacy_silence_detector(detector: &str) -> bool {
 /// Derive the `PostureClass` for a `FindingSnapshot` from its
 /// wire-shape (silence envelope presence + detector name).
 ///
-/// Derivation rule (per `docs/GAP-silence-aware-posture.md`):
+/// Derivation rule (per `docs/working/gaps/GAP-silence-aware-posture.md`):
 ///
 /// ```text
 /// snap.silence.is_some()                         → SilenceShape

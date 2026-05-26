@@ -10,7 +10,7 @@
 //! If liveness gating fails, the run does not consult the finding
 //! source at all. The captured premise of any finding produced by a
 //! dead or stuck NQ is itself stale. Per the slice-5 contract
-//! (`docs/GAP-nq-nightshift-contract.md`), the resulting packet is
+//! (`docs/working/gaps/GAP-nq-nightshift-contract.md`), the resulting packet is
 //! Stale-shape: revalidate-only, no remediation.
 //!
 //! ## Wrinkle: clock skew on the upstream side

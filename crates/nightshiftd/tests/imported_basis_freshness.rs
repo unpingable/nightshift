@@ -1,6 +1,6 @@
 //! Slice B — Imported Basis Freshness acceptance tests.
 //!
-//! Pins `docs/GAP-imported-basis-freshness.md`. These tests land
+//! Pins `docs/working/gaps/GAP-imported-basis-freshness.md`. These tests land
 //! (commit 2 of three) before the implementation (commit 3). In
 //! commit 2 they panic at `assess_freshness`'s `todo!()` body; in
 //! commit 3 they pass once the function returns the spec-mandated

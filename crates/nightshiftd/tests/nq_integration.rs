@@ -570,8 +570,8 @@ fn b2_clock_incoherent_imported_basis_does_not_drive_stale() {
 // signal that the doctrine moved.
 //
 // See `crates/nightshiftd/src/bundle.rs::ReconciliationSummary`,
-// `docs/SCHEMA-bundle.md` §"Consumer caution," and
-// `docs/GAP-imported-basis-freshness.md` §"Closeout."
+// `docs/architecture/SCHEMA-bundle.md` §"Consumer caution," and
+// `docs/working/gaps/GAP-imported-basis-freshness.md` §"Closeout."
 
 #[test]
 fn b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization() {

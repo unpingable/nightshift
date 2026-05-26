@@ -127,7 +127,7 @@ pub struct ReconciliationResult {
     /// Populated for each NQ-backed input whose `current_finding_snapshot`
     /// is present; `None` otherwise. Records what the freshness
     /// assessment WOULD have said about this finding under the
-    /// configured window and skew. Per `docs/GAP-imported-basis-freshness.md`
+    /// configured window and skew. Per `docs/working/gaps/GAP-imported-basis-freshness.md`
     /// §"Build shape": the seam is made visible before it is made
     /// binding — this field surfaces the verdict on the receipt
     /// without (yet) mutating `EvidenceState` or the
@@ -137,8 +137,8 @@ pub struct ReconciliationResult {
     /// Silence-Aware Posture class (Slice C.1, surface-only).
     /// Derived from the finding's wire shape via
     /// `crate::posture_class::derive_posture_class`. Per
-    /// `docs/GAP-silence-aware-posture.md` and
-    /// `docs/GAP-reack-doctrine.md` invariants 3–5: a silence-shaped
+    /// `docs/working/gaps/GAP-silence-aware-posture.md` and
+    /// `docs/architecture/GAP-reack-doctrine.md` invariants 3–5: a silence-shaped
     /// finding's ack lineage is distinct from an active-finding's
     /// ack lineage; this field surfaces the class so downstream
     /// consumers can tell which kind of ack the row carries.
@@ -198,7 +198,7 @@ pub struct ReconciliationSummary {
     /// `EvidenceState::Stale` + `regime: "stale: …"` + a revalidate-
     /// only `ProposedAction`, while this field stays `true` because
     /// nothing was invalidated. See
-    /// `docs/GAP-imported-basis-freshness.md` §"Closeout."
+    /// `docs/working/gaps/GAP-imported-basis-freshness.md` §"Closeout."
     ///
     /// Consumers that branch on this field alone are misreading the
     /// contract. The sentinel test

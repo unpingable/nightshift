@@ -14,7 +14,7 @@
 > `GAP-reack-doctrine.md`'s frozen six-value enum) remains deferred
 > with three named unlock triggers (see memory:
 > project_substrate_consumption_chain). **Design-space exploration:
-> see [`class-aware-disposition-design-space.md`](class-aware-disposition-design-space.md)
+> see [`class-aware-disposition-design-space.md`](../decisions/class-aware-disposition-design-space.md)
 > — annex working note filed 2026-05-26 (not a spec; no enum extension
 > proposed).** The original brief below is preserved for provenance.
 

@@ -68,40 +68,52 @@ mode against the NQ source + liveness gate.
   horizon_policy, reconcile_horizon, governor_client, store,
   packet, main.rs CLI entry. ~216 tests.
 - `tests/fixtures/` — agenda + NQ fixtures used by integration tests
-- `docs/` — Design and specification
+- `docs/` — lifecycle-organized documentation. See [`docs/README.md`](docs/README.md) for the canonical inventory and routing.
 
-The Rust+Python language split in DESIGN.md is preserved as the
+```
+docs/
+├── architecture/     # ratified design: DESIGN, FLOW-tolerability-horizon, SCHEMA-*, GAP-reack-doctrine
+├── theory/           # positioning / why-this-shape: DEPLOYMENT-MATURITY
+├── operator/         # placeholder; operator docs owed at MVP exit
+└── working/
+    ├── gaps/         # open spec-shaped GAPs (14 entries)
+    └── decisions/    # candidate doctrine, working notes, FEATURE-HISTORY ledger, AUDIT-BACKLOG, planning memos
+```
+
+The Rust+Python language split in `architecture/DESIGN.md` is preserved as the
 architectural target for **Code mode** (deferred coding sessions
 that produce reviewable diffs). v1 is effectively Rust-only —
 `pyproject.toml` is a placeholder; no `src/nightshift/` Python
 package exists.
-  - `DESIGN.md` — canonical architecture document
-  - `SCHEMA-agenda.md` — agenda declaration schema (v0 draft)
-  - `SCHEMA-bundle.md` — context bundle schema (v0 draft)
-  - `SCHEMA-packet.md` — review packet schema (v0 draft)
-  - `GAP-governor-contract.md` — adapter contract with Governor (+ `--no-governor` degraded mode)
-  - `GAP-mcp-authority.md` — MCP call-class authority rules
-  - `GAP-nq-activation.md` — push/pull semantics for NQ findings
-  - `GAP-nq-nightshift-contract.md` — NQ finding snapshot contract (first artifact to stabilize)
-  - `GAP-escalation.md` — drive-to-resolution gating, escalation triggers/types/destinations
-  - `GAP-attention-state.md` — evidence vs attention vs criticality axes; anti-amnesia field kit
-  - `GAP-reack-doctrine.md` — *(ratified, doctrine-only)* re-ack is mini re-triage with typed disposition, not a courtesy tap; six-value disposition enum (advanced / unchanged-waiting / blocked / handed-off / escalated / resolved); nine invariants pinning ack-lineage scope, re-ack-on-context-change, silence-ack ≠ active-ack, stale-ack ≠ invalidated-ack, ack ≠ resolution/safety/freshness/truth; six-axis table of what ack must not collapse; promoted from memory 2026-05-20 as Slice C.1 prerequisite
-  - `GAP-parallel-ops.md` — cross-session coordination; scope overlap; Continuity-as-substrate invariant; breadcrumb cadence
-  - `GAP-incident-modes.md` — incident / remediation / architecture modes; incident state ladder; change envelope; protected role class; NOC primitives
-  - `GAP-backup-restore.md` — operational backup / restore for continuity-bearing workloads; Backup Contract; capture methods; off-host destinations; verification and restore drills; integration with Governor / NQ / Continuity boundaries
-  - `GAP-storage.md` — backend stance (SQLite v1, Postgres v2), contract, Store trait sketch, deployment roadmap
-  - `GAP-slice-cycle.md` — *(candidate)* work-cycle cadence; keeper line + load-bearing invariant; reconciliation against lifecycle ladder pending review
-  - `GAP-workflow-routing-boundary.md` — *(candidate)* cross-tool routing across NQ/NS/Standing/Verifier/Governor/Continuity; six keeper lines; "Route by claim type, not by tool identity"; claim-type taxonomy + later-check taxonomy
-  - `GAP-architectural-promotion-boundary.md` — *(candidate)* roadmap ≠ authorization; three action classes (containment / tuning / architectural promotion); surface promotion pressure, do not ratify architecture; six keeper lines
-  - `GAP-solution-family-exhaustion.md` — *(candidate)* "repeated repair inside the same context is evidence against the context"; mitigation chain + failure-bucket migration; `may_execute: false` review-shaped signal; detect, do not resolve; five keeper lines
-  - `GAP-lesson-distillation-boundary.md` — *(candidate)* meta-meta: rules under which Night Shift may extract candidate lessons / motifs from reconciliation history without applying them as authority; five-stage pattern lifecycle (no skipping); inaugural seed bank with candidate-grade motifs; "pattern recognition is competence, pattern authority is where the furniture starts floating"
-  - `GAP-autonomous-execution-boundary.md` — *(candidate, real witness)* trigger conditions ≠ execution authority; staged plan transfers procedure, not autonomy; alarm-vs-remediation policy split (alarms persist when operator absent, mutation does not); lease + fresh-ack semantics; "an alarm may wake the operator, it may not become the operator"; six keeper lines + rollback corollary; test contract (plant/duty/operator) and context-window-poisoning mechanism note added 2026-05-06
-  - `GAP-rumination-boundary.md` — *(candidate, no internal witness)* memory-domain analogue of trigger ≠ authority: synthesis ≠ standing; three-actor split (NS triggers retrospect / Ruminate synthesizes / Governor or Continuity grants memory-standing); "a dream may propose memory; it may not become memory without standing"; skeleton scope only — output-class taxonomy and migration phases held in memory until a witness fires
-  - `GAP-narrowing-posture-transition.md` — *(candidate, witness pair + live counterexample)* coordination posture for when narrowing-posture flips across a workstream transition; diagnostic-as-deliverable, not enum/field; "the same narrowing move can finish one workstream and abort another"; "narrow after contact, do not narrow before contact"; five named transitions (pre-contact→post-contact, exploration→ratification, apparent-scope-creep→category-requirement, ratification→execution, execution→maintenance); explicit refusal of `work_phase`/`narrowing_role` fields per *transitions, not nouns* (live counterexample of enum-trap surfaced during filing)
-  - `GAP-imported-basis-freshness.md` — *(landed; Slice B behavior-complete + closeout)* DURABLE_ARTIFACT_SUBSTRATE consumption Slice B; "NQ lifecycle/custody time cannot launder upstream observation time" / "captured_at proves when NS saw the finding, not when the world was observed"; FreshnessBasis enum (NativeLifecycle / ProducerExtraction / MissingProducerExtraction / IncoherentProducerExtraction); five reconciliation cases; B.1 observe-only receipt + B.2 stale-imported-basis bound to Slice 5 advise(revalidate-only); closeout pins "ok_to_proceed is NOT an authorization summary"
-  - `GAP-silence-aware-posture.md` — *(Slice C.1 landed 2026-05-20)* Slice C of DURABLE_ARTIFACT_SUBSTRATE; NQ owns truth/classification, NS owns posture + ack; "a silence ack is not an active-finding ack"; three anti-laundering invariants (silence_present ≠ incident_absent, acked_silence ≠ acked_incident, no_new_evidence ≠ resolved); PostureClass enum (IncidentShape / SilenceShape / Unknown) with envelope-presence derivation rule; surface-only Slice C.1 wired at ReconciliationResult / FindingSummary / Attention; Slice C.2 deferred with three named unlock triggers
-  - `DEPLOYMENT-MATURITY.md` — shared constellation pattern (v1 local → v2 shared → v3 service); Night Shift / NQ / Continuity share the curve, Governor does not
-  - `AUDIT-BACKLOG.md` — audit-owed breadcrumbs only. Not GAPs, not accepted doctrine, not implementation plans. Promote an entry only after repo-local audit finds an actual construction/provenance boundary or laundering vector.
+
+**Shipped state lives in `docs/working/decisions/FEATURE-HISTORY.md`, not in gap-doc front-matter.** Gap docs are design records; the ledger answers "what's actually in production, with what evidence."
+
+### Doctrine pointers (load-bearing across sessions)
+
+These one-liners are the doctrine the inventory used to carry inline. They survive document moves; if you need the full spec, follow to the linked doc.
+
+- **Re-ack doctrine** (`architecture/GAP-reack-doctrine.md`) — re-ack is mini re-triage with typed disposition, not a courtesy tap. Six-value enum frozen (advanced / unchanged-waiting / blocked / handed-off / escalated / resolved). Nine invariants pin ack-lineage scope, re-ack-on-context-change, silence-ack ≠ active-ack, stale-ack ≠ invalidated-ack, ack ≠ resolution/safety/freshness/truth. Class-aware disposition extension is a non-goal of v1 doctrine; design-space explored in `working/decisions/class-aware-disposition-design-space.md`.
+- **Imported basis freshness** (`working/gaps/GAP-imported-basis-freshness.md`) — NQ lifecycle/custody time cannot launder upstream observation time. `captured_at` proves when NS saw the finding, not when the world was observed. `FreshnessBasis` enum + five reconciliation cases. Closeout pins "**`ok_to_proceed` is NOT an authorization summary**" — guarded by sentinel test `b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`.
+- **Silence-aware posture (Slice C.1 landed)** (`working/gaps/GAP-silence-aware-posture.md`) — NQ owns truth/classification, NS owns posture + ack. Three anti-laundering invariants: `silence_present ≠ incident_absent`, `acked_silence ≠ acked_incident`, `no_new_evidence ≠ resolved`. `PostureClass::{IncidentShape, SilenceShape, Unknown}` with envelope-presence derivation rule.
+- **Slice 5 contract** (load-bearing primitive) — three-axis split: truth (NQ-owned) / notification posture (NS) / ack obligation (NS). `Stale → advise(revalidate-only)`. `Invalidated → emits packet`. Every subsequent slice composes onto this.
+- **Horizon CLI + pipe-through receipts (landed)** (`working/gaps/GAP-governor-contract.md` partial) — Tier-2 reachable via paired `--horizon-policy` + `--governor-socket`. Receipt-id from Governor reaches `packet.receipt_references.governor_receipts` and `RunHorizonOutcome` ledger events. `check_policy` / `authorize_transition` (the remaining two `nightshift.*` Governor methods) still open.
+- **Constellation maturity ladder** (`theory/DEPLOYMENT-MATURITY.md`) — shared v1 local → v2 shared → v3 service curve; NS / NQ / Continuity share it, Governor does not.
+
+### Candidate doctrine (not ratified; `working/decisions/`)
+
+- **Workflow Routing Boundary** — "Route by claim type, not by tool identity"; six keepers; claim-type taxonomy.
+- **Architectural Promotion Boundary** — roadmap ≠ authorization; three action classes (containment / tuning / promotion).
+- **Solution-Family Exhaustion** — "repeated repair inside the same context is evidence against the context"; mitigation chain + bucket migration; detect, do not resolve.
+- **Lesson Distillation Boundary** — meta-meta: rules under which NS extracts candidate motifs without applying them as authority; five-stage lifecycle, no skipping. Sharpening: *transitions, not nouns*.
+- **Autonomous Execution Boundary** (real witness: labelwatch) — trigger ≠ authority; alarm-vs-remediation policy split; "an alarm may wake the operator, it may not become the operator."
+- **Rumination Boundary** (no internal witness) — synthesis ≠ standing; "a dream may propose memory; it may not become memory without standing."
+- **Narrowing Posture Transition** (witness pair + live counterexample) — "the same narrowing move can finish one workstream and abort another"; "narrow after contact, do not narrow before contact"; explicit refusal of `work_phase` / `narrowing_role` enum fields.
+- **Slice Cycle** — work-cycle cadence; reconciliation-vs-lifecycle-ladder open question pending review.
+
+### Registries (`working/decisions/`)
+
+- **FEATURE-HISTORY** — shipped-state ledger (what landed, when, with evidence).
+- **AUDIT-BACKLOG** — audit-owed breadcrumbs only. Not GAPs, not accepted doctrine, not implementation plans. Promote an entry only after repo-local audit finds an actual construction/provenance boundary or laundering vector.
 
 ## Conventions
 

@@ -1,6 +1,6 @@
 //! Slice C.1 — Silence-Aware Posture (surface-only) acceptance tests.
 //!
-//! Pins `docs/GAP-silence-aware-posture.md`. Land in commit 2 of
+//! Pins `docs/working/gaps/GAP-silence-aware-posture.md`. Land in commit 2 of
 //! the Slice C.1 three-commit pattern; pass when commit 3 wires the
 //! derivation and the regime/action language.
 //!
@@ -11,7 +11,7 @@
 //! - `acked_silence ≠ acked_incident`
 //! - `no_new_evidence ≠ resolved`
 //!
-//! See also `docs/GAP-reack-doctrine.md` for the ack-lineage rules
+//! See also `docs/architecture/GAP-reack-doctrine.md` for the ack-lineage rules
 //! these tests rely on (invariants 3–4 in that doctrine).
 
 use std::path::PathBuf;

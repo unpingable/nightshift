@@ -94,7 +94,13 @@ crates/nightshiftd/         Rust crate — daemon + library
     main.rs                 `nightshift` CLI entry
   tests/                    Integration tests
 tests/fixtures/             Agenda + NQ fixtures
-docs/                       Design documents, GAP specs, schemas
+docs/                       Lifecycle-organized documentation; see docs/README.md
+  architecture/             Ratified design: DESIGN, FLOW-tolerability-horizon, SCHEMA-*, GAP-reack-doctrine
+  theory/                   Positioning docs: DEPLOYMENT-MATURITY
+  operator/                 Placeholder; operator docs owed at MVP exit
+  working/
+    gaps/                   Open spec-shaped GAPs (14)
+    decisions/              Candidate doctrine, working notes, FEATURE-HISTORY ledger, AUDIT-BACKLOG
 ```
 
 ---

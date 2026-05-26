@@ -68,7 +68,7 @@ pub struct FindingSummary {
     /// finding's wire shape. Defaults to `Unknown` per the
     /// SILENCE_UNIFICATION rule: absence of envelope is "not yet
     /// unified," not "not silence." See
-    /// `docs/GAP-silence-aware-posture.md`.
+    /// `docs/working/gaps/GAP-silence-aware-posture.md`.
     #[serde(default)]
     pub posture_class: crate::posture_class::PostureClass,
 }
@@ -166,7 +166,7 @@ pub struct Attention {
     /// `posture_class = SilenceShape` simultaneously (an operator
     /// acked a silence-shaped finding).
     ///
-    /// Per `docs/GAP-reack-doctrine.md` invariants 3–4: an ack on
+    /// Per `docs/architecture/GAP-reack-doctrine.md` invariants 3–4: an ack on
     /// this row applies only to this `attention_key`'s lineage; it
     /// does not transfer to attention rows for other findings,
     /// regardless of whether those rows have the same or different
