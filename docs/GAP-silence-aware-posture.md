@@ -13,8 +13,10 @@
 > 2026-05-20). Slice C.2 (class-aware disposition extension on
 > `GAP-reack-doctrine.md`'s frozen six-value enum) remains deferred
 > with three named unlock triggers (see memory:
-> project_substrate_consumption_chain). The original brief below is
-> preserved for provenance.
+> project_substrate_consumption_chain). **Design-space exploration:
+> see [`class-aware-disposition-design-space.md`](class-aware-disposition-design-space.md)
+> — annex working note filed 2026-05-26 (not a spec; no enum extension
+> proposed).** The original brief below is preserved for provenance.
 
 ## The deep rule
 
