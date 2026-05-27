@@ -585,6 +585,24 @@ pub fn reconcile_phase_with_horizon(
                 "operational_urgency": format!("{:?}", packet.attention.operational_urgency),
             }),
         ))?;
+        // 6b. Slice 4 — recompute closure_candidate now that
+        // attention_state may have shifted (Acknowledged / Silenced).
+        // Operator attention is a stronger refusal than the
+        // posture-only default.
+        let nq_status = reconciliation
+            .results
+            .iter()
+            .find(|r| r.input_id.starts_with("nq:finding:"))
+            .map(|r| r.status)
+            .unwrap_or(crate::bundle::InputStatus::Observed);
+        packet.closure_candidate = crate::closure::assess(
+            packet.attention.posture_class,
+            packet.attention.attention_state,
+            packet.attention.evidence_state,
+            crate::closure::RunOutcome::Reconciled {
+                nq_input_status: nq_status,
+            },
+        );
     }
 
     store.save_packet(run_id, &packet)?;
@@ -785,6 +803,22 @@ fn build_success_packet(
         scope_key(&agenda.scope).chars().take(12).collect::<String>()
     );
 
+    // Slice 4 — closure-candidate predicate. Computed after the
+    // attention struct above (which already reflects horizon
+    // WatchUntil, if any) and before the operator-attention
+    // projection below; the projection may later overwrite
+    // `attention.attention_state` with Acknowledged / Silenced, so
+    // the final closure_candidate is recomputed at the projection
+    // site. This initial value is the pre-projection verdict.
+    let closure_candidate = crate::closure::assess(
+        posture_class,
+        attention.attention_state,
+        attention.evidence_state,
+        crate::closure::RunOutcome::Reconciled {
+            nq_input_status: nq_result.status,
+        },
+    );
+
     Ok(Packet {
         packet_version: 0,
         packet_id,
@@ -803,6 +837,7 @@ fn build_success_packet(
             governor_receipts: target_governor_receipts,
             evidence_bundle: Some(format!("bundle://{run_id}")),
         },
+        closure_candidate,
     })
 }
 
@@ -959,6 +994,13 @@ fn hold_for_preflight(
         scope_key(&agenda.scope).chars().take(12).collect::<String>()
     );
 
+    let closure_candidate = crate::closure::assess(
+        attention.posture_class,
+        attention.attention_state,
+        attention.evidence_state,
+        crate::closure::RunOutcome::PreflightHeld,
+    );
+
     let packet = Packet {
         packet_version: 0,
         packet_id,
@@ -977,6 +1019,7 @@ fn hold_for_preflight(
             governor_receipts: vec![],
             evidence_bundle: Some(format!("bundle://{run_id}")),
         },
+        closure_candidate,
     };
 
     store.save_packet(run_id, &packet)?;
@@ -1128,6 +1171,13 @@ fn liveness_gate_failed(
         scope_key(&agenda.scope).chars().take(12).collect::<String>()
     );
 
+    let closure_candidate = crate::closure::assess(
+        attention.posture_class,
+        attention.attention_state,
+        attention.evidence_state,
+        crate::closure::RunOutcome::LivenessGateFailed,
+    );
+
     let packet = Packet {
         packet_version: 0,
         packet_id,
@@ -1146,6 +1196,7 @@ fn liveness_gate_failed(
             governor_receipts: vec![],
             evidence_bundle: None,
         },
+        closure_candidate,
     };
 
     store.save_packet(run_id, &packet)?;

@@ -20,6 +20,53 @@ The chronological order below is newest-first.
 
 ---
 
+## SLICE_4_CLOSURE_CANDIDATE V1 (partial Gate 1)
+
+**Status:** `shipped` 2026-05-27. Slice 4 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md). **Refusal-only — no closure authority.** Implements the conservative form of Gate 1 from [`pre-positioned-doctrine-gates.md`](pre-positioned-doctrine-gates.md): the predicate refuses closure under known blocker conditions and explicitly marks the missing-channel-classification case as `Unassessable`, *not* eligible-by-default.
+
+**Shipped artifacts:**
+- `crates/nightshiftd/src/closure.rs` — `ClosureCandidate::{NotEligible{reason}, UnassessableMissingChannelClassification, EligibleForClosureReview}`, `NotEligibleReason` six-variant enum, pure `assess()` function, `render_label()` for operator-facing strings.
+- `crates/nightshiftd/src/packet.rs` — new `Packet.closure_candidate` field with `#[serde(default = ...)]` so pre-Slice-4 stored packets deserialize cleanly (default is `UnassessableMissingChannelClassification`, the conservative fallback).
+- `crates/nightshiftd/src/pipeline.rs` — three call sites set the field:
+  - `build_success_packet` — `Reconciled { nq_input_status }`. Recomputed inside `reconcile_phase_with_horizon` after the Slice 3 attention projection mutates `attention_state` (operator ack/silence promotes the verdict from Unassessable to `NotEligible(OperatorAttentionActive)`).
+  - `hold_for_preflight` — `RunOutcome::PreflightHeld`.
+  - `liveness_gate_failed` — `RunOutcome::LivenessGateFailed`.
+- `crates/nightshiftd/src/posture.rs::render_show` — single new `closure:` line, label-rendered. Synthetic WatchUntil test packet updated to include the field; the test now also confirms WatchUntil does **not** count as operator attention for closure purposes.
+
+**Evidence:**
+- 12 unit tests in `crates/nightshiftd/src/closure.rs::tests`, including a combinatorial sweep across `{PostureClass × AttentionState × EvidenceState × RunOutcome}` that asserts `EligibleForClosureReview` is unreachable in v1.
+- 9 integration tests in `crates/nightshiftd/tests/closure_candidate.rs`:
+  - `silence_shape_finding_refuses_with_proxy_quiet`
+  - `imported_basis_stale_refuses_with_stale_basis` (Slice B import path)
+  - `liveness_gate_failure_refuses_with_liveness_gate_failed`
+  - `finding_invalidated_at_reconcile_refuses_with_invalidated_basis` (Slice 5 contract Invalidated)
+  - `active_ack_refuses_with_operator_attention_active`
+  - `active_silence_refuses_with_operator_attention_active_over_proxy_quiet` (operator intent wins over silence-shape posture)
+  - `incident_shape_with_no_blockers_yields_unassessable` (the conservative-default sentinel)
+  - `preflight_held_run_refuses_with_preflight_held`
+  - `no_pipeline_path_emits_eligible_for_closure_review`
+- 264/264 tests green (243 prior + 12 unit + 9 integration = 264), 1 ignored. Clippy clean.
+
+**Field notes:**
+- **closure candidate ≠ closure authorization.** There is no close verb in v1 and this predicate does not introduce one. Its purpose is to make refusal categories explicit, testable, and operator-visible *now*, so that when a close verb eventually exists it can consult this surface and refuse closure on the same grounds. The variant `EligibleForClosureReview` exists but is *unreachable* under v1 conditions — the combinatorial sweep proves it.
+- **Missing channel classification is a visible refusal, not a deferred feature.** The early framing of this slice was "defer the missing-consequence-channel case until NQ moves." The user-tuned framing (per ChatGPT consultation 2026-05-27) sharpened it: silently dropping the case lets a healthy-looking IncidentShape finding round up to eligibility by absence. Slice 4 instead emits `UnassessableMissingChannelClassification` — the predicate *names* what it cannot assess. "Review has a way of becoming approved in a trench coat."
+- **Operator attention vs. silence-shape priority.** Active operator ack/silence is checked before posture-class. Rationale: operator intent is a stronger refusal signal than the finding's wire shape; if both apply, the operator-intent reason is more useful to surface (the operator made an explicit choice). One acceptance test pins this.
+- **WatchUntil is not operator attention.** Horizon-driven `AttentionState::WatchUntil` is system-set, not operator-set, and does not refuse closure on operator-attention grounds. It falls through to whatever other refusal applies (typically `Unassessable` for IncidentShape).
+- **Stale via Slice B routes through `EvidenceState::Stale`.** The Slice B `imported_producer_basis_stale` path produces `InputStatus::Stale` AND `EvidenceState::Stale`. Either signal causes `NotEligible(StaleBasis)`; the predicate doesn't need to discriminate between the two stale sources.
+- **Held packets get refusals too.** Preflight and liveness-gate failures now carry `closure_candidate: NotEligible(PreflightHeld | LivenessGateFailed)` rather than silently inheriting the schema default. The same incident state the run halted on is the same incident state that refuses closure.
+
+**Deferred — NQ-side prerequisite for the full Gate 1:**
+
+To make `EligibleForClosureReview` reachable, NQ must expose a wire-shape distinction between **proxy-channel** findings (dashboard-only normalization signals, "the alert is quiet") and **consequence-channel** findings (substrate witnesses, "customer impact / downstream effect"). The closure predicate would then add a final check: "all blockers absent AND finding is consequence-channel" → eligible; "all blockers absent AND finding is proxy-channel OR channel-unknown" → unassessable (conservative refusal).
+
+Until that NQ-side classification lands, every IncidentShape finding is `Unassessable`. The NS side is *complete* as a refusal surface; the missing piece is upstream evidence shape, not NS implementation. Cross-project advisory should be filed at the NQ side when this slice ships.
+
+**Unblocks:**
+- Nothing in NS itself — Slice 4 is the terminal Gate-1 work NS can do without NQ moving.
+- A future operator-facing closure verb can now consult `packet.closure_candidate` and refuse closure under the existing six refusal classes.
+
+---
+
 ## SLICE_3_ATTENTION_LIFECYCLE V1 (ack + silence)
 
 **Status:** `shipped` 2026-05-27. Slice 3 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md) — **incremental scope**: ack + silence verbs land in v1. `investigate`, `handoff`, and `request-revalidation` are deferred to follow-ons with explicit unlock triggers (see below).

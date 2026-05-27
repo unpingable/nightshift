@@ -27,6 +27,8 @@ Each entry names:
 
 ## Gate 1: Incident-closure predicate
 
+**Status (2026-05-27): partially fired.** Slice 4 (`SLICE_4_CLOSURE_CANDIDATE V1` in FEATURE-HISTORY) implemented the *refusal* side: NS emits a `ClosureCandidate` verdict on every packet, refusing closure under six named blocker classes and emitting `UnassessableMissingChannelClassification` for IncidentShape findings without channel classification. The doctrine's full firing — distinguishing proxy-channel from consequence-channel evidence — requires an NQ-side wire shape that does not yet exist; until then, `EligibleForClosureReview` is unreachable. See FEATURE-HISTORY § SLICE_4 "Deferred — NQ-side prerequisite for the full Gate 1."
+
 **Trigger.** NS implements incident-closure logic (today: NS surfaces evidence state and posture; it does not yet authorize *closure* of an incident).
 
 **Doctrine.** Dashboard / proxy-channel normalization is not a settlement receipt for incident closure. A consequence-channel witness (customer-impact, downstream-effect) is required. "Quiet" on the observation surface does not equal "recovered" in substrate.

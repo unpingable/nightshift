@@ -329,6 +329,12 @@ pub fn render_show(posture: &RunPosture) -> String {
                 pkt.receipt_references.governor_receipts.join(", ")
             ));
         }
+        // Slice 4 — closure-candidate verdict. Refusal-only; the
+        // predicate never authorizes closure.
+        out.push_str(&format!(
+            "  closure:    {}\n",
+            pkt.closure_candidate.render_label()
+        ));
     } else {
         out.push_str("  (no packet saved)\n");
     }
@@ -572,6 +578,9 @@ mod tests {
             },
             "receipt_references": {
                 "governor_receipts": ["receipt_abc123"]
+            },
+            "closure_candidate": {
+                "kind": "unassessable_missing_channel_classification"
             }
         });
         let pkt: Packet = serde_json::from_value(pkt_json).expect("test packet must deserialize");

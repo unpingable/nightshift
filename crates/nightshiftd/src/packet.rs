@@ -233,4 +233,23 @@ pub struct Packet {
     pub diagnosis_review: DiagnosisReview,
     pub attention: Attention,
     pub receipt_references: ReceiptReferences,
+    /// Slice 4 — review-gating closure verdict per
+    /// `working/decisions/pre-positioned-doctrine-gates.md` Gate 1.
+    /// **Not closure authority**: the predicate refuses closure
+    /// under named blocker conditions; it does not authorize a
+    /// close verb (there is no close verb in v1). See
+    /// `crate::closure` for the assessment function and the
+    /// `EligibleForClosureReview` unreachability invariant.
+    ///
+    /// `#[serde(default)]` so pre-Slice-4 stored packets deserialize
+    /// cleanly. Default is `UnassessableMissingChannelClassification`
+    /// — the conservative refusal that mirrors what a freshly
+    /// assessed IncidentShape packet would return when no blocker
+    /// fires.
+    #[serde(default = "default_closure_candidate")]
+    pub closure_candidate: crate::closure::ClosureCandidate,
+}
+
+fn default_closure_candidate() -> crate::closure::ClosureCandidate {
+    crate::closure::ClosureCandidate::UnassessableMissingChannelClassification
 }

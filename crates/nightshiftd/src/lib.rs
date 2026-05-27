@@ -7,6 +7,7 @@
 pub mod agenda;
 pub mod attention;
 pub mod bundle;
+pub mod closure;
 pub mod coordination;
 pub mod errors;
 pub mod finding;

@@ -164,11 +164,13 @@ What stands between the current state and a deployed loop. Listed by the slice t
 
 ---
 
-### Slice 4 — Closure-candidate predicate *(approaches Gate 1)*
+### Slice 4 — Closure-candidate predicate *(shipped 2026-05-27, conservative-refusal scope)*
 
-**Goal.** A predicate that can say "this finding is eligible for closure," "not eligible: proxy-only evidence," "not eligible: missing consequence-channel witness," "not eligible: stale/invalidated basis." The predicate is enforceable, not advisory. It does **not** close findings yet.
+**Goal.** A predicate that names refusal cases for closure. Enforceable refusal; no closure authorization. The predicate's first job is to refuse premature closure.
 
-The point of this slice is to make NS encounter the doctrine honestly: "looks quiet" is not the same as "actually recovered." The predicate's first job is to refuse premature closure.
+**Status read.** Shipped. See [FEATURE-HISTORY § SLICE_4_CLOSURE_CANDIDATE V1](../decisions/FEATURE-HISTORY.md#slice_4_closure_candidate-v1-partial-gate-1). The predicate emits one of: `NotEligible(reason)` for six refusal classes, `UnassessableMissingChannelClassification` (the conservative default for IncidentShape findings until NQ adds channel classification), or `EligibleForClosureReview` (defined in the enum but unreachable in v1 — pinned by a combinatorial sweep test).
+
+**Per the ChatGPT-tuned framing** the missing-channel case is a *visible refusal*, not a deferred feature. A healthy-looking IncidentShape finding does not silently round up to eligible — it rounds to Unassessable, the name we use for the gap. Until NQ exposes proxy-channel vs. consequence-channel classification, the eligible path stays unreachable.
 
 **Acceptance shape.**
 
