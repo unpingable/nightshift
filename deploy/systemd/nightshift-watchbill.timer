@@ -1,0 +1,18 @@
+[Unit]
+Description=Night Shift watchbill — scheduled timer
+Documentation=https://github.com/anthropics/scheduler/blob/main/docs/working/roadmaps/nightshift_v1_runtime_ladder.md
+
+[Timer]
+# Default cadence: every 5 minutes, jittered. The agenda declares
+# its own cadence; the timer here is the *invocation* cadence (when
+# the daemon wakes up). Idempotency in the daemon (see
+# `crates/nightshiftd/src/scheduled.rs`) skips invocations when NQ
+# has not advanced — so a tight timer is safe.
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Unit=nightshift-watchbill.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

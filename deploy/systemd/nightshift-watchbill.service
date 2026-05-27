@@ -1,0 +1,55 @@
+[Unit]
+Description=Night Shift watchbill — non-actuating reconciliation
+Documentation=https://github.com/anthropics/scheduler/blob/main/docs/working/roadmaps/nightshift_v1_runtime_ladder.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/nightshift/watchbill.env
+
+# Substitute via EnvironmentFile. The shell-style ${VAR} expansion
+# happens in systemd, not in the binary. Optional vars (horizon
+# policy, governor socket, liveness artifact) are emitted only when
+# their environment values are non-empty — see watchbill.env.example.
+ExecStart=/usr/local/bin/nightshift \
+    --store ${NIGHTSHIFT_STORE} \
+    --nq-db ${NIGHTSHIFT_NQ_DB} \
+    --trigger scheduled \
+    ${NIGHTSHIFT_EXTRA_FLAGS} \
+    watchbill run ${NIGHTSHIFT_AGENDA} --finding ${NIGHTSHIFT_FINDING}
+
+# Stdout is the operator-facing surface (packet YAML or
+# `scheduled-skip: ...` line). Journald captures it; `journalctl
+# -u nightshift-watchbill -n 20` is the operator's review surface.
+StandardOutput=journal
+StandardError=journal
+
+# Non-actuating daemon — refuse to escalate even if a bug requests
+# it. CAP_NET_BIND_SERVICE etc. are not needed; clear them. The
+# user/group should own the store path; create them at install time.
+User=nightshift
+Group=nightshift
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nightshift
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Bounded wall time — Slice 1 expects sub-minute runs against the
+# wal-bloat-review pilot. If it ever takes longer, surface it as a
+# timeout rather than letting timer firings overlap.
+TimeoutStartSec=120s

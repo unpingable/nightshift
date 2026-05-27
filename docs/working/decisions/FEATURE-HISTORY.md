@@ -20,6 +20,70 @@ The chronological order below is newest-first.
 
 ---
 
+## SLICE_2_OPERATOR_VISIBILITY V1
+
+**Status:** `shipped` 2026-05-27. Slice 2 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md). The packet already carried the load (Slice C.1 posture, Slice B freshness, horizon WatchUntil tolerance_basis_id + re_alert_after, governor_receipts pipe-through). This slice surfaces those fields in the operator-facing `runs show` and corrects the held-status defect for liveness-gate failures.
+
+**Shipped artifacts:**
+- `crates/nightshiftd/src/posture.rs`:
+  - `RunPosture::is_held` extended to include `RunLivenessGateFailed` — a liveness-gate failure that completed via `liveness_gate_failed` no longer mislabels as `ok`.
+  - New `RunPosture::hold_gate() -> Option<&'static str>` returns `"liveness"` or `"preflight"`. Naming the gate is the operator's first answer to "why did the daemon stop." Horizon escalation is deliberately not a `hold_gate` — it produces a reconciled packet, surfaced via the attention block.
+  - `hold_reason` rewritten to use the gate label as a prefix (`"liveness: <verdict>"` / `"preflight <outcome>: <reasons>"`) so the gate name is visible whether the operator reads `runs show` or just `runs list`.
+  - `render_show` extended with an attention block: `attention`, `posture`, `proposed` always render; `owner`, `next check` (re_alert_after), `watch basis` (tolerance_basis_id), `ack expires`, `follow up`, `gov receipts` render only when populated.
+
+**Evidence:**
+- New unit tests in `crates/nightshiftd/src/posture.rs`:
+  - `liveness_failed_run_is_held_with_liveness_gate` — event-only fallback path produces `Some("liveness")` gate and `liveness:` reason prefix.
+  - `preflight_hold_gate_is_named_in_render` — `render_show` emits `hold gate:  preflight`.
+  - `render_show_surfaces_next_check_and_watch_basis` — synthetic WatchUntil packet renders `next check`, `watch basis`, `attention:  WatchUntil`, and `gov receipts` lines.
+- New integration tests in `crates/nightshiftd/tests/posture_surface.rs`:
+  - `protected_class_hold_names_preflight_gate` — pipeline-driven; existing held run now reports `hold_gate() == Some("preflight")`.
+  - `liveness_failed_run_is_held_with_liveness_gate` — pipeline-driven with stale liveness DTO; `status_label() == "HELD"`, gate is `"liveness"`, render output names the gate.
+  - `render_show_surfaces_attention_block_for_reconciled_run` — happy-path packet shows `attention:` / `posture:` / `proposed:` and *omits* `watch basis:` / `next check:` (proves the optional-field discipline).
+- All existing posture tests still green (the `"protected-class service in scope"` assertion is preserved — the rename only changes the prefix).
+- 225/225 tests green (222 prior + 3 new unit + 3 new integration), 1 ignored. Clippy clean under `--all-targets -- -D warnings`.
+
+**Field notes:**
+- Hold-cause taxonomy is *gate-named*, not event-named. Operators ask "did liveness fail or did preflight refuse to coordinate" — they should not have to read `RunLedgerEventKind` variants to find out. `hold_gate()` is the answer; `hold_reason()` carries the detail under the gate prefix.
+- The horizon case is deliberately not a `hold_gate`. A `Defer` (WatchUntil) or `EscalateExpired` packet reconciles successfully and surfaces via the attention block's `next check` / `watch basis` / `gov receipts` lines — different operator question.
+- The synthetic WatchUntil packet in the unit test is the only place a `Packet` is constructed by hand in the test suite. It guards against rendering regressions without coupling to the horizon path's specific construction sequence.
+
+**Unblocks:**
+- Slice 3 (operator disposition lifecycle) — operators now have a stable surface to inspect what NS thinks before invoking attention commands against it.
+
+---
+
+## SLICE_1_SCHEDULED_LOOP V1
+
+**Status:** `shipped` 2026-05-27. Slice 1 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md). The single-invocation pipeline already shipped; this slice adds (a) the `--trigger scheduled` flag, (b) idempotency that skips re-reconciliation when NQ has not advanced its `snapshot_generation`, and (c) a systemd deployment surface.
+
+**Shipped artifacts:**
+- `crates/nightshiftd/src/scheduled.rs` — `check_scheduled_idempotency` + `ScheduledOutcome::{Skipped(SkipReport), Proceed}`. Skip applies only when the most recent *completed* run for `(agenda_id, finding_key)` captured the same NQ generation as the current snapshot. Open runs do not block fresh invocations (intentional fail-open; reasoning in module docs).
+- `crates/nightshiftd/src/main.rs` — `--trigger {manual|scheduled|event}` global CLI flag (default `manual`); `TriggerArg` clap-side enum mapped to `RunTrigger`; `run_watchbill_cmd` gates on `check_scheduled_idempotency` only when `--trigger scheduled`.
+- `deploy/systemd/` — non-templated service + timer + `EnvironmentFile` example + install README. Hardened sandbox (`ProtectSystem=strict`, `MemoryDenyWriteExecute=true`, `SystemCallFilter=@system-service`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`). One timer = one `(agenda, finding)`; multi-finding orchestration is out of scope.
+
+**Evidence:**
+- Six acceptance tests in `crates/nightshiftd/tests/scheduled_idempotency.rs`:
+  - `scheduled_skip_when_same_generation_already_reconciled` — green-path skip; SkipReport contains prior run_id + generation + completed_at; message starts with `scheduled-skip:` and includes the prior run_id.
+  - `scheduled_runs_when_generation_advances` — new generation opens a new run row; second `list_runs` returns two distinct run_ids.
+  - `idempotency_with_no_prior_runs_proceeds` — fresh store → Proceed.
+  - `idempotency_proceeds_when_finding_absent_from_nq` — `AbsentNqSource` returns None → Proceed (pipeline will emit its canonical absent-target error).
+  - `trigger_kind_is_persisted_on_run_row` — `RunTrigger::Scheduled` survives the persist round-trip via `list_runs`.
+  - `idempotency_scopes_to_agenda_not_just_finding` — a different `agenda_id` targeting the same finding-key Proceeds (one agenda's run cannot silence another's).
+- 222/222 tests green (216 prior + 6 new), 1 ignored (`governor_rpc_live`).
+- Clippy clean under `--all-targets -- -D warnings`.
+
+**Field notes:**
+- Idempotency is the daemon's responsibility, not the timer's. The roadmap acceptance criterion was explicit on this: "Re-running within the same NQ generation against the same `finding_key` either (a) finds the existing run and reports it, or (b) opens a new run with an explicit reason — never silently double-counts." Per-(agenda, finding) keying handles the "different agenda, same finding" case correctly without conflating workflow contexts.
+- Open-prior-run case (a capture is open but reconcile pending) is *not* a skip — the new invocation proceeds. Rationale: a stuck deferred-split run should not freeze the timer; the operator sees both runs in `runs list` with status `running` on the stuck one. If this turns out to be a real surface, a third outcome (`OpenPriorRun(...)`) is the natural extension; the type is already shaped for it.
+- Idempotency applies only to `watchbill run`, not to `watchbill capture` or `reconcile` individually. The deferred-split commands are deliberate operator workflows; idempotency-skip in them would surprise.
+
+**Unblocks:**
+- Slice 2 (operator visibility / next-check rendering).
+- Tier-2 wal-bloat-review pilot deployment against the Linode NQ host (per memory `reference_vm_access`).
+
+---
+
 ## HORIZON_CLI_PIPE_THROUGH V1
 
 **Status:** `shipped` 2026-05-21. Tier-2 horizon path made CLI-reachable and verdict-observable. Closes the "Pipe-through debt" section in `GAP-governor-contract.md`. `check_policy` / `authorize_transition` (the remaining two `nightshift.*` Governor methods) are NOT in this slice — they remain open in the gap doc.

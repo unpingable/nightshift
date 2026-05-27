@@ -31,6 +31,7 @@ Read the architecture set above first. Then:
 
 - [`working/gaps/`](working/gaps/) — open design questions and spec-shaped gap records (14 entries)
 - [`working/decisions/`](working/decisions/) — candidate doctrine, working notes, cross-cutting design records, shipped-state ledger
+- [`working/roadmaps/`](working/roadmaps/) — build ladders sequencing runtime surfaces toward deployable targets; mutable, retire if a slice never lands
 - [`working/decisions/FEATURE-HISTORY.md`](working/decisions/FEATURE-HISTORY.md) — what landed, when, with evidence pointers
 - [`working/decisions/AUDIT-BACKLOG.md`](working/decisions/AUDIT-BACKLOG.md) — audit-owed breadcrumbs
 
@@ -45,6 +46,7 @@ Where a doc lives tells you what it's for. New docs land by lifecycle:
 | Positioning / why-this-shape | `theory/` | recruiters of the right audience | written-once-ish |
 | Decision substrate / candidate / non-binding | `working/decisions/` | future-you, contributors | mutable until ratified, then either promoted or retired |
 | Open design questions / gap specs | `working/gaps/` | future-you, anyone scoping work | mutable; may be retired |
+| Build ladders sequencing runtime surfaces | `working/roadmaps/` | future-you, anyone scoping a slice | mutable; revise as slices land; retire if a slice never materializes |
 
 Two discipline rules (imported from NQ, which imported from agent-governor — this is the third instance of the pattern):
 

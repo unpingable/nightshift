@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::finding::FindingKey;
@@ -23,7 +23,8 @@ use nightshiftd::pipeline::{
 use nightshiftd::posture::{
     list_postures, load_posture, render_list_row, render_show, PostureFilter,
 };
-use nightshiftd::store::sqlite::SqliteStore;
+use nightshiftd::scheduled::{check_scheduled_idempotency, ScheduledOutcome};
+use nightshiftd::store::{sqlite::SqliteStore, RunTrigger};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -97,8 +98,37 @@ struct Cli {
     #[arg(long, global = true)]
     governor_socket: Option<PathBuf>,
 
+    /// How this invocation was triggered. `scheduled` (timer / cron)
+    /// activates idempotency: if the most recent completed run for
+    /// `(agenda, finding)` already reconciled the current NQ
+    /// `snapshot_generation`, the invocation skips with a one-line
+    /// report pointing at the prior run. `manual` (default) and
+    /// `event` always run. Recorded on the run row regardless.
+    #[arg(long, global = true, value_enum, default_value_t = TriggerArg::Manual)]
+    trigger: TriggerArg,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// CLI mirror of `nightshiftd::store::RunTrigger`. Kept separate so
+/// clap derive doesn't reach into the library crate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+enum TriggerArg {
+    Manual,
+    Scheduled,
+    Event,
+}
+
+impl From<TriggerArg> for RunTrigger {
+    fn from(t: TriggerArg) -> Self {
+        match t {
+            TriggerArg::Manual => RunTrigger::Manual,
+            TriggerArg::Scheduled => RunTrigger::Scheduled,
+            TriggerArg::Event => RunTrigger::Event,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -436,6 +466,20 @@ fn run_watchbill_cmd(
 
     let opts = pipeline_opts(cli);
 
+    // Scheduled-trigger idempotency: skip if the most recent
+    // completed run for (agenda, finding) already reconciled the
+    // current NQ snapshot_generation. See `src/scheduled.rs` and the
+    // Slice 1 close-out in
+    // `docs/working/roadmaps/nightshift_v1_runtime_ladder.md`.
+    if cli.trigger == TriggerArg::Scheduled {
+        if let ScheduledOutcome::Skipped(report) =
+            check_scheduled_idempotency(&agenda, &target, nq.as_ref(), &store)?
+        {
+            println!("{}", report.message());
+            return Ok(());
+        }
+    }
+
     let packet = match horizon_deps {
         // No horizon configured — original same-generation path.
         None => run_watchbill_with_liveness(
@@ -538,7 +582,7 @@ fn pipeline_opts(cli: &Cli) -> PipelineOptions {
     PipelineOptions {
         no_governor: cli.no_governor,
         continuity_configured: cli.continuity_configured,
-        trigger: None,
+        trigger: Some(cli.trigger.into()),
         liveness_threshold_seconds: cli.nq_liveness_threshold_secs,
         imported_basis_freshness_window_seconds: None,
     }

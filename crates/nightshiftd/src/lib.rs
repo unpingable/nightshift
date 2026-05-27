@@ -24,6 +24,7 @@ pub mod posture;
 pub mod posture_class;
 pub mod reconcile_horizon;
 pub mod reconciler;
+pub mod scheduled;
 pub mod store;
 
 pub use errors::{NightShiftError, Result};

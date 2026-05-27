@@ -23,8 +23,11 @@ pub struct RunPosture {
 }
 
 impl RunPosture {
-    /// True if the run was held before reconcile (protected-class
-    /// preflight hold, coordinate, or block-for-resolution).
+    /// True if the run was held before reconcile — preflight
+    /// (protected-class hold, coordinate, blocked) or the NQ
+    /// liveness gate. Slice 2: liveness halts are also holds; the
+    /// run never reached reconcile and the operator surface must
+    /// not label it `ok`.
     pub fn is_held(&self) -> bool {
         let had_hold = self.events.iter().any(|e| {
             matches!(
@@ -32,6 +35,7 @@ impl RunPosture {
                 RunLedgerEventKind::RunPreflightHold
                     | RunLedgerEventKind::RunPreflightCoordinate
                     | RunLedgerEventKind::RunPreflightBlocked
+                    | RunLedgerEventKind::RunLivenessGateFailed
             )
         });
         let had_reconciled = self
@@ -39,6 +43,39 @@ impl RunPosture {
             .iter()
             .any(|e| matches!(e.kind, RunLedgerEventKind::RunReconciled));
         had_hold && !had_reconciled
+    }
+
+    /// Name the gate that held the run, if any. Slice 2 hold-cause
+    /// taxonomy: `liveness` (NQ liveness witness stale/skewed),
+    /// `preflight` (coordination — protected-class, overlapping
+    /// scope), or `None` for runs that reconciled normally.
+    ///
+    /// Horizon-driven escalation is *not* a hold — the run still
+    /// reconciles and emits a packet with `Stale → revalidate-only`
+    /// or `Invalidated` posture. Surfacing the horizon outcome lives
+    /// on the packet's `next check` rendering, not here.
+    pub fn hold_gate(&self) -> Option<&'static str> {
+        if !self.is_held() {
+            return None;
+        }
+        if self
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, RunLedgerEventKind::RunLivenessGateFailed))
+        {
+            return Some("liveness");
+        }
+        if self.events.iter().any(|e| {
+            matches!(
+                e.kind,
+                RunLedgerEventKind::RunPreflightHold
+                    | RunLedgerEventKind::RunPreflightCoordinate
+                    | RunLedgerEventKind::RunPreflightBlocked
+            )
+        }) {
+            return Some("preflight");
+        }
+        None
     }
 
     /// Human-readable hold reason if the run was held. None if not held
@@ -56,34 +93,48 @@ impl RunPosture {
                 return Some(reason.clone());
             }
         }
-        // Fallback: reconstruct from the hold event payload.
+        // Fallback: reconstruct from the hold event payload. Preflight
+        // events carry `outcome` + `reasons`; liveness carries a
+        // `verdict` string. Both render with the gate as the prefix
+        // so the operator sees `<gate>: <detail>` consistently.
+        let gate = self.hold_gate().unwrap_or("held");
         for e in &self.events {
-            let is_hold = matches!(
-                e.kind,
+            match e.kind {
+                RunLedgerEventKind::RunLivenessGateFailed => {
+                    let verdict = e
+                        .payload
+                        .get("verdict")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("witness not fresh");
+                    return Some(format!("{gate}: {verdict}"));
+                }
                 RunLedgerEventKind::RunPreflightHold
-                    | RunLedgerEventKind::RunPreflightCoordinate
-                    | RunLedgerEventKind::RunPreflightBlocked
-            );
-            if !is_hold {
-                continue;
+                | RunLedgerEventKind::RunPreflightCoordinate
+                | RunLedgerEventKind::RunPreflightBlocked => {
+                    let outcome = e
+                        .payload
+                        .get("outcome")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("held");
+                    let reasons = e
+                        .payload
+                        .get("reasons")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    return Some(if reasons.is_empty() {
+                        format!("{gate} {outcome}")
+                    } else {
+                        format!("{gate} {outcome}: {reasons}")
+                    });
+                }
+                _ => {}
             }
-            let outcome = e.payload.get("outcome").and_then(|v| v.as_str()).unwrap_or("held");
-            let reasons = e
-                .payload
-                .get("reasons")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            return Some(if reasons.is_empty() {
-                format!("preflight {outcome}")
-            } else {
-                format!("preflight {outcome}: {reasons}")
-            });
         }
         None
     }
@@ -219,6 +270,9 @@ pub fn render_show(posture: &RunPosture) -> String {
     out.push_str(&format!("  status:     {}\n", posture.status_label()));
 
     if let Some(reason) = posture.hold_reason() {
+        if let Some(gate) = posture.hold_gate() {
+            out.push_str(&format!("  hold gate:  {gate}\n"));
+        }
         out.push_str(&format!("  hold cause: {reason}\n"));
     }
 
@@ -238,6 +292,43 @@ pub fn render_show(posture: &RunPosture) -> String {
             "  evidence:   {:?}\n",
             pkt.attention.evidence_state
         ));
+        // Slice 2 — attention + watch context. Operator scans this
+        // block to see "what should happen next, and when." Lines
+        // appear only when populated; absent fields are silently
+        // skipped to keep the output dense.
+        out.push_str(&format!(
+            "  attention:  {:?}\n",
+            pkt.attention.attention_state
+        ));
+        out.push_str(&format!(
+            "  posture:    {:?}\n",
+            pkt.attention.posture_class
+        ));
+        out.push_str(&format!(
+            "  proposed:   {:?}\n",
+            pkt.proposed_action.kind
+        ));
+        if let Some(owner) = &pkt.attention.owner {
+            out.push_str(&format!("  owner:      {owner}\n"));
+        }
+        if let Some(t) = pkt.attention.re_alert_after {
+            out.push_str(&format!("  next check: {}\n", t.to_rfc3339()));
+        }
+        if let Some(basis) = &pkt.attention.tolerance_basis_id {
+            out.push_str(&format!("  watch basis: {basis}\n"));
+        }
+        if let Some(t) = pkt.attention.ack_expires_at {
+            out.push_str(&format!("  ack expires: {}\n", t.to_rfc3339()));
+        }
+        if let Some(t) = pkt.attention.follow_up_by {
+            out.push_str(&format!("  follow up:  {}\n", t.to_rfc3339()));
+        }
+        if !pkt.receipt_references.governor_receipts.is_empty() {
+            out.push_str(&format!(
+                "  gov receipts: {}\n",
+                pkt.receipt_references.governor_receipts.join(", ")
+            ));
+        }
     } else {
         out.push_str("  (no packet saved)\n");
     }
@@ -364,5 +455,156 @@ mod tests {
             packet: None,
         };
         assert_eq!(p.status_label(), "running");
+    }
+
+    // ---- Slice 2 unit tests --------------------------------------
+
+    #[test]
+    fn liveness_failed_run_is_held_with_liveness_gate() {
+        // Without a packet — falling back to event-payload reading.
+        let p = RunPosture {
+            summary: summary("r-liv"),
+            events: vec![
+                event(
+                    RunLedgerEventKind::RunLivenessGateFailed,
+                    serde_json::json!({
+                        "instance_id": "labelwatch-host",
+                        "verdict": "stale (age_seconds=600 > threshold 60)",
+                    }),
+                ),
+                event(RunLedgerEventKind::RunCompleted, serde_json::Value::Null),
+            ],
+            packet: None,
+        };
+        assert!(p.is_held());
+        assert_eq!(p.status_label(), "HELD");
+        assert_eq!(p.hold_gate(), Some("liveness"));
+        let reason = p.hold_reason().unwrap();
+        assert!(reason.starts_with("liveness:"), "{reason}");
+        assert!(reason.contains("stale"), "{reason}");
+    }
+
+    #[test]
+    fn preflight_hold_gate_is_named_in_render() {
+        // Confirms the prefix-rename from "preflight ..." to
+        // "preflight <outcome>: <reasons>" still leads with the gate
+        // word so `render_show` can label `hold gate: preflight`.
+        let p = RunPosture {
+            summary: summary("r-pre"),
+            events: vec![
+                event(RunLedgerEventKind::RunCaptured, serde_json::Value::Null),
+                event(
+                    RunLedgerEventKind::RunPreflightHold,
+                    serde_json::json!({
+                        "outcome": "hold_for_context",
+                        "reasons": ["protected-class service in scope"],
+                    }),
+                ),
+                event(RunLedgerEventKind::RunCompleted, serde_json::Value::Null),
+            ],
+            packet: None,
+        };
+        assert_eq!(p.hold_gate(), Some("preflight"));
+        let show = render_show(&p);
+        assert!(show.contains("hold gate:  preflight"), "{show}");
+    }
+
+    /// Build a minimal reconciled packet with `re_alert_after` and
+    /// `tolerance_basis_id` set — the WatchUntil shape produced by
+    /// the horizon path. Used to confirm `render_show` surfaces the
+    /// next-check / watch-basis lines.
+    fn mk_watch_until_posture() -> RunPosture {
+        let pkt_json = serde_json::json!({
+            "packet_version": 0,
+            "packet_id": "pkt_test",
+            "agenda_id": "a",
+            "run_id": "r-watch",
+            "produced_at": "2026-05-27T03:00:00Z",
+            "finding_summary": {
+                "source": "nq",
+                "detector": "wal_bloat",
+                "host": "h",
+                "subject": "s",
+                "severity": "warning",
+                "persistence_generations": 3,
+                "first_seen_at": "2026-05-01T00:00:00Z",
+                "current_status": "active"
+            },
+            "reconciliation_summary": {
+                "ok_to_proceed": true,
+                "admissible_for_authorization": [],
+                "admissible_for_proposal": [],
+                "admissible_for_diagnosis": [],
+                "blocked": [],
+                "demoted": [],
+                "stale": [],
+                "invalidated": []
+            },
+            "diagnosis": {
+                "regime": "committed",
+                "evidence": [],
+                "confidence": "medium",
+                "alternatives_considered": []
+            },
+            "proposed_action": {
+                "kind": "advisory",
+                "steps": [],
+                "risk_notes": [],
+                "reversible": true,
+                "blast_radius": "none",
+                "requested_authority_level": "advise"
+            },
+            "authority_result": {
+                "requested": "advise",
+                "governor_present": false,
+                "authority_receipts": []
+            },
+            "diagnosis_review": {
+                "mode": "self_check"
+            },
+            "attention": {
+                "attention_key": {"source": "nq", "detector": "d", "subject": "s"},
+                "evidence_state": "active",
+                "attention_state": "watch_until",
+                "operational_urgency": "medium",
+                "re_alert_after": "2026-05-27T15:30:00Z",
+                "tolerance_basis_id": "maintenance-window-2026-q2"
+            },
+            "receipt_references": {
+                "governor_receipts": ["receipt_abc123"]
+            }
+        });
+        let pkt: Packet = serde_json::from_value(pkt_json).expect("test packet must deserialize");
+        RunPosture {
+            summary: summary("r-watch"),
+            events: vec![
+                event(RunLedgerEventKind::RunCaptured, serde_json::Value::Null),
+                event(RunLedgerEventKind::RunReconciled, serde_json::Value::Null),
+                event(RunLedgerEventKind::RunCompleted, serde_json::Value::Null),
+            ],
+            packet: Some(pkt),
+        }
+    }
+
+    #[test]
+    fn render_show_surfaces_next_check_and_watch_basis() {
+        let p = mk_watch_until_posture();
+        let show = render_show(&p);
+        assert!(
+            show.contains("next check: 2026-05-27T15:30:00+00:00"),
+            "render_show missing next-check line: {show}"
+        );
+        assert!(
+            show.contains("watch basis: maintenance-window-2026-q2"),
+            "render_show missing watch-basis line: {show}"
+        );
+        assert!(
+            show.contains("attention:  WatchUntil"),
+            "render_show missing attention-state: {show}"
+        );
+        assert!(
+            show.contains("gov receipts: receipt_abc123"),
+            "render_show missing governor-receipts line: {show}"
+        );
     }
 }

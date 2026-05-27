@@ -77,7 +77,8 @@ docs/
 ├── operator/         # placeholder; operator docs owed at MVP exit
 └── working/
     ├── gaps/         # open spec-shaped GAPs (14 entries)
-    └── decisions/    # candidate doctrine, working notes, FEATURE-HISTORY ledger, AUDIT-BACKLOG, planning memos
+    ├── decisions/    # candidate doctrine, working notes, FEATURE-HISTORY ledger, AUDIT-BACKLOG, planning memos
+    └── roadmaps/     # build ladders sequencing runtime surfaces toward deployable targets
 ```
 
 The Rust+Python language split in `architecture/DESIGN.md` is preserved as the
