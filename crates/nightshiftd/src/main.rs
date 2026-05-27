@@ -23,8 +23,9 @@ use nightshiftd::pipeline::{
 use nightshiftd::posture::{
     list_postures, load_posture, render_list_row, render_show, PostureFilter,
 };
+use nightshiftd::attention::{AttentionRow, ReAckDisposition};
 use nightshiftd::scheduled::{check_scheduled_idempotency, ScheduledOutcome};
-use nightshiftd::store::{sqlite::SqliteStore, RunTrigger};
+use nightshiftd::store::{sqlite::SqliteStore, RunTrigger, Store};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -153,6 +154,63 @@ enum Command {
     Liveness {
         #[command(subcommand)]
         action: LivenessAction,
+    },
+    /// Operator attention commands (Slice 3: ack + silence).
+    ///
+    /// Attention is durable across runs and keyed on the stable
+    /// `(agenda, finding_key)` per `GAP-attention-state.md`. On the
+    /// next scheduled run, the reconciler reads the attention store
+    /// and applies the projection to the packet.
+    Attention {
+        /// Agenda this attention applies to. Attention is scoped to
+        /// the agenda; one agenda's ack does not silence another's.
+        #[arg(long)]
+        agenda: String,
+        /// Stable finding key: `<source>:<detector>:<subject>`.
+        #[arg(long)]
+        finding: String,
+        /// Operator identifier recorded on the row. Required so
+        /// `last_touched_by` is never empty.
+        #[arg(long)]
+        operator: String,
+        #[command(subcommand)]
+        action: AttentionAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AttentionAction {
+    /// Acknowledge a finding. `--ttl` is recommended (acks should
+    /// have a half-life). If a prior attention row exists for this
+    /// `(agenda, finding)`, `--disposition` is required — re-ack is
+    /// mini-re-triage per `architecture/GAP-reack-doctrine.md`, not a
+    /// courtesy tap.
+    Ack {
+        /// How long the ack lasts before re-surface. Format: a
+        /// duration like `4h`, `90m`, `2d`. Omitting it means
+        /// "use the agenda's `criticality.re_alert_after`."
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Optional free-text note.
+        #[arg(long)]
+        note: Option<String>,
+        /// Required when re-acking an existing row. One of:
+        /// advanced, unchanged-waiting, blocked, handed-off,
+        /// escalated, resolved.
+        #[arg(long)]
+        disposition: Option<String>,
+    },
+    /// Silence a finding until a timestamp, with a reason. Both
+    /// `--until` and `--reason` are required — no open-ended
+    /// silence (GAP-attention-state invariant).
+    Silence {
+        /// RFC3339 timestamp when the silence expires.
+        #[arg(long)]
+        until: String,
+        /// Required free-text reason. The reconciler refuses an
+        /// empty string.
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -310,6 +368,125 @@ fn main() -> anyhow::Result<()> {
         Command::Liveness { action } => match action {
             LivenessAction::Peek { format } => liveness_peek_cmd(&cli, format),
         },
+        Command::Attention {
+            agenda,
+            finding,
+            operator,
+            action,
+        } => attention_cmd(&cli, agenda, finding, operator, action),
+    }
+}
+
+fn attention_cmd(
+    cli: &Cli,
+    agenda: &str,
+    finding: &str,
+    operator: &str,
+    action: &AttentionAction,
+) -> anyhow::Result<()> {
+    if operator.trim().is_empty() {
+        anyhow::bail!("--operator must be non-empty");
+    }
+    let key = parse_finding_arg(finding)?;
+    let store = SqliteStore::open(&cli.store)?;
+    let prior = store.get_attention(agenda, &key)?;
+
+    match action {
+        AttentionAction::Ack {
+            ttl,
+            note,
+            disposition,
+        } => {
+            let disposition_parsed = match disposition {
+                Some(s) => Some(ReAckDisposition::parse_token(s).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown --disposition {s:?}; valid: advanced, unchanged-waiting, blocked, handed-off, escalated, resolved",
+                    )
+                })?),
+                None => None,
+            };
+            if prior.is_some() && disposition_parsed.is_none() {
+                anyhow::bail!(
+                    "--disposition is required when re-acking an existing attention row (per re-ack doctrine). \
+                     Valid values: advanced, unchanged-waiting, blocked, handed-off, escalated, resolved"
+                );
+            }
+            let ack_expires_at = match ttl {
+                Some(d) => Some(chrono::Utc::now() + parse_duration(d)?),
+                None => None,
+            };
+            let row = AttentionRow::ack(
+                agenda.into(),
+                key,
+                operator.into(),
+                ack_expires_at,
+                note.clone(),
+                disposition_parsed,
+            );
+            store.save_attention(&row)?;
+            println!(
+                "ack: agenda={} finding={} operator={} ttl={} disposition={}",
+                row.agenda_id,
+                row.finding_key.as_string(),
+                row.last_touched_by,
+                row.ack_expires_at
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "(none)".into()),
+                row.disposition
+                    .map(|d| d.as_str().to_string())
+                    .unwrap_or_else(|| "(initial-ack)".into()),
+            );
+        }
+        AttentionAction::Silence { until, reason } => {
+            if reason.trim().is_empty() {
+                anyhow::bail!("--reason must be non-empty (suppression needs a reason)");
+            }
+            let until_ts = chrono::DateTime::parse_from_rfc3339(until)
+                .map_err(|e| anyhow::anyhow!("--until must be RFC3339: {e}"))?
+                .with_timezone(&chrono::Utc);
+            if until_ts <= chrono::Utc::now() {
+                anyhow::bail!(
+                    "--until must be in the future; silence with a past timestamp would expire immediately"
+                );
+            }
+            let row = AttentionRow::silence(
+                agenda.into(),
+                key,
+                operator.into(),
+                until_ts,
+                reason.clone(),
+            );
+            store.save_attention(&row)?;
+            println!(
+                "silence: agenda={} finding={} operator={} until={} reason={}",
+                row.agenda_id,
+                row.finding_key.as_string(),
+                row.last_touched_by,
+                until_ts.to_rfc3339(),
+                reason,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Parse a duration like `4h`, `90m`, `30s`, or `2d`. Numeric +
+/// single-letter unit. Used by `attention ack --ttl`.
+fn parse_duration(s: &str) -> anyhow::Result<chrono::Duration> {
+    let s = s.trim();
+    let (num, unit) = match s.char_indices().rev().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => s.split_at(i),
+        None => anyhow::bail!("duration {s:?} must end in a unit (s|m|h|d)"),
+    };
+    let n: i64 = num
+        .parse()
+        .map_err(|e| anyhow::anyhow!("duration {s:?}: bad number {num:?}: {e}"))?;
+    match unit {
+        "s" => Ok(chrono::Duration::seconds(n)),
+        "m" => Ok(chrono::Duration::minutes(n)),
+        "h" => Ok(chrono::Duration::hours(n)),
+        "d" => Ok(chrono::Duration::days(n)),
+        other => anyhow::bail!("duration {s:?}: unknown unit {other:?}; valid: s|m|h|d"),
     }
 }
 

@@ -121,11 +121,13 @@ What stands between the current state and a deployed loop. Listed by the slice t
 
 ---
 
-### Slice 3 — Operator disposition lifecycle *(the real next work)*
+### Slice 3 — Operator disposition lifecycle *(shipped 2026-05-27, incremental: ack + silence)*
 
 **Goal.** Night Shift becomes a lifecycle tool, not a clever report generator. The operator can act on a packet, and the action durably affects the next scheduled run.
 
-This is the slice where NS earns the "operator memory across runs" claim that the rest of the architecture already pretends is true.
+**Status read.** Shipped incremental scope. See [FEATURE-HISTORY § SLICE_3_ATTENTION_LIFECYCLE V1](../decisions/FEATURE-HISTORY.md#slice_3_attention_lifecycle-v1-ack--silence). `nightshift attention ack/silence` persists into a new SQLite table keyed on `(agenda, finding)`; the reconciler applies a read-time projection so the next scheduled run sees the operator's intent. Attention never raises authority; expiry bumps urgency one step; silence requires both `--until` and `--reason`; re-ack on prior attention requires `--disposition` per the frozen six-value enum.
+
+**Deferred to follow-ons** with explicit unlock criteria (see FEATURE-HISTORY): `investigate`, `handoff`, `request-revalidation`. Each is a smaller add (different `AttentionState` variant; no new TTL mechanism) and lands when a forcing case shows up.
 
 **Acceptance shape.**
 

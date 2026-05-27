@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use crate::agenda::Agenda;
+use crate::attention::{AttentionRow, PersistedAttentionState, ReAckDisposition};
 use crate::bundle::Bundle;
 use crate::errors::{NightShiftError, Result};
 use crate::finding::FindingKey;
@@ -83,6 +84,31 @@ CREATE TABLE IF NOT EXISTS tolerance_state (
     source              TEXT NOT NULL,
     detector            TEXT NOT NULL,
     subject             TEXT NOT NULL
+);
+
+-- Slice 3 (ack + silence): operator-attention rows. Keyed on
+-- (agenda_id, finding_key). Upsert on save_attention so the same
+-- operator running ack twice replaces rather than accumulates. Per
+-- GAP-attention-state.md, attention belongs to stable finding
+-- identity within an agenda's scope; cross-agenda silencing would
+-- conflate workflows and let one agenda mute another.
+CREATE TABLE IF NOT EXISTS attention_state (
+    agenda_id        TEXT NOT NULL,
+    finding_key      TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    acknowledged_at  TEXT,
+    ack_expires_at   TEXT,
+    silence_until    TEXT,
+    silence_reason   TEXT,
+    owner            TEXT,
+    note             TEXT,
+    disposition      TEXT,
+    last_touched_by  TEXT NOT NULL,
+    last_touched_at  TEXT NOT NULL,
+    source           TEXT NOT NULL,
+    detector         TEXT NOT NULL,
+    subject          TEXT NOT NULL,
+    PRIMARY KEY (agenda_id, finding_key)
 );
 
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
@@ -499,6 +525,144 @@ impl Store for SqliteStore {
             )
             .map_err(|e| store_err("delete tolerance_state", e))?;
             Ok(())
+        })
+    }
+
+    fn save_attention(&self, row: &AttentionRow) -> Result<()> {
+        let key_str = row.finding_key.as_string();
+        let acknowledged_at = row.acknowledged_at.map(|t| t.to_rfc3339());
+        let ack_expires_at = row.ack_expires_at.map(|t| t.to_rfc3339());
+        let silence_until = row.silence_until.map(|t| t.to_rfc3339());
+        let last_touched_at = row.last_touched_at.to_rfc3339();
+        let disposition = row.disposition.map(|d| d.as_str().to_string());
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO attention_state (
+                    agenda_id, finding_key, state,
+                    acknowledged_at, ack_expires_at,
+                    silence_until, silence_reason,
+                    owner, note, disposition,
+                    last_touched_by, last_touched_at,
+                    source, detector, subject
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    row.agenda_id,
+                    key_str,
+                    row.state.as_str(),
+                    acknowledged_at,
+                    ack_expires_at,
+                    silence_until,
+                    row.silence_reason,
+                    row.owner,
+                    row.note,
+                    disposition,
+                    row.last_touched_by,
+                    last_touched_at,
+                    row.finding_key.source,
+                    row.finding_key.detector,
+                    row.finding_key.subject,
+                ],
+            )
+            .map_err(|e| store_err("insert attention_state", e))?;
+            Ok(())
+        })
+    }
+
+    fn get_attention(
+        &self,
+        agenda_id: &str,
+        key: &FindingKey,
+    ) -> Result<Option<AttentionRow>> {
+        let key_str = key.as_string();
+        self.with_conn(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT state, acknowledged_at, ack_expires_at,
+                            silence_until, silence_reason,
+                            owner, note, disposition,
+                            last_touched_by, last_touched_at,
+                            source, detector, subject
+                     FROM attention_state
+                     WHERE agenda_id = ? AND finding_key = ?",
+                    params![agenda_id, key_str],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, Option<String>>(5)?,
+                            r.get::<_, Option<String>>(6)?,
+                            r.get::<_, Option<String>>(7)?,
+                            r.get::<_, String>(8)?,
+                            r.get::<_, String>(9)?,
+                            r.get::<_, String>(10)?,
+                            r.get::<_, String>(11)?,
+                            r.get::<_, String>(12)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| store_err("select attention_state", e))?;
+            match row {
+                None => Ok(None),
+                Some((
+                    state_s,
+                    ack_at_s,
+                    ack_exp_s,
+                    sil_until_s,
+                    sil_reason,
+                    owner,
+                    note,
+                    disp_s,
+                    touched_by,
+                    touched_at_s,
+                    source,
+                    detector,
+                    subject,
+                )) => {
+                    let state = PersistedAttentionState::parse_token(&state_s).ok_or_else(|| {
+                        NightShiftError::Store(format!("unknown attention state: {state_s}"))
+                    })?;
+                    let acknowledged_at = match ack_at_s {
+                        Some(s) => Some(parse_ts(&s)?),
+                        None => None,
+                    };
+                    let ack_expires_at = match ack_exp_s {
+                        Some(s) => Some(parse_ts(&s)?),
+                        None => None,
+                    };
+                    let silence_until = match sil_until_s {
+                        Some(s) => Some(parse_ts(&s)?),
+                        None => None,
+                    };
+                    let disposition = match disp_s {
+                        Some(s) => Some(ReAckDisposition::parse_token(&s).ok_or_else(|| {
+                            NightShiftError::Store(format!("unknown disposition: {s}"))
+                        })?),
+                        None => None,
+                    };
+                    Ok(Some(AttentionRow {
+                        agenda_id: agenda_id.to_string(),
+                        finding_key: FindingKey {
+                            source,
+                            detector,
+                            subject,
+                        },
+                        state,
+                        acknowledged_at,
+                        ack_expires_at,
+                        silence_until,
+                        silence_reason: sil_reason,
+                        owner,
+                        note,
+                        disposition,
+                        last_touched_by: touched_by,
+                        last_touched_at: parse_ts(&touched_at_s)?,
+                    }))
+                }
+            }
         })
     }
 

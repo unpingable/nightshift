@@ -553,7 +553,7 @@ pub fn reconcile_phase_with_horizon(
     };
 
     // 6. Build the packet from persisted bundle state — no live reads.
-    let packet = build_success_packet(
+    let mut packet = build_success_packet(
         &agenda,
         run_id,
         &target,
@@ -564,6 +564,28 @@ pub fn reconcile_phase_with_horizon(
         target_outcome.as_ref(),
         target_governor_receipts,
     )?;
+
+    // 6a. Slice 3 — operator-attention projection.
+    //
+    // Load any persisted operator-attention row for this
+    // (agenda, finding) and apply the read-time projection. Operator
+    // ack/silence overrides horizon-driven WatchUntil; expiry bumps
+    // urgency but leaves attention_state alone. Authority surfaces
+    // are never touched here (CLAUDE.md invariant: attention does
+    // not raise authority).
+    let prior_attention = store.get_attention(&agenda.agenda_id, &target)?;
+    let applied = crate::attention::project_attention(prior_attention.as_ref(), Utc::now());
+    if let Some(label) = crate::attention::apply_to_packet(&mut packet.attention, &applied) {
+        store.append_run_event(&new_event(
+            run_id,
+            RunLedgerEventKind::RunAttentionChanged,
+            serde_json::json!({
+                "applied": label,
+                "attention_state": format!("{:?}", packet.attention.attention_state),
+                "operational_urgency": format!("{:?}", packet.attention.operational_urgency),
+            }),
+        ))?;
+    }
 
     store.save_packet(run_id, &packet)?;
     store.append_run_event(&new_event(

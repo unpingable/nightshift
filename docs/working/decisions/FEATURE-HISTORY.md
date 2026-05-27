@@ -20,6 +20,47 @@ The chronological order below is newest-first.
 
 ---
 
+## SLICE_3_ATTENTION_LIFECYCLE V1 (ack + silence)
+
+**Status:** `shipped` 2026-05-27. Slice 3 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md) — **incremental scope**: ack + silence verbs land in v1. `investigate`, `handoff`, and `request-revalidation` are deferred to follow-ons with explicit unlock triggers (see below).
+
+**Shipped artifacts:**
+- `crates/nightshiftd/src/attention.rs` — `PersistedAttentionState::{Acknowledged, Silenced}`; `ReAckDisposition` (the frozen six-value enum from `architecture/GAP-reack-doctrine.md`); `AttentionRow::ack` / `AttentionRow::silence` constructors enforce the at-rest invariants (silence requires both `silence_until` and `silence_reason` at the type level); `project_attention` + `apply_to_packet` are the read-time projection.
+- `crates/nightshiftd/src/store.rs` + `store/sqlite.rs` — new `attention_state` SQLite table keyed on `(agenda_id, finding_key)`; `Store::save_attention` (upsert) + `Store::get_attention`.
+- `crates/nightshiftd/src/main.rs` — `nightshift attention --agenda <a> --finding <k> --operator <op> ack [--ttl 4h] [--note ...] [--disposition ...]` and `silence --until <rfc3339> --reason <text>`. Re-ack on an existing row requires `--disposition`; silence with empty `--reason` or past `--until` is rejected at parse time. `parse_duration` accepts `s|m|h|d` suffixes.
+- `crates/nightshiftd/src/pipeline.rs` — read-time projection injected between `build_success_packet` and `save_packet`. Loads `(agenda, target)` attention, projects against `Utc::now()`, mutates the packet's attention block, and emits a `RunAttentionChanged` ledger event whenever something was applied (acknowledged / silenced / expired).
+
+**Evidence:**
+- Unit tests in `crates/nightshiftd/src/attention.rs` (7): projection of None / Acknowledged-in-TTL / Acknowledged-expired / Silenced-in-window / Silenced-expired; `bump_urgency` step-and-cap; `ReAckDisposition` token round-trip.
+- Integration tests in `crates/nightshiftd/tests/attention_lifecycle.rs` (8):
+  - `ack_persists_into_next_reconcile_and_packet_shows_acknowledged` — operator ack via store, next reconcile reads it.
+  - `ack_with_elapsed_ttl_resurfaces_with_urgency_bumped` — projection's Expired branch bumps urgency exactly one step.
+  - `silence_applies_silenced_state_and_carries_reason` — silenced packet carries reason and `re_alert_after = silence_until`.
+  - `silence_does_not_hide_finding_from_runs_list` — silence is not handling (GAP-attention-state invariant).
+  - `attention_never_raises_authority_under_ack_or_silence` — `requested_authority_level` and `governor_verdict` unchanged vs baseline run, for both verbs.
+  - `attention_transitions_emit_run_attention_changed_event` — ledger event with `applied: "acknowledged"` payload.
+  - `ack_in_one_agenda_does_not_silence_another_agenda` — agenda-scope isolation (one agenda's ack does not project onto another's reconcile).
+  - `save_attention_upsert_replaces_prior` — upsert semantics on `(agenda_id, finding_key)`.
+- 243/243 tests green (228 prior + 7 attention unit + 8 attention integration = 243), 1 ignored. Clippy clean under `--all-targets -- -D warnings`.
+
+**Field notes:**
+- **Operator vs. horizon attention.** When the horizon path sets `AttentionState::WatchUntil`, an operator `ack` or `silence` overrides it. Rationale: operator intent has primacy over system-set watch windows. The horizon's `tolerance_basis_id` / `tolerance_basis_hash` fields are *not* cleared by the operator override, so the Governor receipt's lineage survives in the packet even when the operator's attention state takes the front.
+- **No on-expiry GC.** `Expired` projection does not delete the row. The next operator interaction is treated as a re-ack per `architecture/GAP-reack-doctrine.md` — `--disposition` is required. Per GAP-attention-state: "attention state is archived, not lost."
+- **Held packets do not consult attention.** Liveness-failed and preflight-held runs build their packets via `liveness_gate_failed` / `hold_for_preflight` and never reach `build_success_packet`. They do not apply operator attention; the next reconciled run picks it up. This matches the invariant that attention applies to a *finding*, not a *run*.
+- **Authority isolation.** `apply_to_packet` only mutates the `Attention` struct. The `ProposedAction.requested_authority_level` and `AuthorityResult` fields are left alone. A test explicitly compares against a no-attention baseline to guard this invariant.
+- **`as_str` / `parse_token` rather than `FromStr`.** Clippy refuses `from_str` on associated functions because the name collides with the `std::str::FromStr` trait. The methods are renamed to `parse_token` to make the intent unambiguous.
+
+**Unblocks:**
+- Slice 4 (closure-candidate predicate) — the attention machinery now exists for the predicate to refuse closure when attention is active.
+
+**Deferred (with unlock criteria):**
+- `investigate` verb — unlocks when a real ops session asks "who is on this." No new mechanism; just a new `PersistedAttentionState` variant.
+- `handoff` verb — unlocks when cross-operator handoff appears in real ops (or when GAP-parallel-ops moves forward and Continuity becomes load-bearing).
+- `request-revalidation` verb — unlocks when an operator wants to force-mark a finding for fresh evidence next cycle without changing its attention state.
+- Attention rendering in `runs show` — the projection is applied to the packet; `runs show` already surfaces the packet's attention block via Slice 2 work. A follow-up could also surface the persisted *row* directly (not just the projection's output on a specific run), but that needs a forcing case where the operator wants to see the row without running a reconcile.
+
+---
+
 ## SLICE_2_OPERATOR_VISIBILITY V1
 
 **Status:** `shipped` 2026-05-27. Slice 2 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md). The packet already carried the load (Slice C.1 posture, Slice B freshness, horizon WatchUntil tolerance_basis_id + re_alert_after, governor_receipts pipe-through). This slice surfaces those fields in the operator-facing `runs show` and corrects the held-status defect for liveness-gate failures.

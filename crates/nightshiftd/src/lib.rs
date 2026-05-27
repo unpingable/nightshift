@@ -5,6 +5,7 @@
 //! and the v1 field budget.
 
 pub mod agenda;
+pub mod attention;
 pub mod bundle;
 pub mod coordination;
 pub mod errors;

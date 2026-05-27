@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agenda::Agenda;
+use crate::attention::AttentionRow;
 use crate::bundle::Bundle;
 use crate::errors::Result;
 use crate::finding::FindingKey;
@@ -127,4 +128,17 @@ pub trait Store: Send + Sync {
     /// so the next run sees `None` and does not re-apply the stale
     /// grant.
     fn clear_tolerance(&self, key: &FindingKey) -> Result<()>;
+
+    /// Persist an operator-attention row. Upsert: writing under the
+    /// same `(agenda_id, finding_key)` replaces the prior row. Per
+    /// `GAP-attention-state.md`, attention is keyed on stable
+    /// finding identity within an agenda's scope.
+    fn save_attention(&self, row: &AttentionRow) -> Result<()>;
+
+    /// Load the persisted attention row for a finding, if any.
+    fn get_attention(
+        &self,
+        agenda_id: &str,
+        key: &FindingKey,
+    ) -> Result<Option<AttentionRow>>;
 }
