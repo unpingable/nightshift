@@ -127,11 +127,24 @@ claim_support_kind:
 
 This is **not the advisory's ask**. It is a starting point for the producer-vocabulary mapping and is recorded here so future readers of this doc see what was on the table at filing time. NQ owns whether this shape, a different shape, or no new shape is the right move. NS will read whatever NQ ships.
 
+**One known risk in this particular sketch:** the `target_state_observation` ↔ `consequence_observation` boundary can turn into theology if defined by object category rather than by claim-support. ("Database writable again" — is that target-state or consequence-state? Once a clipboard-bearing goblin shows up to adjudicate, the axis is wrong.) The discipline is to define the variants by *what claim they may support*, not by what kind of thing they observe. If two operators can disagree on which bucket a real finding goes in, the axis is operator-philosophy, not claim-support — and the predicate downstream will inherit the ambiguity.
+
 ## Recognition vs. refactor
 
 Per nq-claude's commitment on the receiving end: the first move on the producer side is recognition, not refactor. If the requested distinction is *already implicit* in NQ's existing surfaces (e.g., `witness_packet.witness_type`, `coverage[].witness`, the closed-enum patterns in slice-6 substrate audits, or the `cannot_testify` refusal kernel), the cleaner outcome is naming where it already lives and offering NS a producer-side framing to act on the existing shape — not adding a new field.
 
-This advisory does not prejudge whether NQ's response is "recognize" or "extend." Either outcome is valid; only refusing to engage with the seam would be a problem, and there is no sign of that.
+**Framing nudge for the recognition pass.** Before deciding whether to extend or recognize, NQ should answer the prior question:
+
+> Is claim-support orthogonal to NQ's existing axes (directness, freshness, witness-type) — or can one of those existing axes already answer *"what claim may this finding support?"*
+
+A reasonable suspicion from the consumer side: it is probably orthogonal. The `directness` axis (`direct / derived / temporal / aggregate`) describes *how a finding was produced*, not *what it may be claimed to support*. Those can come apart:
+
+- A proxy-observation can be `direct` (a dashboard widget firing on its own raw query is "direct" in production but "proxy" in claim-support — `direct` does not promote it to consequence-bearing).
+- A consequence-observation can be `derived` (a downstream-impact finding inferred from aggregated user-error logs is "derived" in production but "consequence" in claim-support).
+
+If `directness` (or any existing axis) can in fact answer the claim-support question for *every* finding NQ emits today, then the right outcome is recognition: name the field, NS reads it, no new wire shape. If it cannot, the right outcome is a new orthogonal axis. The advisory expects NQ to make that call; it does not prescribe the answer.
+
+This advisory does not prejudge whether NQ's response is "recognize" or "extend." Either outcome is valid; only refusing to engage with the seam — or collapsing claim-support into an existing axis that cannot actually carry the weight — would be a problem. There is no sign of either.
 
 ## Cross-references
 
