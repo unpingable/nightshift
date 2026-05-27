@@ -27,7 +27,11 @@ Each entry names:
 
 ## Gate 1: Incident-closure predicate
 
-**Status (2026-05-27): partially fired.** Slice 4 (`SLICE_4_CLOSURE_CANDIDATE V1` in FEATURE-HISTORY) implemented the *refusal* side: NS emits a `ClosureCandidate` verdict on every packet, refusing closure under six named blocker classes and emitting `UnassessableMissingChannelClassification` for IncidentShape findings without channel classification. The doctrine's full firing — distinguishing proxy-observation from consequence-bearing testimony — requires NQ-side claim-support classification that does not yet exist; until then, `EligibleForClosureReview` is unreachable. The seam is named in [`ADVISORY-nq-claim-support.md`](ADVISORY-nq-claim-support.md) (candidate; owner=nightshift, recipient=nq).
+**Status (2026-05-27): partially fired, with a layer-boundary correction.** Slice 4 (`SLICE_4_CLOSURE_CANDIDATE V1` in FEATURE-HISTORY) implemented the *refusal* side: NS emits a `ClosureCandidate` verdict on every packet, refusing closure under six named blocker classes and emitting `UnassessableMissingConsequenceWitness` for IncidentShape findings when nothing else blocks.
+
+The doctrine's full firing requires consequence-channel witness, which the [NQ advisory closeout](ADVISORY-nq-claim-support.md) clarified is **not** a NQ surface — NQ produces substrate-state testimony by design; consequence-witness (customer-impact, downstream-effect) sits at application-layer and above. `EligibleForClosureReview` is therefore unreachable on two parallel grounds: (a) NS owes a small substrate-side mapping over NQ's existing `cannot_testify + claim_kind + finding_kind`, and (b) a non-NQ consequence-witness source must enter NS's input set. The first is a small follow-on; the second is parked architectural work.
+
+The originally filed advisory ([`ADVISORY-nq-claim-support.md`](ADVISORY-nq-claim-support.md), closed 2026-05-27 via outcome 2) records both the misdiagnosis and the corrected framing.
 
 **Trigger.** NS implements incident-closure logic (today: NS surfaces evidence state and posture; it does not yet authorize *closure* of an incident).
 

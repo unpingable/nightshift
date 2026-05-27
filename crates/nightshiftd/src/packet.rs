@@ -242,7 +242,7 @@ pub struct Packet {
     /// `EligibleForClosureReview` unreachability invariant.
     ///
     /// `#[serde(default)]` so pre-Slice-4 stored packets deserialize
-    /// cleanly. Default is `UnassessableMissingChannelClassification`
+    /// cleanly. Default is `UnassessableMissingConsequenceWitness`
     /// — the conservative refusal that mirrors what a freshly
     /// assessed IncidentShape packet would return when no blocker
     /// fires.
@@ -251,5 +251,5 @@ pub struct Packet {
 }
 
 fn default_closure_candidate() -> crate::closure::ClosureCandidate {
-    crate::closure::ClosureCandidate::UnassessableMissingChannelClassification
+    crate::closure::ClosureCandidate::UnassessableMissingConsequenceWitness
 }

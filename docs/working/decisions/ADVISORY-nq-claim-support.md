@@ -1,6 +1,6 @@
 # ADVISORY: NQ claim-support classification
 
-> **Status:** candidate / non-binding cross-project advisory.
+> **Status:** **closed via outcome (2) — recognition** (2026-05-27). See §"Closeout 2026-05-27" at the bottom. The seam stays filed as the durable cross-project record; NS will encode the substrate-side mapping over `cannot_testify + claim_kind + finding_kind` as a follow-on. No NQ wire change.
 > **Owner:** nightshift (consumer; this repo).
 > **Recipient:** nq (producer; `~/git/nq`).
 > **Filed:** 2026-05-27, following Slice 4 close-out (`SLICE_4_CLOSURE_CANDIDATE V1` in [FEATURE-HISTORY](FEATURE-HISTORY.md#slice_4_closure_candidate-v1-partial-gate-1)).
@@ -164,3 +164,52 @@ One of:
 3. **NQ declines to act and the forcing conditions never fire.** The advisory stays in `working/decisions/` as a named seam; NS continues operating with `Unassessable` as the default. Retirement only if NQ explicitly closes the seam as not-going-to-build.
 
 Until one of those, this doc stays here. It is mutable until NQ engages; once NQ has read it, future amendments cite NQ's response.
+
+---
+
+## Closeout 2026-05-27 — outcome (2) with a layer-boundary refinement
+
+NQ engaged. The response sharpened the seam in a way that closes the advisory but also forces a small correction back on the NS side.
+
+### NQ's response (paraphrased; NQ-side record at `docs/working/gaps/NQ_CLAIM_SUPPORT_RECOGNITION.md`)
+
+> NQ findings are by design substrate-state observations. NQ does NOT produce "consequence-bearing testimony" or "downstream-effect" testimony — those are application-layer or above. If NS's predicate needs consequence-bearing testimony, NQ findings may not be the right input for that role at all. They can be substrate-state inputs that NS's assessment builds on top of, but the consequence-bearing claim sits one layer up.
+>
+> Practical answer if NS agrees: read `cannot_testify + claim_kind + finding_kind`; encode the mapping table on NS's side; no NQ wire change needed today.
+
+### NS's response
+
+**NS agrees with the disagreeable claim.** The advisory's original framing leaked across a layer boundary that the NQ side now makes visible:
+
+- NQ is a substrate-witness daemon. Its job is to testify about substrate state.
+- Gate 1's "consequence-channel witness (customer-impact, downstream-effect)" is application-layer or above. That is not NQ's lane and should not become NQ's lane — pushing NQ to mint consequence claims would turn it into a workflow-governance surface, not a witness daemon.
+- "Closure-eligibility requires distinguishing proxy-channel evidence from consequence-channel evidence" is true. But the consequence-channel half is a different layer's testimony, not a different shape of NQ finding.
+
+So the originally suspected blocker — "NQ needs to add channel classification on findings" — was a misdiagnosis. The real blockers are two distinct layers:
+
+| Layer | What NS needs | Available today? |
+|---|---|---|
+| Substrate-side claim-support | A local mapping over NQ's existing `cannot_testify + claim_kind + finding_kind` so NS can name what kind of substrate support a NQ finding provides | **Yes** — NQ already exposes these. NS owes the mapping. Small follow-on slice; not on the runtime ladder today but cheap when a forcing case fires. |
+| Consequence-side witness | A non-NQ evidence source carrying application/business-layer claims | **No** — no such source exists in NS's input set. Adding one is a larger architectural question (input-source contract, who produces it, how it's reconciled, how it interacts with the existing Slice 5 contract). Not on the runtime ladder; parked. |
+
+### What changes on the NS side
+
+1. **Closure-candidate variant renamed.** `ClosureCandidate::UnassessableMissingChannelClassification` is renamed to `UnassessableMissingConsequenceWitness`. Render label updated to `"unassessable (missing consequence-witness)"`. The old name encoded a falsified theory ("NQ needs a field"); the new name names what's actually missing (consequence-witness from a non-NQ source). Backward-compat preserved via `#[serde(alias = "unassessable_missing_channel_classification")]` so any Slice-4-era stored packets still deserialize.
+2. **FEATURE-HISTORY § SLICE_4 "Deferred"** refined: the two parallel unlocks (substrate-side mapping; consequence-witness source) are named explicitly, with the consequence-witness unlock parked as the larger architectural question.
+3. **Gate 1 annotation in `pre-positioned-doctrine-gates.md`** updated: the "still missing" piece is consequence-witness from a non-NQ source, not NQ wire shape.
+
+### What does NOT change
+
+- NQ wire shape. `EligibleForClosureReview` stays unreachable; the variant remains in the enum as the honest design-space anchor.
+- AG involvement. Still two rungs out (NQ → NS → Wicket → AG), still not in this room.
+- The advisory's filed posture. Mutable for amendments citing further cross-project conversation, but the question this advisory asked is answered.
+
+### Why this is outcome (2) and not (1) or (3)
+
+- **Not (1)** — NQ does not ratify shipping a new wire shape. None is needed today.
+- **Outcome (2) holds** because the distinction NS wanted is *partially* implicit in existing NQ fields (`cannot_testify + claim_kind + finding_kind`) — specifically the substrate-side half. The consequence-witness half was a different question that NQ correctly refused to absorb into its surface.
+- **Not (3)** because NQ engaged. The forcing conditions stay live as future triggers if the cross-project picture shifts.
+
+### Tripwire for re-opening this advisory
+
+If, in future cross-project work, a non-NQ consequence-witness source becomes real (incident-tracking import, customer-impact telemetry, business-layer dashboard adapter, etc.), the `EligibleForClosureReview` path becomes reachable and `closure::assess` will need a new input. That is a *new* advisory, not a re-opening of this one — the producer/consumer edge will be different (NS ↔ new-source, not NS ↔ NQ).

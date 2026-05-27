@@ -12,20 +12,24 @@
 //!
 //! - **closure candidate ≠ closure authorization.** The predicate is
 //!   enforceable refusal; it does not authorize anything.
-//! - **Missing channel classification blocks eligibility rather than
-//!   disappearing from the model.** When NS cannot distinguish
-//!   proxy-channel from consequence-channel evidence on an
-//!   `IncidentShape` finding, the verdict is
-//!   `UnassessableMissingChannelClassification` — *not* eligible,
-//!   not silently dropped from the predicate.
+//! - **Missing consequence-witness blocks eligibility rather than
+//!   disappearing from the model.** When NS cannot point to
+//!   consequence-bearing testimony for an `IncidentShape` finding,
+//!   the verdict is `UnassessableMissingConsequenceWitness` —
+//!   *not* eligible, not silently dropped from the predicate.
 //!
 //! `EligibleForClosureReview` is defined in the enum but unreachable
-//! under v1 conditions. Reaching it requires NQ to expose a wire
-//! shape that distinguishes proxy-channel from consequence-channel
-//! findings; until then, every `IncidentShape` finding lacks that
-//! channel classification and falls through to `Unassessable`. The
-//! variant exists to keep the shape of the design space honest:
-//! "we might eventually approve review" is named, not unspoken.
+//! under v1 conditions. Per the NQ advisory closeout
+//! (`ADVISORY-nq-claim-support.md`, outcome 2), the originally
+//! suspected blocker — "NQ needs to add a channel-classification
+//! field" — was a misdiagnosis. NQ findings are substrate-state
+//! testimony by design; consequence-witness (customer-impact,
+//! downstream-effect) lives at application/business layer, not
+//! substrate. Reaching `EligibleForClosureReview` therefore
+//! requires a non-NQ consequence-witness source to enter NS's
+//! input set, which has no roadmap slot today. The variant exists
+//! to keep the shape of the design space honest: "we might
+//! eventually approve review" is named, not unspoken.
 //!
 //! No case emits a positive `eligible_for_closure` — there is no
 //! such variant. "Review has a way of becoming approved in a trench
@@ -78,21 +82,32 @@ pub enum NotEligibleReason {
 pub enum ClosureCandidate {
     /// The predicate refuses closure for a named reason.
     NotEligible { reason: NotEligibleReason },
-    /// The finding is `IncidentShape` (or `Unknown`) and no blocker
-    /// fired, but NQ's wire shape does not yet distinguish
-    /// proxy-channel from consequence-channel findings. Closure
-    /// cannot be assessed; refusal is conservative.
+    /// The finding is `IncidentShape` (or `Unknown`) and no
+    /// substrate-side blocker fired, but no consequence-witness is
+    /// available to NS's input set. Closure cannot be assessed;
+    /// refusal is conservative.
     ///
-    /// Unblocks when NQ adds channel classification. See
-    /// FEATURE-HISTORY § `SLICE_4_CLOSURE_CANDIDATE V1` for the
-    /// deferred-trigger spec.
-    UnassessableMissingChannelClassification,
-    /// All known blockers are absent AND the finding's channel
-    /// classification names a consequence-channel witness. **Not
-    /// emitted in v1**: NQ has no channel-classification wire shape
-    /// yet, so every IncidentShape finding falls through to
-    /// `Unassessable`. The variant exists to keep the enum honest
-    /// about the eventual approval path.
+    /// Unblocks when a non-NQ consequence-witness source enters NS's
+    /// input set — *not* a NQ wire-shape addition. NQ produces
+    /// substrate-state testimony by design (customer-impact /
+    /// downstream-effect is application-layer, not substrate). See
+    /// `ADVISORY-nq-claim-support.md` for the cross-project
+    /// closeout and FEATURE-HISTORY § `SLICE_4_CLOSURE_CANDIDATE V1`
+    /// for the unlock condition.
+    ///
+    /// `#[serde(alias = ...)]` preserves backward-compat for any
+    /// Slice-4-era stored packets that serialized the variant
+    /// under its original (misdiagnosed) name.
+    #[serde(alias = "unassessable_missing_channel_classification")]
+    UnassessableMissingConsequenceWitness,
+    /// All known blockers are absent AND a consequence-witness
+    /// names the substrate as recovered at the consequence layer
+    /// (customer-impact / downstream-effect cleared). **Not
+    /// emitted in v1**: no consequence-witness source exists in
+    /// NS's input set, so every IncidentShape finding falls
+    /// through to `UnassessableMissingConsequenceWitness`. The
+    /// variant exists to keep the enum honest about the eventual
+    /// approval path.
     EligibleForClosureReview,
 }
 
@@ -117,13 +132,14 @@ pub enum RunOutcome {
 /// 4. `StaleBasis` — Slice 5 Stale, Slice B freshness, etc.
 /// 5. `OperatorAttentionActive` — Slice 3 ack/silence in force
 /// 6. `ProxyQuiet` — Slice C.1 SilenceShape
-/// 7. Otherwise: `UnassessableMissingChannelClassification`
+/// 7. Otherwise: `UnassessableMissingConsequenceWitness`
 ///
 /// Note that `EligibleForClosureReview` is never returned by this
-/// function in v1. To reach it, NQ would need to expose channel
-/// classification AND the finding would need to be marked as a
-/// consequence-channel witness. Neither condition is satisfiable
-/// today.
+/// function in v1. To reach it, NS would need a non-NQ
+/// consequence-witness source in its input set — NQ findings are
+/// substrate-state testimony by design and do not carry
+/// consequence-channel evidence. See `ADVISORY-nq-claim-support.md`
+/// for the cross-project closeout.
 pub fn assess(
     posture_class: PostureClass,
     attention_state: AttentionState,
@@ -186,7 +202,7 @@ pub fn assess(
 
     // 7: default — IncidentShape or Unknown without channel
     // classification. Conservative refusal, not silent eligibility.
-    UnassessableMissingChannelClassification
+    UnassessableMissingConsequenceWitness
 }
 
 impl ClosureCandidate {
@@ -197,8 +213,8 @@ impl ClosureCandidate {
             ClosureCandidate::NotEligible { reason } => {
                 format!("not_eligible({})", reason_str(*reason))
             }
-            ClosureCandidate::UnassessableMissingChannelClassification => {
-                "unassessable (missing channel classification)".into()
+            ClosureCandidate::UnassessableMissingConsequenceWitness => {
+                "unassessable (missing consequence-witness)".into()
             }
             ClosureCandidate::EligibleForClosureReview => {
                 "eligible_for_closure_review".into()
@@ -356,7 +372,7 @@ mod tests {
             EvidenceState::Active,
             reconciled(InputStatus::Committed),
         );
-        assert_eq!(v, ClosureCandidate::UnassessableMissingChannelClassification);
+        assert_eq!(v, ClosureCandidate::UnassessableMissingConsequenceWitness);
     }
 
     #[test]
@@ -369,7 +385,7 @@ mod tests {
             EvidenceState::Active,
             reconciled(InputStatus::Committed),
         );
-        assert_eq!(v, ClosureCandidate::UnassessableMissingChannelClassification);
+        assert_eq!(v, ClosureCandidate::UnassessableMissingConsequenceWitness);
         assert_ne!(v, ClosureCandidate::EligibleForClosureReview);
     }
 
@@ -381,7 +397,7 @@ mod tests {
             EvidenceState::Active,
             reconciled(InputStatus::Committed),
         );
-        assert_eq!(v, ClosureCandidate::UnassessableMissingChannelClassification);
+        assert_eq!(v, ClosureCandidate::UnassessableMissingConsequenceWitness);
     }
 
     /// Load-bearing invariant: NO combination of v1 inputs can
@@ -447,8 +463,8 @@ mod tests {
             "not_eligible(proxy_quiet)"
         );
         assert_eq!(
-            ClosureCandidate::UnassessableMissingChannelClassification.render_label(),
-            "unassessable (missing channel classification)"
+            ClosureCandidate::UnassessableMissingConsequenceWitness.render_label(),
+            "unassessable (missing consequence-witness)"
         );
     }
 }

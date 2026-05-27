@@ -580,7 +580,7 @@ mod tests {
                 "governor_receipts": ["receipt_abc123"]
             },
             "closure_candidate": {
-                "kind": "unassessable_missing_channel_classification"
+                "kind": "unassessable_missing_consequence_witness"
             }
         });
         let pkt: Packet = serde_json::from_value(pkt_json).expect("test packet must deserialize");

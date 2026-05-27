@@ -170,7 +170,11 @@ What stands between the current state and a deployed loop. Listed by the slice t
 
 **Status read.** Shipped. See [FEATURE-HISTORY § SLICE_4_CLOSURE_CANDIDATE V1](../decisions/FEATURE-HISTORY.md#slice_4_closure_candidate-v1-partial-gate-1). The predicate emits one of: `NotEligible(reason)` for six refusal classes, `UnassessableMissingChannelClassification` (the conservative default for IncidentShape findings until NQ adds channel classification), or `EligibleForClosureReview` (defined in the enum but unreachable in v1 — pinned by a combinatorial sweep test).
 
-**Per the ChatGPT-tuned framing** the missing-channel case is a *visible refusal*, not a deferred feature. A healthy-looking IncidentShape finding does not silently round up to eligible — it rounds to Unassessable, the name we use for the gap. Until NQ exposes proxy-channel vs. consequence-channel classification, the eligible path stays unreachable.
+**Per the ChatGPT-tuned framing** the missing-witness case is a *visible refusal*, not a deferred feature. A healthy-looking IncidentShape finding does not silently round up to eligible — it rounds to `UnassessableMissingConsequenceWitness`, the name we use for the gap.
+
+**Closeout note (2026-05-27):** The cross-project advisory filed on this slice ([`ADVISORY-nq-claim-support.md`](../decisions/ADVISORY-nq-claim-support.md)) closed via outcome (2) with a layer-boundary correction — the originally suspected blocker ("NQ needs to ship a channel-classification field") was a misdiagnosis. NQ produces substrate-state testimony by design; consequence-witness lives at application-layer. The `EligibleForClosureReview` path requires two parallel unlocks: a small NS-side mapping over NQ's existing `cannot_testify + claim_kind + finding_kind` (follow-on slice, not on the ladder today), and a non-NQ consequence-witness source in NS's input set (parked architectural question). See FEATURE-HISTORY § SLICE_4 "Deferred — two parallel unlocks" for the corrected model.
+
+**Small follow-on (not slotted):** The substrate-side mapping over `cannot_testify + claim_kind + finding_kind` is the natural next refinement on this axis — it would let NS distinguish substrate-recoverable from substrate-not-clear without a new NQ wire shape. Cheap. Lands when a forcing case requests it; until then, the existing refusal classes (Stale / Invalidated / ProxyQuiet) carry the substrate-blocker weight.
 
 **Acceptance shape.**
 

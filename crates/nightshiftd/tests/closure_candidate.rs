@@ -11,8 +11,8 @@
 //! 3. Liveness/freshness failure → not_eligible(liveness_gate_failed)
 //! 4. InputStatus::Invalidated → not_eligible(invalidated_basis)
 //! 5. Active operator attention → not_eligible(operator_attention_active)
-//! 6. IncidentShape without channel classification →
-//!    unassessable_missing_channel_classification
+//! 6. IncidentShape without consequence-witness →
+//!    unassessable_missing_consequence_witness
 //! 7. **No case emits `EligibleForClosureReview`** — invariant
 //!    sweep already lives in `src/closure.rs::tests`; this file
 //!    confirms the pipeline-level path never produces it either.
@@ -364,7 +364,7 @@ fn incident_shape_with_no_blockers_yields_unassessable() {
 
     assert_eq!(
         pkt.closure_candidate,
-        ClosureCandidate::UnassessableMissingChannelClassification,
+        ClosureCandidate::UnassessableMissingConsequenceWitness,
         "IncidentShape with no blockers must be Unassessable, not Eligible"
     );
 }
