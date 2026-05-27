@@ -57,9 +57,11 @@ The chronological order below is newest-first.
 
 **Deferred — NQ-side prerequisite for the full Gate 1:**
 
-To make `EligibleForClosureReview` reachable, NQ must expose a wire-shape distinction between **proxy-channel** findings (dashboard-only normalization signals, "the alert is quiet") and **consequence-channel** findings (substrate witnesses, "customer impact / downstream effect"). The closure predicate would then add a final check: "all blockers absent AND finding is consequence-channel" → eligible; "all blockers absent AND finding is proxy-channel OR channel-unknown" → unassessable (conservative refusal).
+To make `EligibleForClosureReview` reachable, NQ needs to expose enough producer-side claim-support classification on findings for NS to distinguish proxy-observation testimony from consequence-bearing testimony. The closure predicate would then add a final check: "all blockers absent AND finding testifies to consequence-shape" → eligible; "all blockers absent AND testimony shape unknown or proxy-only" → unassessable (conservative refusal stays).
 
-Until that NQ-side classification lands, every IncidentShape finding is `Unassessable`. The NS side is *complete* as a refusal surface; the missing piece is upstream evidence shape, not NS implementation. Cross-project advisory should be filed at the NQ side when this slice ships.
+Until NQ acts, every IncidentShape finding is `Unassessable`. The NS side is *complete* as a refusal surface; the missing piece is upstream testimony shape, not NS implementation.
+
+**Cross-project advisory filed:** [`ADVISORY-nq-claim-support.md`](ADVISORY-nq-claim-support.md), candidate / non-binding, owner=nightshift, recipient=nq. Names the seam in both vocabularies (NS's "proxy- vs. consequence-channel"; NQ's "what claim does this finding support"), pins three load-bearing invariants (`proxy quiet ≠ consequence resolved`, `ack ≠ resolution`, `green liveness ≠ closure evidence`), and lists forcing conditions for NQ to act. **Critically: NS does not ask NQ to mint closure eligibility** — that would push NQ into workflow governance. NS owns the predicate; NQ testifies.
 
 **Unblocks:**
 - Nothing in NS itself — Slice 4 is the terminal Gate-1 work NS can do without NQ moving.

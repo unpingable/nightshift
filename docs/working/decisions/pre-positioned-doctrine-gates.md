@@ -27,7 +27,7 @@ Each entry names:
 
 ## Gate 1: Incident-closure predicate
 
-**Status (2026-05-27): partially fired.** Slice 4 (`SLICE_4_CLOSURE_CANDIDATE V1` in FEATURE-HISTORY) implemented the *refusal* side: NS emits a `ClosureCandidate` verdict on every packet, refusing closure under six named blocker classes and emitting `UnassessableMissingChannelClassification` for IncidentShape findings without channel classification. The doctrine's full firing — distinguishing proxy-channel from consequence-channel evidence — requires an NQ-side wire shape that does not yet exist; until then, `EligibleForClosureReview` is unreachable. See FEATURE-HISTORY § SLICE_4 "Deferred — NQ-side prerequisite for the full Gate 1."
+**Status (2026-05-27): partially fired.** Slice 4 (`SLICE_4_CLOSURE_CANDIDATE V1` in FEATURE-HISTORY) implemented the *refusal* side: NS emits a `ClosureCandidate` verdict on every packet, refusing closure under six named blocker classes and emitting `UnassessableMissingChannelClassification` for IncidentShape findings without channel classification. The doctrine's full firing — distinguishing proxy-observation from consequence-bearing testimony — requires NQ-side claim-support classification that does not yet exist; until then, `EligibleForClosureReview` is unreachable. The seam is named in [`ADVISORY-nq-claim-support.md`](ADVISORY-nq-claim-support.md) (candidate; owner=nightshift, recipient=nq).
 
 **Trigger.** NS implements incident-closure logic (today: NS surfaces evidence state and posture; it does not yet authorize *closure* of an incident).
 
