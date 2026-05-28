@@ -1,0 +1,40 @@
+[Unit]
+Description=Night Shift watchbill — local sushi-k dogfood pilot (user-level)
+Documentation=https://github.com/anthropics/scheduler/blob/main/docs/working/decisions/MILESTONE-2026-05-28-first-live-dogfood.md
+After=nq-serve.service network.target
+Wants=nq-serve.service
+
+[Service]
+Type=oneshot
+
+# nq binary needs to be on PATH because nightshift shells out to
+# `nq findings export`. Default PATH for user-level systemd is
+# minimal; prepend the notquery release dir explicitly.
+Environment=PATH=/home/jbeck/git/notquery/target/release:/usr/local/bin:/usr/bin:/bin
+
+# Local sushi-k dogfood: --no-governor (advise ceiling per CLAUDE.md
+# invariant 8), local nq db, durable store under $HOME, --trigger
+# scheduled to activate idempotency.
+#
+# Build the release binary before enabling the timer:
+#   cd ~/git/scheduler && cargo build --release
+ExecStart=/home/jbeck/git/scheduler/target/release/nightshift \
+    --no-governor \
+    --store /home/jbeck/nightshift/local.sqlite \
+    --nq-db /home/jbeck/nq/nq.db \
+    watchbill run \
+    --trigger scheduled \
+    --finding nq:disk_pressure:sushi-k: \
+    /home/jbeck/git/scheduler/deploy/agendas/sushi-k-disk-pressure.yaml
+
+# Stdout is the operator-facing surface (packet YAML or
+# `scheduled-skip: ...` line). Journald captures it; review via:
+#   journalctl --user -u nightshift-watchbill -n 50
+#   nightshift --store ~/nightshift/local.sqlite runs list
+StandardOutput=journal
+StandardError=journal
+
+# Bounded wall time — local sushi-k peek + reconcile is sub-second
+# under normal conditions. If it ever takes longer, surface as a
+# timeout rather than letting timer firings overlap.
+TimeoutStartSec=120s
