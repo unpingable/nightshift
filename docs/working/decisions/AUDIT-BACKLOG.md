@@ -244,3 +244,119 @@ already carries the keeper at a narrower boundary, identified
 three NS-specific extensions worth preserving for the eventual
 local manifestation, and recommended breadcrumb-over-GAP per
 grep-before-governance discipline.
+
+**Adjacent cross-constellation artifacts (2026-05-28 update).**
+
+- `~/git/cartography/coordination/NQ-NS-CHANNEL-SPLIT.md` — bilateral
+  planning spike (NS-Claude origin); names channel categories,
+  forbidden-cycle line, canonical absence taxonomy adoption,
+  composition rule, subscription action-class.
+- `~/git/cartography/coordination/SELF-SUBJECT-COLLAPSE.md` — shared
+  cross-component gap; three forcing instances (NS, NQ-on-NQ,
+  `GOV_GAP_BASIS_001` family). Adjacent to the remote-standing
+  breadcrumb because the external-reconciler architectural answer
+  (when it arrives) will need standing semantics to bind operators
+  or peer components as reconcilers — composing with the
+  Standing-tool-shaped resolvers the cross-constellation
+  remote-standing doctrine anticipates.
+- `docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md` — NS-side gap
+  filed against the bilateral spike. Names NS's commitments on five
+  asks; symmetric to NQ's `NQ_NS_CHANNEL_SPLIT_NQ_SIDE.md`.
+
+---
+
+## Self-subject-collapse: NS forbidden-cycle structural-absence audit owed
+
+**Filed:** 2026-05-28
+**Status:** audit-owed; local-manifestation GAP filed
+(`docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md`); structural-
+absence sentinel test not yet written.
+
+**Question.** Does NS code today contain any path — packet field,
+ledger event kind, attention enum variant, MCP call, Governor RPC,
+Continuity breadcrumb, or operator CLI output — that *could*
+forward NS posture / closure verdict / `SilenceShape` into a
+NQ-readable substrate-truth path?
+
+**Keeper:**
+
+> The cycle-closing channel does not exist — structurally, not by
+> guard.
+
+The bilateral spike and NS-side GAP commit NS to *structural*
+absence of the forbidden cycle (`NS posture / closure verdict → NQ
+truth`). The NS-side GAP's "Forbidden cycle" section claims the
+absence holds across all four current NS outbound surfaces
+(Governor RPC, Continuity MCP, operator CLI, NS-internal SQLite).
+This audit converts the narrative claim into a code-level
+verification.
+
+**Cross-references (shared / cross-component artifacts).**
+
+- `~/git/cartography/coordination/SELF-SUBJECT-COLLAPSE.md`
+  (2026-05-28, NQ-Claude origin) — shared gap; three forcing
+  instances. The architectural answer for *who* the external
+  reconciler is awaits operator decision (option a, b, or c).
+- `~/git/cartography/coordination/NQ-NS-CHANNEL-SPLIT.md`
+  (2026-05-28, NS-Claude origin) — bilateral spike with the
+  radioactive forbidden-cycle line and the keeper *"health is a
+  subject, not an axis."*
+- `~/git/notquery/docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NQ_SIDE.md`
+  (2026-05-28) — NQ's symmetric forbidden-cycle commitment from
+  the substrate-truth-ingestion side.
+- `~/git/notquery/docs/working/gaps/WITNESS_IDENTITY_AND_ABSENCE_GAP.md`
+  §2 — canonical absence taxonomy. NS adopts the six PascalCase
+  states (with `SourceRefused` MAY-split); NS does not coin local
+  synonyms.
+
+**Promotion condition.**
+
+This entry closes when:
+
+1. A structural-absence sentinel test ships as part of the first-
+   slice work (per NS-side GAP acceptance criterion 3). The test
+   should be of the Slice 5
+   `b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`
+   shape: pinning that updating the test deliberately is the signal
+   that NS forbidden-cycle doctrine has moved.
+2. Or — if first-slice work is deferred past a forcing case for
+   the audit (a PR that proposes adding an outbound NS→NQ emit, a
+   new packet field that could carry posture-as-truth, etc.) — the
+   audit runs without the sentinel test and the entry is either
+   converted to a sibling GAP or held closed with explicit findings.
+
+**Cross-references inside this repo.**
+
+- `docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md` § *Forbidden
+  cycle — NS-side enforcement posture* — names the four outbound
+  surfaces and the structural absence claim this audit verifies.
+- `docs/working/decisions/FEATURE-HISTORY.md` § SLICE_5_CONTRACT V1
+  — the sentinel-test discipline this audit's eventual test would
+  follow.
+- `docs/working/gaps/GAP-mcp-authority.md` — the action-class
+  taxonomy that constrains what MCP calls can carry; relevant to
+  the audit's coverage of the MCP outbound surface.
+
+**Not in scope by this entry.**
+
+- The first-slice implementation itself (NS-side GAP territory).
+- The external-reconciler architectural answer (lives in
+  `SELF-SUBJECT-COLLAPSE.md` awaiting operator decision).
+- Any NS code change to introduce a forbidden-cycle path even
+  temporarily — the audit is read-only / sentinel-test-only.
+- Refactoring the `runs show` rendering or packet composition (the
+  composition rule audit is a separate question; this audit covers
+  emit, not render).
+
+**Witness.**
+
+The forbidden-cycle line is the only back-edge in the channel
+table; every other channel is a forward DAG edge. Once the back-
+edge closes, *"NS asserts SilenceShape"* → *"NQ substrate-truth:
+silence"* → input to NS's next posture, which is the ouroboros the
+bilateral spike exists to refuse. NS-side commitment is structural
+absence; this audit verifies the commitment holds at the code
+level. Until the sentinel test ships, the absence is a prose claim
+made in `NQ_NS_CHANNEL_SPLIT_NS_SIDE.md`, not a code-level
+guarantee. The audit-owed flag waits for the test to ship before
+promotion.
