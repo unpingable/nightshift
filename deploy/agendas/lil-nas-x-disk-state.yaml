@@ -1,0 +1,69 @@
+# A.5 cross-LAN agenda: lil-nas-x degraded-storage receipt.
+#
+# Target: the disk_state umbrella claim for lil-nas-x, with finding
+# key surfaced through NQ's zfs_pool_degraded detector (the most
+# specific live finding for this host's `tank` pool). The actual
+# preflight receipt covers the whole `host:lil-nas-x` subject; the
+# finding key here is what NS uses to thread the disk_state receipt
+# through the existing watchbill pipeline.
+#
+# Demo invocation (one-shot SCP-and-run per
+# ~/git/cartography/audit/2026-05-28-path-a5-plan.md):
+#
+#   # Step 1: lil-nas-x produces a fresh receipt (over LAN SSH).
+#   # Step 2: receipt arrives at sushi-k via SCP / stdout capture.
+#   # Step 3: sushi-k verifies the receipt unchanged.
+#   # Step 4: NS watchbill run --nq-receipt <path> ...
+#
+# When the NQ receipt's status is `not_verified` (current live state
+# 2026-05-28: zfs_pool_degraded + smart_status_lies +
+# smart_uncorrected_errors_nonzero), NS refuses to cook a Wicket
+# Intent at the admissibility-evaluation step in `mvp_a.rs` and emits
+# a refusal artifact instead. No Wicket / WLP artifacts are produced.
+# That is the correct outcome — the chain refused honestly rather
+# than laundering `not_verified` into a Wicket Intent v0.3
+# `Evidence.status` value the closed enum cannot represent.
+
+agenda_version: 0
+agenda_id: lil-nas-x-disk-state
+workflow_family: ops
+owner: operator@local
+cadence:
+  kind: scheduled
+  expr: "*/5 * * * *"
+scope:
+  hosts:
+    - lil-nas-x
+  services: []
+  paths: []
+  repos: []
+artifact_target: packet
+promotion_ceiling: advise
+reconciler:
+  required: true
+  invalidates_if:
+    - finding_absent_for_n_generations:1
+    - host_unreachable
+allowed_evidence_sources:
+  - nq
+  - continuity
+allowed_tool_classes:
+  - discover
+  - read
+  - propose
+budget:
+  max_wall_seconds: 600
+  max_tokens: 100000
+  max_mcp_calls: 50
+governor_binding:
+  required_above: observe
+  policy_id: nightshift.ops.propose_only
+criticality:
+  class: standard
+  re_alert_after: 4h
+  silence_max_duration: 72h
+  ack_due_by: 24h
+  handoff_required: false
+  business_hours_okay: true
+diagnosis:
+  mode: self_check

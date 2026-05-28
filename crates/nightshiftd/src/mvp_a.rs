@@ -84,6 +84,14 @@ pub struct NqReceiptRef {
     pub claim: String,
     pub subject: String,
     pub status: String,
+    /// NQ's enumeration of *why* the receipt's status is what it is.
+    /// For `status = verified`, typically `["all_requirements_verified"]`.
+    /// For `status = not_verified`, may be `["contradictory_observation"]`,
+    /// `["insufficient_evidence"]`, etc. Forward-compat: NS reads the
+    /// strings as-is; doesn't enumerate them. Slice A.5 propagates
+    /// these into the refusal artifact when admissibility fails.
+    #[serde(default)]
+    pub status_reasons: Vec<String>,
     pub witnesses: Vec<NqWitnessRef>,
     pub observed_at_min: DateTime<Utc>,
     pub observed_at_max: DateTime<Utc>,
@@ -163,6 +171,45 @@ struct PosturePacketSink {
     /// anchor (host:sushi-k filesystem state) pinned alongside the
     /// content hash for grep-friendliness.
     nq_subject: String,
+}
+
+/// Outcome of `run_pipeline`. Either:
+/// - **Cooked** — admissibility check passed; Wicket Intent was
+///   cooked and the full five-artifact chain emitted.
+/// - **Refused** — admissibility check failed; NS refused to cook
+///   the Intent and emitted a refusal artifact at the known sink.
+///   No Wicket / WLP artifacts are produced in this case.
+///
+/// A.5 introduced this split. Before A.5, the pipeline assumed every
+/// NQ receipt was `verified`; an honest representation of
+/// `not_verified` against Wicket Intent v0.3's closed
+/// `Evidence.status` enum (`valid | stale | unavailable`) was not
+/// reachable, so NS refuses rather than hard-coding `valid` and
+/// laundering the contradiction.
+///
+/// The enum is intentionally two-variant only — `Cooked` and
+/// `Refused` exhaust the operator-meaningful outcomes for v1. Adding
+/// more variants would re-introduce ambiguity at the cook boundary.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum MvpAResult {
+    Cooked(MvpAOutcome),
+    Refused(MvpARefusal),
+}
+
+/// Refusal record returned when NS will not cook a Wicket Intent.
+///
+/// The disk artifact at `refusal_artifact_path` carries additional
+/// fields (status_reasons, cannot_testify, timestamps, agenda/finding/
+/// run identifiers); this in-memory shape is the minimum the caller
+/// needs to report the refusal honestly without re-reading the file.
+#[derive(Debug, Clone, Serialize)]
+pub struct MvpARefusal {
+    pub refusal_artifact_path: PathBuf,
+    pub reason_code: String,
+    pub nq_content_hash: String,
+    pub nq_subject: String,
+    pub nq_status: String,
 }
 
 /// MVP-A pipeline output: the five artifacts plus the canonical
@@ -446,7 +493,12 @@ pub fn write_canonical_json<P: AsRef<Path>, T: Serialize>(path: P, value: &T) ->
     Ok(())
 }
 
-/// Resolved sink paths for the five MVP-A artifacts in `out_dir`.
+/// Resolved sink paths for MVP-A artifacts in `out_dir`.
+///
+/// The posture sink and the refusal sink are emitted on both the
+/// Cooked and Refused paths; the four Wicket/WLP sinks are emitted
+/// only on the Cooked path. The refusal sink is empty on the Cooked
+/// path (file is never written there).
 #[derive(Debug, Clone)]
 pub struct SinkPaths {
     pub posture: PathBuf,
@@ -454,9 +506,12 @@ pub struct SinkPaths {
     pub wicket_outcome: PathBuf,
     pub wlp_authorization: PathBuf,
     pub wlp_handling: PathBuf,
+    /// A.5 refusal artifact. Written only when `evaluate_basis_admissibility`
+    /// returns `Some(reason_code)`.
+    pub refusal: PathBuf,
 }
 
-/// Compute sink paths for the five artifacts in `out_dir`.
+/// Compute sink paths for the MVP-A artifacts in `out_dir`.
 pub fn sink_paths(out_dir: &Path, run_id: &str) -> SinkPaths {
     SinkPaths {
         posture: out_dir.join(format!("ns-posture-{run_id}.json")),
@@ -464,7 +519,82 @@ pub fn sink_paths(out_dir: &Path, run_id: &str) -> SinkPaths {
         wicket_outcome: out_dir.join(format!("ns-wicket-outcome-{run_id}.json")),
         wlp_authorization: out_dir.join(format!("ns-wlp-authorization-{run_id}.json")),
         wlp_handling: out_dir.join(format!("ns-wlp-handling-{run_id}.json")),
+        refusal: out_dir.join(format!("ns-refusal-{run_id}.json")),
     }
+}
+
+/// A.5 admissibility check: can NS honestly represent this NQ
+/// receipt as a Wicket Intent basis?
+///
+/// Returns `None` when the receipt status is `verified` (admissible
+/// — proceed to cook). Returns `Some(reason_code)` otherwise; NS
+/// will refuse to cook and emit a refusal artifact.
+///
+/// Why this is a hard refusal rather than a soft downgrade: Wicket
+/// Intent v0.3's `Evidence.status` is a closed enum (`valid | stale
+/// | unavailable`), none of which honestly represents `not_verified`.
+/// Mapping `not_verified → valid` would launder the contradiction
+/// (path (c), forbidden); mapping to `stale` or `unavailable` would
+/// misrepresent the NQ verdict. Refusing at the cook layer is the
+/// only honest path until Wicket Intent gains a `not_verified` or
+/// equivalent basis status.
+///
+/// See `~/git/cartography/audit/2026-05-28-path-a5-plan.md` for the
+/// operator-stated (a)/(b)/(c) decision and the cartographer's Wicket
+/// schema reading.
+pub fn evaluate_basis_admissibility(nq_receipt: &NqReceiptRef) -> Option<&'static str> {
+    if nq_receipt.status == "verified" {
+        None
+    } else {
+        // Single reason code for v1. Future receipt-status values
+        // that *can* be honestly mapped (when Wicket extends its
+        // status enum) would route through different codes; for now
+        // every non-`verified` status is unrepresentable in the same
+        // way.
+        Some("BASIS_NOT_VERIFIED_UNREPRESENTABLE")
+    }
+}
+
+/// Write the canonical refusal artifact for an A.5 refused run.
+///
+/// The shape carries enough context for an operator (or audit) to
+/// reconstruct *why* NS refused without re-fetching the NQ receipt:
+/// the NQ content_hash and subject pin the upstream artifact; the
+/// nq_status / nq_status_reasons / nq_cannot_testify carry NQ's
+/// self-limiting statements that NS chose to honor rather than
+/// launder; the agenda_id / finding_key / run_id place the refusal
+/// in NS's own pipeline; refused_at + reason_code name *what* and
+/// *when* refusal happened.
+#[allow(clippy::too_many_arguments)]
+pub fn write_refusal_artifact(
+    path: &Path,
+    nq_receipt: &NqReceiptRef,
+    reason_code: &str,
+    agenda_id: &str,
+    finding_key: &str,
+    run_id: &str,
+    refused_at: DateTime<Utc>,
+) -> Result<()> {
+    let artifact = serde_json::json!({
+        "schema": "ns.refusal.v1",
+        "reason_code": reason_code,
+        "refused_at": refused_at.to_rfc3339(),
+        "agenda_id": agenda_id,
+        "finding_key": finding_key,
+        "run_id": run_id,
+        "nq_content_hash": nq_receipt.content_hash,
+        "nq_subject": nq_receipt.subject,
+        "nq_status": nq_receipt.status,
+        "nq_status_reasons": nq_receipt.status_reasons,
+        "nq_cannot_testify": nq_receipt.cannot_testify,
+        "nq_evaluator": format!(
+            "{}@v{}",
+            nq_receipt.evaluator.evaluator, nq_receipt.evaluator.version
+        ),
+        "ns_actor": NS_ACTOR,
+        "ns_policy_ref": format!("{NS_POLICY_REF}@{NS_POLICY_VERSION}"),
+    });
+    write_canonical_json(path, &artifact)
 }
 
 /// Run the MVP-A cook → Wicket → WLP pipeline end-to-end.
@@ -488,18 +618,20 @@ pub fn run_pipeline(
     nq_receipt: &NqReceiptRef,
     out_dir: &Path,
     reference_time: DateTime<Utc>,
-) -> Result<MvpAOutcome> {
+) -> Result<MvpAResult> {
     let paths = sink_paths(out_dir, &packet.run_id);
 
-    // Slice 2b: NS posture-packet outbound. The sink is a wrapper
-    // around the existing `Packet` plus a top-level `nq_receipt_ref`
-    // field naming the NQ content_hash this run chained against. The
-    // wrapper avoids a schema change to `Packet` (which already
-    // populates `receipt_references.evidence_bundle` with the
-    // bundle://run/<id> ref for the run-ledger lookup — we don't
-    // overwrite that). A downstream verifier reads
-    // `nq_receipt_ref` to find the upstream NQ receipt without
-    // having to inspect the run ledger.
+    // Slice 2b: NS posture-packet outbound. Emitted on **both** the
+    // Cooked and Refused paths so the operator-visible posture record
+    // exists regardless of whether NS proceeded to the cross-component
+    // chain. The sink is a wrapper around the existing `Packet` plus
+    // a top-level `nq_receipt_ref` field naming the NQ content_hash
+    // this run chained against. The wrapper avoids a schema change to
+    // `Packet` (which already populates
+    // `receipt_references.evidence_bundle` with the bundle://run/<id>
+    // ref for the run-ledger lookup — we don't overwrite that). A
+    // downstream verifier reads `nq_receipt_ref` to find the upstream
+    // NQ receipt without having to inspect the run ledger.
     let posture_sink = PosturePacketSink {
         packet: packet.clone(),
         nq_receipt_ref: format!("nq-receipt://{}", nq_receipt.content_hash),
@@ -510,6 +642,31 @@ pub fn run_pipeline(
         nq_subject: nq_receipt.subject.clone(),
     };
     write_canonical_json(&paths.posture, &posture_sink)?;
+
+    // A.5: admissibility check. If the NQ receipt's basis cannot be
+    // honestly represented in a Wicket Intent (path (b)), NS refuses
+    // here. No Wicket Intent / Outcome / WLP artifacts are produced
+    // on this branch; the refusal artifact at `paths.refusal` is the
+    // honest answer.
+    if let Some(reason_code) = evaluate_basis_admissibility(nq_receipt) {
+        let finding_key = packet.attention.attention_key.as_string();
+        write_refusal_artifact(
+            &paths.refusal,
+            nq_receipt,
+            reason_code,
+            &packet.agenda_id,
+            &finding_key,
+            &packet.run_id,
+            reference_time,
+        )?;
+        return Ok(MvpAResult::Refused(MvpARefusal {
+            refusal_artifact_path: paths.refusal,
+            reason_code: reason_code.to_string(),
+            nq_content_hash: nq_receipt.content_hash.clone(),
+            nq_subject: nq_receipt.subject.clone(),
+            nq_status: nq_receipt.status.clone(),
+        }));
+    }
 
     // Slice 2a: cook Intent. Persist the Intent **before** invoking
     // Wicket so the on-disk bytes are the canonical input over which
@@ -557,7 +714,7 @@ pub fn run_pipeline(
         .unwrap_or_else(|| wlp::artifact_hash(&handling_receipt));
     write_canonical_json(&paths.wlp_handling, &handling_receipt)?;
 
-    Ok(MvpAOutcome {
+    Ok(MvpAResult::Cooked(MvpAOutcome {
         posture_packet_path: paths.posture,
         wicket_intent_path: paths.wicket_intent,
         wicket_outcome_path: paths.wicket_outcome,
@@ -566,7 +723,7 @@ pub fn run_pipeline(
         wicket_receipt_input_hash: outcome.receipt.input_hash.clone(),
         wlp_authorization_artifact_hash: auth_artifact_hash,
         wlp_handling_artifact_hash: handling_hash,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -580,6 +737,7 @@ mod tests {
             claim: "disk_state".to_string(),
             subject: "host:sushi-k".to_string(),
             status: "verified".to_string(),
+            status_reasons: vec!["all_requirements_verified".to_string()],
             witnesses: vec![NqWitnessRef {
                 witness_type: "disk_pressure_legacy_projection".to_string(),
                 digest: "sha256:bf01423b49b5f56336780174eae5f76e5ceec0bfcc8ca47d70ea0e1b13e8c492"

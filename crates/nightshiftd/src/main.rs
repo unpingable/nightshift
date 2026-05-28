@@ -805,27 +805,49 @@ fn maybe_run_mvp_a(cli: &Cli, packet: &nightshiftd::packet::Packet) -> anyhow::R
             nq_receipt.subject
         );
     }
-    let outcome = nightshiftd::mvp_a::run_pipeline(
+    let result = nightshiftd::mvp_a::run_pipeline(
         packet,
         &nq_receipt,
         &cli.mvp_a_out_dir,
         packet.produced_at,
     )?;
-    eprintln!(
-        "mvp-a: posture={} wicket-intent={} wicket-outcome={} wlp-authorization={} wlp-handling={}",
-        outcome.posture_packet_path.display(),
-        outcome.wicket_intent_path.display(),
-        outcome.wicket_outcome_path.display(),
-        outcome.wlp_authorization_path.display(),
-        outcome.wlp_handling_path.display(),
-    );
-    eprintln!(
-        "mvp-a-chain: nq={} wicket_input={} wlp_auth={} wlp_handling={}",
-        nq_receipt.content_hash,
-        outcome.wicket_receipt_input_hash,
-        outcome.wlp_authorization_artifact_hash,
-        outcome.wlp_handling_artifact_hash,
-    );
+    match result {
+        nightshiftd::mvp_a::MvpAResult::Cooked(outcome) => {
+            eprintln!(
+                "mvp-a: posture={} wicket-intent={} wicket-outcome={} \
+                 wlp-authorization={} wlp-handling={}",
+                outcome.posture_packet_path.display(),
+                outcome.wicket_intent_path.display(),
+                outcome.wicket_outcome_path.display(),
+                outcome.wlp_authorization_path.display(),
+                outcome.wlp_handling_path.display(),
+            );
+            eprintln!(
+                "mvp-a-chain: nq={} wicket_input={} wlp_auth={} wlp_handling={}",
+                nq_receipt.content_hash,
+                outcome.wicket_receipt_input_hash,
+                outcome.wlp_authorization_artifact_hash,
+                outcome.wlp_handling_artifact_hash,
+            );
+        }
+        nightshiftd::mvp_a::MvpAResult::Refused(refusal) => {
+            // A.5: NS refused to cook because the NQ receipt's status
+            // cannot be honestly represented in a Wicket Intent. The
+            // refusal artifact at `refusal.refusal_artifact_path`
+            // records the upstream NQ receipt and the reason; no
+            // Wicket / WLP artifacts were produced. The posture
+            // packet was still emitted (operator-visible record).
+            eprintln!(
+                "mvp-a-refused: artifact={} reason={} nq_status={} \
+                 nq_content_hash={} nq_subject={}",
+                refusal.refusal_artifact_path.display(),
+                refusal.reason_code,
+                refusal.nq_status,
+                refusal.nq_content_hash,
+                refusal.nq_subject,
+            );
+        }
+    }
     Ok(())
 }
 

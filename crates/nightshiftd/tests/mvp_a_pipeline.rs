@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 
 use nightshiftd::closure::ClosureCandidate;
 use nightshiftd::finding::{EvidenceState, FindingKey, Severity};
-use nightshiftd::mvp_a::{run_pipeline, NqReceiptRef, NS_ACTOR, NS_POLICY_REF};
+use nightshiftd::mvp_a::{run_pipeline, MvpAResult, NqReceiptRef, NS_ACTOR, NS_POLICY_REF};
 use nightshiftd::packet::{
     Attention, AttentionState, AuthorityResult, Confidence, Diagnosis, DiagnosisReview,
     DiagnosisReviewMode, FindingSummary, OperationalUrgency, Packet, ProposedAction,
@@ -182,8 +182,15 @@ fn mvp_a_pipeline_produces_walkable_hash_chain_against_sushi_k_receipt() {
     let out_dir = tempfile::tempdir().expect("tempdir for mvp-a sinks");
     let reference_time = packet.produced_at;
 
-    let outcome = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
+    let result = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
         .expect("mvp-a pipeline must succeed");
+    let outcome = match result {
+        MvpAResult::Cooked(o) => o,
+        MvpAResult::Refused(r) => panic!(
+            "verified NQ receipt must cook, not refuse; got refused with reason `{}`",
+            r.reason_code
+        ),
+    };
 
     // --- Acceptance (1): Wicket Intent is wicket-consumable. ---
     //
@@ -361,8 +368,12 @@ fn mvp_a_pipeline_produces_walkable_hash_chain_against_sushi_k_receipt() {
     // out_dir = byte-identical artifacts. This is what makes the
     // pipeline integration-testable: a verifier can replay and get
     // the same content_hashes.
-    let outcome_2 = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
+    let result_2 = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
         .expect("re-run must succeed");
+    let outcome_2 = match result_2 {
+        MvpAResult::Cooked(o) => o,
+        MvpAResult::Refused(_) => panic!("re-run must also cook (determinism)"),
+    };
     let posture_bytes_2 = std::fs::read(&outcome_2.posture_packet_path).unwrap();
     let intent_bytes_2 = std::fs::read(&outcome_2.wicket_intent_path).unwrap();
     let wicket_bytes_2 = std::fs::read(&outcome_2.wicket_outcome_path).unwrap();
