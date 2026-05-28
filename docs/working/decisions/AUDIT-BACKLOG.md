@@ -118,3 +118,129 @@ Rust wire-format audit via NQ). Night Shift's sibling exposure is
 structurally plausible — and named explicitly in NQ's Vector B —
 but unverified by NS-side audit. The audit-owed flag waits for the
 audit to run before promotion.
+
+---
+
+## Remote standing boundary: NS-side local manifestation owed
+
+**Filed:** 2026-05-27
+**Status:** audit-owed; no GAP, no implementation.
+
+**Question.** Does Night Shift owe a local-manifestation GAP that
+composes with the cross-constellation `REMOTE_STANDING_BOUNDARY`
+doctrine drafted by NQ-Claude on 2026-05-27 and parked in
+`~/git/cartography/coordination/nq-REMOTE_STANDING_BOUNDARY.md`?
+
+**Keeper (cartography draft, candidate / non-binding):**
+
+> A remote call is not just transport. It is a standing claim with
+> a payload.
+
+**Why this is a breadcrumb, not a GAP.**
+
+NS already carries the keeper locally, just at a narrower boundary:
+
+- `CLAUDE.md` invariant 6: *"MCP is tool transport, not authority.
+  Tool availability is not permission."*
+- `GAP-mcp-authority.md`: call-class taxonomy
+  (discover/read/propose/stage/mutate/publish/page) with the
+  Governor-required line drawn between `propose` and `stage`.
+- `DESIGN.md` "Input standing categories"
+  (authoritative/hint/stale/inadmissible) — evidence-standing at the
+  reconciler.
+
+Filing a full NS GAP today would duplicate the cartography draft
+before its doctrine has been reconciled across components, and would
+restate ground NS already holds. Breadcrumb now, GAP later.
+
+**Promotion condition.**
+
+File `GAP-remote-standing-boundary.md` (or compose into an existing
+boundary GAP) only after one of:
+
+1. **Cartography ratifies** the cross-constellation doctrine —
+   curates the draft into a canonical cross-component home, with a
+   stable name and converged content.
+2. **NS exposes or consumes a non-local surface** beyond the current
+   set — i.e. anything past the Governor JSON-RPC socket, the NQ
+   pull/poll, the Continuity MCP channel, and the local-CLI
+   operator surfaces (`nightshift liveness peek`, etc.). The first
+   inbound HTTP surface or first cross-host NS-to-NS call is a
+   forcing case.
+3. **Standing-the-tool reaches a concrete shape** — a wire shape
+   for `StandingRequest` / `StandingDecision`, or a real
+   `StandingToolResolver` implementation to integrate against.
+
+Until one of those, this entry holds the question.
+
+**Deferred NS-specific extensions (not authorized; held for the
+forcing-case GAP).**
+
+The cartography draft names NS's role as *"what posture follows
+from the evidence?"* (closure / escalation / suppression). NS-side
+content the draft does **not** yet cover, which any NS local
+manifestation would need to add as independent content rather than
+restate:
+
+- **Caller standing vs evidence standing.** NS has *evidence*
+  standing deeply specified at the reconciler (authoritative / hint
+  / stale / inadmissible). NS does not have *caller* standing at any
+  remote boundary — today "NQ said it, so it's a finding" rests on
+  filesystem-socket trust. The two standings are distinct and need
+  different vocabulary.
+- **Posture-emit standing (outbound).** The strongest NS-unique
+  contribution. The cartography draft treats inbound testimony
+  thoroughly; outbound posture-emit underspecified. The three-axis
+  split (truth/posture/ack) makes the asymmetry concrete: truth
+  flows in from NQ, but *posture* and *ack* are NS-minted claims
+  that flow outbound to Governor receipts and Continuity
+  breadcrumbs. Each posture-emit is a standing claim — "I have
+  standing to claim this posture about this scope" — that needs
+  receipt fields.
+- **Coordination standing vs testimony standing.** Invariants 18–19
+  already name this in NS: Continuity is "narrowly authoritative
+  about who else is here; never about what is true." Coordination
+  ("does another actor have standing to act in this scope right
+  now?") is a different question from testimony ("may this actor
+  introduce this finding?"). NS lives the distinction already; the
+  cross-constellation doctrine would benefit from absorbing it
+  rather than collapsing both into "standing."
+
+**Cross-references inside this repo.**
+
+- `GAP-mcp-authority.md` — NS-local seed of the keeper, applied to
+  MCP transport rather than remote surfaces generally. The call
+  classes (discover/read/.../page) are the NS-side prior art the
+  cross-constellation doctrine generalizes.
+- `GAP-parallel-ops.md` — invariants 18–19 (coordination safety
+  distinct from authorization safety; Continuity narrowly
+  authoritative about presence, never about truth). The
+  coordination-standing extension above lives in this neighborhood.
+- `GAP-nq-nightshift-contract.md` — the inbound consumer surface
+  for NQ testimony. If/when NQ's federation grows, this is the GAP
+  where caller-standing-for-testimony first bites.
+- `GAP-governor-contract.md` — the outbound surface where NS calls
+  Governor. Posture-emit standing first bites here.
+
+**Not in scope by this entry.**
+
+- `exposure_profile` declaration anywhere in NS.
+- `StandingResolver` seam, resolver implementations, or
+  receipt-field additions for `standing_basis` / `resolver`.
+- A skeleton GAP file under `docs/working/gaps/`.
+- Any change to NS code, schemas, packets, or ledger events.
+
+**Witness.**
+
+Cartography artifact filed 2026-05-27 evening by NQ-Claude during a
+session that escalated from "should the NQ dashboard have auth"
+through five intermediate gaps to a cross-constellation primitive.
+The artifact explicitly names Nightshift as a component that
+"should cover closure-assessment inbound surface, evidence
+ingestion, posture-emit outbound" but recognizes the doctrine
+itself is candidate / non-binding pending cartographer curation.
+NS-Claude consideration (2026-05-27, this filing) confirmed NS
+already carries the keeper at a narrower boundary, identified
+three NS-specific extensions worth preserving for the eventual
+local manifestation, and recommended breadcrumb-over-GAP per
+grep-before-governance discipline.
