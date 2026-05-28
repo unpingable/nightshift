@@ -108,6 +108,26 @@ struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = TriggerArg::Manual)]
     trigger: TriggerArg,
 
+    /// Path to an `nq.receipt.v1` JSON document. When set together
+    /// with `watchbill run` / `watchbill reconcile`, Night Shift runs
+    /// the MVP-A cross-component pipeline after the packet is built:
+    /// cook a Wicket Intent that chains to this receipt's
+    /// `content_hash`, invoke `wicket::check()`, wrap the Outcome as
+    /// a WLP `AuthorizationReceipt`, call `wlp::handle()`. Three
+    /// artifacts are written to `--mvp-a-out-dir`. Without this flag,
+    /// the existing pipeline runs unchanged.
+    ///
+    /// See `docs/working/decisions/MVP_A_SLICES_2_3_4_PACKET.md`.
+    #[arg(long, global = true)]
+    nq_receipt: Option<PathBuf>,
+
+    /// Output directory for MVP-A artifacts. Only consulted when
+    /// `--nq-receipt` is set. Files written:
+    /// `ns-posture-<run_id>.json`, `ns-wicket-outcome-<run_id>.json`,
+    /// `ns-wlp-handling-<run_id>.json`. Default: `/tmp`.
+    #[arg(long, global = true, default_value = "/tmp")]
+    mvp_a_out_dir: PathBuf,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -694,6 +714,13 @@ fn run_watchbill_cmd(
     // v1: emit packet to stdout as YAML.
     let rendered = serde_yaml::to_string(&packet)?;
     println!("{rendered}");
+
+    // MVP-A Slices 2/3/4 tail step (opt-in via --nq-receipt). When
+    // configured, cook a Wicket Intent chaining to the NQ receipt,
+    // invoke Wicket, wrap the Outcome as a WLP AuthorizationReceipt,
+    // call wlp::handle(), and write all three artifacts to disk. The
+    // existing watchbill output above is unchanged regardless.
+    maybe_run_mvp_a(cli, &packet)?;
     Ok(())
 }
 
@@ -752,6 +779,53 @@ fn reconcile_cmd(cli: &Cli, run_id: &str) -> anyhow::Result<()> {
     };
     let rendered = serde_yaml::to_string(&packet)?;
     println!("{rendered}");
+    maybe_run_mvp_a(cli, &packet)?;
+    Ok(())
+}
+
+/// MVP-A tail step. No-op when `--nq-receipt` is unset (legacy
+/// pipeline path). When set, runs cook → Wicket → WLP and prints a
+/// one-line summary naming the three sink paths and the walkable
+/// chain hashes.
+fn maybe_run_mvp_a(cli: &Cli, packet: &nightshiftd::packet::Packet) -> anyhow::Result<()> {
+    let Some(receipt_path) = cli.nq_receipt.as_deref() else {
+        return Ok(());
+    };
+    let nq_receipt = nightshiftd::mvp_a::NqReceiptRef::from_file(receipt_path)?;
+    // Subject-boundary check: refuse to proceed if the NQ receipt
+    // subject no longer matches the host-fs-state interpretation the
+    // MVP-A packet's "Subject-boundary" section anchors against.
+    // Anything not starting with `host:` is reported and refused;
+    // the operator decides whether to re-anchor or report upstream.
+    if !nq_receipt.subject.starts_with("host:") {
+        anyhow::bail!(
+            "MVP-A subject-boundary tripwire: NQ receipt subject `{}` does not match \
+             expected `host:<name>` shape. Refusing to construct Wicket Intent. \
+             See docs/working/decisions/MVP_A_SLICES_2_3_4_PACKET.md §Subject-boundary.",
+            nq_receipt.subject
+        );
+    }
+    let outcome = nightshiftd::mvp_a::run_pipeline(
+        packet,
+        &nq_receipt,
+        &cli.mvp_a_out_dir,
+        packet.produced_at,
+    )?;
+    eprintln!(
+        "mvp-a: posture={} wicket-intent={} wicket-outcome={} wlp-authorization={} wlp-handling={}",
+        outcome.posture_packet_path.display(),
+        outcome.wicket_intent_path.display(),
+        outcome.wicket_outcome_path.display(),
+        outcome.wlp_authorization_path.display(),
+        outcome.wlp_handling_path.display(),
+    );
+    eprintln!(
+        "mvp-a-chain: nq={} wicket_input={} wlp_auth={} wlp_handling={}",
+        nq_receipt.content_hash,
+        outcome.wicket_receipt_input_hash,
+        outcome.wlp_authorization_artifact_hash,
+        outcome.wlp_handling_artifact_hash,
+    );
     Ok(())
 }
 

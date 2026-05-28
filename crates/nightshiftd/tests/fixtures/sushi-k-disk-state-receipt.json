@@ -1,0 +1,46 @@
+{
+  "schema": "nq.receipt.v1",
+  "claim": "disk_state",
+  "subject": "host:sushi-k",
+  "target": {
+    "host": "sushi-k",
+    "scope": "host"
+  },
+  "status": "verified",
+  "status_reasons": [
+    "all_requirements_verified"
+  ],
+  "verified": [
+    "Filesystem occupancy above threshold on '' at observed_at 2026-05-28T18:44:12.867170531Z"
+  ],
+  "not_verified": [],
+  "suggested_weaker_claims": [
+    "Filesystem occupancy above threshold on '' at observed_at 2026-05-28T18:44:12.867170531Z"
+  ],
+  "supported_status": "Supporting findings are scoped to their witness coverage and observed_at; consequence claims remain refused (see cannot_testify).",
+  "cannot_testify": [
+    "Physical disk death",
+    "Replacement workflow (authorization, initiation, skipping, completion, closure-criteria satisfaction)",
+    "Physical component identity beyond witness coverage (sled / slot / enclosure / asset-record)",
+    "Data loss occurrence, recoverability, or unrecoverability",
+    "Future failure probability",
+    "Incident closure readiness",
+    "Drive is fine to keep / no action required (mirror consequence claim)"
+  ],
+  "witnesses": [
+    {
+      "witness_type": "disk_pressure_legacy_projection",
+      "digest": "sha256:bf01423b49b5f56336780174eae5f76e5ceec0bfcc8ca47d70ea0e1b13e8c492",
+      "observed_at": "2026-05-28T18:44:12.867170531Z",
+      "custody_basis": "legacy_projection"
+    }
+  ],
+  "observed_at_min": "2026-05-28T18:44:12.867170531Z",
+  "observed_at_max": "2026-05-28T18:44:12.867170531Z",
+  "generated_at": "2026-05-28T18:44:43.730618109Z",
+  "evaluator": {
+    "evaluator": "disk_state",
+    "version": 1
+  },
+  "content_hash": "sha256:93eba183f059652b041c374d64f1087233385faea0beda10a48a9ed402567a0c"
+}
