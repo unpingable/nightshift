@@ -268,9 +268,20 @@ grep-before-governance discipline.
 ## Self-subject-collapse: NS forbidden-cycle structural-absence audit owed
 
 **Filed:** 2026-05-28
-**Status:** audit-owed; local-manifestation GAP filed
-(`docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md`); structural-
-absence sentinel test not yet written.
+**Status:** **partially closed 2026-05-29** by sentinel test
+`crates/nightshiftd/tests/forbidden_cycle_sentinel.rs`
+(`forbidden_cycle_structural_absence_sentinel_ns_does_not_write_to_nq`).
+The test covers the **subprocess-invocation** and **direct-DB**
+outbound surfaces (the only NQ-bound outbound surfaces NS has
+today). Two surfaces named in the NS-side GAP remain uncovered
+because they do not exist in NS code: **Continuity MCP** (no MCP
+wiring in NS today) and **operator CLI** (output direction is
+stdout, never NQ — structural absence by direction, not by file
+inspection). Test scope expands when those surfaces materialize.
+Local-manifestation GAP at
+`docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md` remains open
+(this audit covered the code-level verification, not the gap's
+first-slice obligations).
 
 **Question.** Does NS code today contain any path — packet field,
 ledger event kind, attention enum variant, MCP call, Governor RPC,
@@ -356,7 +367,18 @@ edge closes, *"NS asserts SilenceShape"* → *"NQ substrate-truth:
 silence"* → input to NS's next posture, which is the ouroboros the
 bilateral spike exists to refuse. NS-side commitment is structural
 absence; this audit verifies the commitment holds at the code
-level. Until the sentinel test ships, the absence is a prose claim
-made in `NQ_NS_CHANNEL_SPLIT_NS_SIDE.md`, not a code-level
-guarantee. The audit-owed flag waits for the test to ship before
-promotion.
+level.
+
+**Closeout 2026-05-29.** The sentinel test ships at
+`crates/nightshiftd/tests/forbidden_cycle_sentinel.rs`. It pins:
+(1) no forbidden NQ subcommand string appears in `nq.rs` or
+`liveness.rs` (15-entry forbidden list naming write-shape verbs;
+intentionally broader than verbs `nq` exposes today, so the test
+rejects new verbs of that shape); (2) every `Command::new` site in
+`nq.rs`/`liveness.rs` is paired with an `.arg("export")` (read-only
+discipline); (3) no NS source opens an NQ DB path via
+`Connection::open` (NS's only `Connection::open` site is its own
+store). Same sentinel shape as
+`b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`:
+the test is the doctrine surface, and updating it deliberately is
+the signal that doctrine has moved.
