@@ -20,6 +20,91 @@ The chronological order below is newest-first.
 
 ---
 
+## ACTUATION_BOUNDARY V1
+
+**Status:** `shipped` 2026-05-28 (commit `2ca480c`). Adopts the cartography-owned [`nightshift-actuation-boundary.md`](../../../../cartography/doctrine/nightshift-actuation-boundary.md) doctrine verbatim into the NS repo, lands the inert `ProposedAction` contract, and installs a hard build gate that fails CI if NS grows actuation surface.
+
+**Shipped artifacts:**
+- `docs/working/decisions/ACTUATION_BOUNDARY.md` — verbatim copy of the cartography doctrine doc with a citation HTML comment. Single canonical source remains in cartography; this file is the adopted copy, not the source of truth.
+- `crates/nightshiftd/src/proposed_action.rs` — `ProposedAction` struct: `subject` (content-addresses originating NQ finding), `admissibility` (admitted Wicket `Outcome`), `reversibility` enum (`reversible | irreversible`), `proposed_at`, `notes`. **No `enact` field, no command string, no connection target, no credentials.** Canonical-JSON serialization (`canonical_json()`) matches the constellation's wire discipline. Construction refuses an unadmitted Wicket verdict.
+- `crates/nightshiftd/tests/fixtures/proposed_action.example.json` — round-trip fixture; small enough to read, realistic enough to round-trip.
+- `scripts/check_no_actuation_surface.sh` — guard script; hard-fails on actuator execution (`ssh`/`salt`/`ansible`/`systemctl`/`kubectl`/`docker` invocations from NS code), execution-client deps in `Cargo.toml`, control-plane HTTP writes, and new subprocess call sites outside the vetted read-adapter allowlist (`nq.rs`, `liveness.rs`).
+- `.github/workflows/actuation-boundary.yml` — CI runs the guard as a required check on every PR.
+
+**Evidence:**
+- Unit tests in `proposed_action.rs::tests` cover: canonical-JSON round-trip; construction refuses unadmitted Wicket verdict; `reversibility` round-trips; subject content-addresses an NQ finding.
+- Guard verified in both directions — clean against current NS code (every `Command::new` shells to `nq` / `liveness` with `export` verbs, pure reads); hard-fails when a synthetic `Command::new("systemctl").arg("restart")` is injected into a sandbox branch.
+- Cartography source: [`~/git/cartography/packets/NS_ACTUATION_BOUNDARY.md`](../../../../cartography/packets/NS_ACTUATION_BOUNDARY.md) (dispatch packet, six acceptance criteria all met by this entry).
+
+**Closeout evidence:** [`~/git/cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md`](../../../../cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md) — every WLP `AuthorizationReceipt` in the substrate-rooted demo carries inert-by-construction posture; no NS-side enactment path was exercised because none exists.
+
+**Field notes:**
+- **Verbatim, not forked.** The local copy carries a citation header pointing at cartography. If amendment is needed, feedback goes back to cartography (PR or coordination note); the doctrine evolves there and per-repo Claudes adopt the new version. Doctrine drift across components is the failure mode this discipline exists to prevent.
+- **Doctrine is candidate, not ratified.** Per cartography `LAYOUT.md`, nothing in `doctrine/` is canonical by placement; ratification is a separate, operator-driven step. NS adopted under the candidate posture and is bound to whatever the canonical doc evolves into.
+- **The guard is load-bearing, not decorative.** Dual-verification (clean on real code; hard-fails on injection) is what makes the gate enforce the invariant rather than wave at it. Convenience PRs that add an `apply()` six months from now get caught by the gate, not by code review.
+
+**Unblocks:**
+- The constitutional posture for any future NS work that proposes mutation. NS may cook, classify, propose; whoever holds creds picks it up across a privilege boundary.
+
+---
+
+## A_5_REFUSAL V1
+
+**Status:** `shipped` 2026-05-28 (commit `0640c58`). NS refuses to cook a Wicket Intent when the upstream NQ receipt's `status` is anything other than `verified`. The refusal is positive — emits a refusal artifact citing the offending receipt status — not a silent skip.
+
+**Shipped artifacts:**
+- `crates/nightshiftd/src/mvp_a.rs` — `RefusalReason::NqReceiptStatusNotVerified { observed_status }` variant on the MVP-A pipeline outcome; refusal short-circuits before Intent construction. Writes a `ns-mvp-a-refusal-<run_id>.json` artifact under `--mvp-a-out-dir` so the refusal is operator-visible.
+- `crates/nightshiftd/src/main.rs` — CLI plumbing surfaces refusal status in the `mvp-a-chain:` summary line.
+- `crates/nightshiftd/tests/fixtures/lil-nas-x-disk-state-receipt.json` — fixture receipt with `status: "unverified"` used to exercise the refusal path.
+- `crates/nightshiftd/tests/mvp_a_refusal.rs::ns_refuses_to_cook_not_verified_receipt_and_writes_refusal_artifact` — integration test: pipeline against an unverified receipt emits the refusal artifact, does NOT emit Wicket Intent / Outcome / WLP artifacts, returns the refusal reason.
+- `deploy/agendas/lil-nas-x-disk-state.yaml` — first Path-A.5 agenda (LAN-bench host, distinct from sushi-k local).
+
+**Evidence:**
+- Integration test above; unit tests in `mvp_a.rs::tests` cover the refusal-reason serialization and the construction guard.
+- The refusal-artifact path leaves no half-cooked Wicket Intent on disk — verified by directory inspection in the test.
+
+**Closeout evidence:** [`~/git/cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md`](../../../../cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md) — the demo path exercises the `verified` branch (root NQ receipt `status: verified`, `evaluator: disk_state v1`). The refusal branch is not exercised by the demo but is the inverse contract: an unverified NQ receipt cannot pass through to Wicket.
+
+**Field notes:**
+- **Refusal cites the receipt status, not the receipt content.** NS does not re-derive verification; it consumes NQ's verdict and refuses on a non-`verified` value. NS does not attempt to "fix up" an unverified receipt or coerce its status.
+- **Slice 5 contract holds.** The refusal is a stale/invalidated-shape outcome at the cook boundary; downstream of the existing three-axis split. Truth (`status`) is NQ-owned; refusal posture is NS-owned; no laundering across the boundary.
+- **Path A.5 framing.** Per cartography `2026-05-28-mvp-plan-rev1.md` §"Path ladder + A.5 addendum", A.5 is the rehearsal rung between sushi-k localhost (Path A) and Linode public-VM (Path B); LAN-trust is bounded by environmental control, not laundered into a security claim. The lil-nas-x agenda lives at this rung.
+
+**Unblocks:**
+- A future NQ verification-state migration (e.g., new non-`verified` states) only needs to be enumerated; the refusal contract already covers the negative space.
+
+---
+
+## MVP_A_PIPELINE V1
+
+**Status:** `shipped` 2026-05-28 (commit `a60f7e1`). NS cooks an NQ `disk_state` receipt into a walkable hash chain across the constellation: NQ receipt → NS posture → Wicket Intent → Wicket Outcome → WLP `AuthorizationReceipt` → WLP `HandlingReceipt`. This is the build delivery for cartography MVP-A Slices 2/3/4 (`docs/working/decisions/MVP_A_SLICES_2_3_4_PACKET.md`).
+
+**Shipped artifacts:**
+- `crates/nightshiftd/src/mvp_a.rs` (~782 LOC) — `cook_intent()` builds a Wicket `Intent` whose `claimed_basis.evidence_refs[0].ref` cites the NQ receipt's `content_hash`, preserving the subject `host:sushi-k` end-to-end. `invoke_wicket()` calls `wicket::check(&intent) -> Outcome`. `wrap_authorization()` produces a WLP `Artifact { kind: AuthorizationReceipt }` whose `custody.causal_parents[0]` is the Wicket `input_hash` (canonical-JSON sha256 of the Intent). `wrap_handling()` calls `wlp::handle(&artifact, &[], &opts)` to produce the `HandlingReceipt`. All five artifacts emitted as canonical JSON under `--mvp-a-out-dir`.
+- `crates/nightshiftd/src/main.rs` — `watchbill run` CLI grows `--nq-receipt <path>` and `--mvp-a-out-dir <dir>` flags. End-of-run `mvp-a-chain:` summary line prints all four hashes inline (externally citable).
+- `crates/nightshiftd/tests/fixtures/sushi-k-disk-state-receipt.json` — unit-test fixture receipt; matches the live receipt shape.
+- `crates/nightshiftd/tests/mvp_a_pipeline.rs::mvp_a_pipeline_produces_walkable_hash_chain_against_sushi_k_receipt` — integration test: pipeline produces the five expected artifacts, each layer's hash cited in the next, subject preserved across layers.
+- New deps in `Cargo.toml`: `wicket` (v0.1), `wlp` (Continuity persistence-adapter consumer).
+
+**Evidence:**
+- Integration test above + unit tests in `mvp_a.rs::tests` cover Intent canonical-JSON, Wicket Outcome admissibility carry-through, WLP `causal_parents` linkage, and subject-preservation across all four layers.
+- Subject-boundary interpretation pinned: observed subject is sushi-k host filesystem/resource state; not NQ, not NS, not the observation loop. Anchored to `crates/nq-db/src/detect.rs::detect_disk_pressure` (`v_hosts.disk_used_pct`) and `crates/nq-db/src/export.rs::metric_for_kind_subject` (`"disk_pressure" → Some("disk_used_pct")`).
+- "Smells visible, not laundered": every Wicket Outcome carries `STANDING_CALLER_ASSERTED_UNVERIFIED` / `SCOPE_CALLER_ASSERTED_UNVERIFIED` / `REVOCATION_CALLER_ASSERTED_UNVERIFIED` / `PRECEDENCE_CALLER_ASSERTED_UNVERIFIED`. Caller-asserted standing is admissible but visibly smelly; this is the correct MVP-A posture.
+
+**Closeout evidence:** [`~/git/cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md`](../../../../cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md) — substrate-rooted demo PASSED. Original run `run_eccbc954b4fc4119b2c4cf332bea2956` (2026-05-28T19:41:52Z, root content_hash `sha256:93eba183…567a0c`); cold-run reproduction `run_1a9ddf9db8fb4e2185feba7dd5ebf9c2` (root content_hash `sha256:0e3af06e…1bbe57`, distinct observation, different hashes throughout — correct behavior for a content-addressed pipeline). Continuity adapter round-trip verified byte-identical (`tests/test_wlp_persistence_adapter.py`, 14 passed). Tripwire from cartography rev1 §Slice 6 ("Build acceptance vs demo closeout eligibility") satisfied. Authorizes the post-MVP-A closeout.
+
+**Field notes:**
+- **NS doesn't define the witness grammar.** The Intent's `claimed_basis` shape is Wicket's; the WLP `Artifact` shape is Continuity's. NS is the cook, not the schema author. If construction needs a schema change, **stop and report**.
+- **No actuation, by construction.** Every WLP `AuthorizationReceipt` rides through `proposed_action.rs`-shaped semantics — inert by construction; whoever holds creds picks it up. The actuation-boundary build gate (separate entry above) is the enforcement.
+- **A.5 refusal sits before Intent construction.** If the NQ receipt's status is not `verified`, NS short-circuits before any Intent is cooked. See A_5_REFUSAL V1.
+- **Operability matters.** Cartography proved the demo from a cold start in a second independent run; the architecture reproduces, the artifacts (correctly) do not.
+
+**Unblocks:**
+- Post-MVP-A closeout note (cartography-side, coordination/).
+- Future Path-B / Path-C work has a working chain to compose against.
+
+---
+
 ## SLICE_4_CLOSURE_CANDIDATE V1 (partial Gate 1)
 
 **Status:** `shipped` 2026-05-27. Slice 4 close-out per [`working/roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md). **Refusal-only — no closure authority.** Implements the conservative form of Gate 1 from [`pre-positioned-doctrine-gates.md`](pre-positioned-doctrine-gates.md): the predicate refuses closure under known blocker conditions and explicitly marks the missing-channel-classification case as `Unassessable`, *not* eligible-by-default.
