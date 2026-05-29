@@ -63,7 +63,10 @@ The chronological order below is newest-first.
 - Integration test above; unit tests in `mvp_a.rs::tests` cover the refusal-reason serialization and the construction guard.
 - The refusal-artifact path leaves no half-cooked Wicket Intent on disk — verified by directory inspection in the test.
 
-**Closeout evidence:** [`~/git/cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md`](../../../../cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md) — the demo path exercises the `verified` branch (root NQ receipt `status: verified`, `evaluator: disk_state v1`). The refusal branch is not exercised by the demo but is the inverse contract: an unverified NQ receipt cannot pass through to Wicket.
+**Closeout evidence:**
+- [`~/git/cartography/coordination/A5-CLOSEOUT.md`](../../../../cartography/coordination/A5-CLOSEOUT.md) — the closer cartography-side closeout for `0640c58` specifically. Keeper: *"MVP-A proved the chain composes on verified evidence. A.5 proves the chain refuses to compose on evidence that refused to verify itself."* Live smoke against a captured lil-nas-x `not_verified` receipt produces the refusal artifact end-to-end; no Wicket / WLP / Continuity artifacts produced (correctly absent — chain short-circuited); posture-packet still emitted (operator-visible record on both paths). Refusal reason code: `BASIS_NOT_VERIFIED_UNREPRESENTABLE`.
+- [`~/git/cartography/audit/2026-05-28-path-a5-demo-record.md`](../../../../cartography/audit/2026-05-28-path-a5-demo-record.md) — the demo record cited by the closeout.
+- [`~/git/cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md`](../../../../cartography/audit/2026-05-28-mvp-a-slice-6-demo-record.md) — the MVP-A Slice 6 demo record (verified-branch). The A.5 refusal branch is the inverse contract: an unverified NQ receipt cannot pass through to Wicket. Cited here because Slice 6 closeout establishes the verified-branch baseline against which A.5's refusal-branch is symmetric.
 
 **Field notes:**
 - **Refusal cites the receipt status, not the receipt content.** NS does not re-derive verification; it consumes NQ's verdict and refuses on a non-`verified` value. NS does not attempt to "fix up" an unverified receipt or coerce its status.
