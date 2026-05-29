@@ -23,6 +23,7 @@ pub mod nq;
 pub mod nq_peek;
 pub mod packet;
 pub mod pipeline;
+pub mod proposed_action;
 pub mod posture;
 pub mod posture_class;
 pub mod reconcile_horizon;

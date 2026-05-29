@@ -1,0 +1,29 @@
+{
+  "action_kind": {
+    "name": "request_human_review"
+  },
+  "actor": "ns:nightshiftd",
+  "admissibility": {
+    "operation_class": "interpret",
+    "outcome_class": "verdict",
+    "reason_codes": [
+      "BASIS_OK",
+      "STANDING_CALLER_ASSERTED_UNVERIFIED"
+    ],
+    "receipt_input_hash": "sha256:cb86eca82645c6f55fabc1e7d74ff75f5750c018c274f2ac5f280ea1cb4ab789",
+    "surface_verdict": "authorized"
+  },
+  "enactment": null,
+  "issued_at": "2026-05-28T19:00:00Z",
+  "rationale": [
+    "NQ disk_state receipt verified for host:sushi-k.",
+    "Slice 4 closure predicate refuses with UnassessableMissingConsequenceWitness."
+  ],
+  "reversibility": "reversible",
+  "schema": "ns.proposed_action.v1",
+  "subject": {
+    "basis_hash": "sha256:93eba183f059652b041c374d64f1087233385faea0beda10a48a9ed402567a0c",
+    "finding_key": "nq:disk_pressure:sushi-k:"
+  },
+  "summary": "Operator review of disk_pressure on sushi-k"
+}

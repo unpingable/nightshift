@@ -1,0 +1,38 @@
+# Actuation-boundary build gate.
+#
+# Enforces the doctrine at docs/working/decisions/ACTUATION_BOUNDARY.md
+# (canonical source: ~/git/cartography/doctrine/nightshift-actuation-boundary.md).
+#
+# What this gate catches that code review can't reliably catch:
+# convenience PRs that add an `apply()` six months from now. If a
+# contributor adds `Command::new("systemctl")` or an ssh-client
+# dependency, the build fails before review even loads. Intentions
+# drift; build gates don't.
+#
+# Composes with — but does not replace — the actuation-boundary
+# unit tests in `crates/nightshiftd/src/proposed_action.rs`
+# (round-trip discipline + forbidden-field-name allowlist).
+
+name: actuation-boundary
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  guard:
+    name: check_no_actuation_surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the guard against the working tree
+        run: |
+          chmod +x scripts/check_no_actuation_surface.sh
+          ./scripts/check_no_actuation_surface.sh
+
+      - name: Verify the guard catches injected violations
+        run: |
+          ./scripts/check_no_actuation_surface.sh --self-test-inject
