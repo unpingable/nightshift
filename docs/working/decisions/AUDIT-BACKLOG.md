@@ -382,3 +382,145 @@ store). Same sentinel shape as
 `b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`:
 the test is the doctrine surface, and updating it deliberately is
 the signal that doctrine has moved.
+
+---
+
+## Lean annex alignment: Night Shift anti-laundering family
+
+**Filed:** 2026-06-03
+**Status:** retrieval handle; no GAP, no implementation, no doctrine
+promotion. Cross-confirms shape only.
+
+**Question.** Several Night Shift anti-laundering / freshness /
+authorization-boundary doctrines now have independent Lean
+scratch-annex analogues in
+`~/git/lean/LeanProofs/Admissibility/`. Does this alignment
+warrant any change to NS code, schemas, doctrine surface, or
+external-facing claims?
+
+Default answer for this entry: **no**. The entry exists so the
+alignment is recoverable as a retrieval handle when a future NS
+doctrine question needs sharpening; it is not a coronation.
+
+**Keeper:**
+
+> Night Shift has been independently rediscovering the same
+> refusal geometry across runtime doctrine and Lean scratch
+> kernels. **Formal resonance, not formal backing.** Useful, not
+> sovereign.
+
+**Relevant alignments.**
+
+- `ProjectionLaundering.lean` ↔ `silence_present ≠ incident_absent`;
+  `ok_to_proceed` is NOT an authorization summary; defer-preserving
+  projection discipline. The paired theorems
+  (`projection_launders_deferral` /
+  `loss_aware_projection_blocks_deferral_laundering`) are the
+  refusal-kernel form of the Slice C.1 boolean-laundering refusal
+  trio and the Slice B sentinel
+  `b2_stale_imported_basis_sentinel_ok_to_proceed_is_not_authorization`.
+  NS's `silence_shape_rewrite` filter is `PreservesDefer` in code;
+  consumer-side ack-laundering refusal is
+  `PolicyRespectsDeferSignal`.
+- `RetroactiveLegitimation.lean` / `AmendmentFragment.lean` ↔ NS
+  invariant 4 *"Night Shift does not manufacture authority by
+  logging itself"*; invariant 6 *"MCP is tool transport, not
+  authority. Tool availability is not permission"*; invariant 7
+  `committed` ≠ "true forever"; the 2026-05-28 live-data dogfood
+  sentence *"Acknowledged did not imply closable"*; the
+  verdict-observable-not-constructible breadcrumb above. T4 + T5
+  (post-validation does not imply authorization) and the A1
+  axiom (self-certifying amendment refused at the type level) are
+  the formal shapes.
+- `StaleEvidenceMerge.lean` ↔ NS invariant 2 *"Context bundles must
+  be reconciled before execution. Stale context is not evidence"*;
+  Slice 5 contract (`Stale → advise(revalidate-only)`,
+  `Invalidated → emits packet`); imported-basis-freshness GAP
+  (`captured_at` proves when NS saw the finding, not when the
+  world was observed). The "honesty of the operator" note
+  (staleness emerges from the gate's interaction of inherited
+  horizon with reconciliation time, never stamped at capture) is
+  the same discipline the NS reconciler enforces.
+- `ContractionHinge.lean` ↔ silence-ack vs incident-ack laundering
+  refusal (one warrant — ack — cannot be reused as two distinct
+  claims — attention + closure); the "no per-input
+  `requires_recheck` flag" rule (recheck is the gate, not
+  metadata). Weaker alignment than the three above but real at the
+  warrant-reuse level.
+
+**Cross-references inside this repo.**
+
+- `docs/working/gaps/GAP-imported-basis-freshness.md` —
+  StaleEvidenceMerge alignment.
+- `docs/working/gaps/GAP-silence-aware-posture.md` —
+  ProjectionLaundering alignment (boolean-laundering refusal trio).
+- `docs/working/gaps/GAP-mcp-authority.md` — AmendmentFragment
+  alignment (self-certifying authority).
+- `docs/architecture/GAP-reack-doctrine.md` — ContractionHinge
+  alignment (warrant occurrence; ack ≠ closure).
+- The "verdict boundary: observable, not constructible" entry
+  above — RetroactiveLegitimation alignment (post-validation
+  cannot supply its own missing precondition).
+
+**Cross-references outside this repo.**
+
+- `~/git/lean/LeanProofs/Admissibility/ProjectionLaundering.lean`
+  (filed 2026-05-30).
+- `~/git/lean/LeanProofs/Admissibility/RetroactiveLegitimation.lean`
+  (filed 2026-06-02).
+- `~/git/lean/LeanProofs/Admissibility/AmendmentFragment.lean`
+  (closeout reframe 2026-06-02).
+- `~/git/lean/LeanProofs/Admissibility/StaleEvidenceMerge.lean`
+  (filed 2026-06-01).
+- `~/git/lean/LeanProofs/Admissibility/ContractionHinge.lean`
+  (charter re-alignment 2026-06-02).
+
+All five are scratch annexes — not imported by `LeanProofs.lean`,
+not on any 1.0 surface. Their own headers carry the same
+non-promotion discipline NS uses for `working/decisions/`.
+
+**Promotion condition.**
+
+Promote only if a live NS case needs a sharper refusal form and
+one of these annexes provides the precise kernel needed. Possible
+shapes:
+
+1. A reviewer asks NS to defend a laundering-refusal invariant and
+   the prose form is insufficient — the Lean kernel's paired
+   theorem structure gives the right shape to point at.
+2. A new NS surface (a third posture class, a new wire format, an
+   inbound testimony channel beyond NQ) reaches the design stage
+   where the refusal geometry is unclear, and the existing annex
+   names the boundary that NS needs to mirror.
+3. The Lean annex is itself promoted onto the 1.0 surface and the
+   alignment becomes a *cross-component reference* rather than a
+   *cross-component coincidence*. (This is upstream of NS.)
+
+Until one of those, this entry holds the alignment as a retrieval
+handle.
+
+**Not in scope by this entry.**
+
+- Any change to NS code, schemas, packets, ledger events, tests,
+  or doctrine surface.
+- Any wiring, import, or build-time dependency on the Lean repo.
+- Promotion of any of the listed alignments into a NS GAP or
+  CLAUDE.md invariant.
+- Any external-facing claim that NS is Lean-backed, formally
+  verified, or implemented from the Lean kernel.
+
+**Hard guardrail.**
+
+Do not say Night Shift is Lean-backed, formally verified, or
+implemented from the Lean kernel. The alignment is **formal
+resonance**, not formal backing. Useful, not sovereign.
+
+**Witness.**
+
+Triggered by operator question 2026-06-03 ("any of the new annex
+stuff for admissibility hits in nightshift?"). Spot-check of the
+five annexes named above against NS doctrine surfaced direct
+alignment with four NS invariant families and weaker alignment
+with a fifth. The breadcrumb captures the recoverable shape;
+chatgpt and NS-Claude independently agreed on the
+retrieval-handle framing and the hard-guardrail line.
