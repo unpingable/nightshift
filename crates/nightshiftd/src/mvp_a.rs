@@ -883,6 +883,7 @@ mod tests {
                 current_status: EvidenceState::Active,
                 origin: None,
                 silence: None,
+                position: None,
                 posture_class: crate::posture_class::PostureClass::IncidentShape,
             },
             reconciliation_summary: ReconciliationSummary::default(),

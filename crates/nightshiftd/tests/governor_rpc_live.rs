@@ -189,7 +189,8 @@ fn live_horizon_defer_pipeline_round_trips() {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    };
+
+        position: None,    };
     let nq = StableNqSource::new(snapshot);
     let store = SqliteStore::open_in_memory().unwrap();
     let governor = JsonRpcGovernorClient::new(&socket_path);

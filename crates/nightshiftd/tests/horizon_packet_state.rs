@@ -76,7 +76,8 @@ fn baseline_snapshot() -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    }
+
+        position: None,    }
 }
 
 /// Always returns the baseline snapshot. Each run makes two NQ calls

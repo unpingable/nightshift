@@ -14,8 +14,21 @@
 
 use serde::Serialize;
 
-use crate::finding::{EvidenceState, Severity};
+use crate::finding::{EvidenceState, Severity, WitnessPosition};
 use crate::nq::ListedFinding;
+
+/// Render a `WitnessPosition` as the canonical NQ wire token. Kept
+/// next to the render path so the absence label (`not testified`)
+/// and the present labels are visible in the same module — the
+/// rule that absence is operator prose, not a sixth variant,
+/// stays close to where it might be tempted otherwise.
+fn position_token(p: WitnessPosition) -> &'static str {
+    match p {
+        WitnessPosition::Substrate => "substrate",
+        WitnessPosition::ApplicationInternal => "application_internal",
+        WitnessPosition::Platform => "platform",
+    }
+}
 
 pub const PEEK_SCHEMA: &str = "nightshift.nq_peek.v1";
 
@@ -68,6 +81,13 @@ pub struct TranslatedView {
     /// migration. Surfaced for operator visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silence: Option<crate::finding::FindingSilence>,
+    /// NQ witness observation lane (substrate / application_internal
+    /// / platform). Render-only; carried verbatim from the NQ wire
+    /// when present and rendered with an absence label when absent.
+    /// Night Shift does not infer the lane from `detector` or any
+    /// other field — guarded by sentinel test.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<crate::finding::WitnessPosition>,
 }
 
 impl PeekDocument {
@@ -101,6 +121,7 @@ impl PeekDocument {
                     evidence_hash: snap.evidence_hash.clone(),
                     origin: snap.origin.clone(),
                     silence: snap.silence.clone(),
+                    position: snap.position,
                 };
                 let raw = if show_raw {
                     serde_json::from_str::<serde_json::Value>(&item.raw_line).ok()
@@ -185,6 +206,16 @@ pub fn render_peek_text(doc: &PeekDocument, show_raw: bool) -> String {
                 s.scope, s.basis, s.duration_s, s.expected
             ));
         }
+        // NQ witness position lane (substrate / application_internal
+        // / platform). Render every snapshot so absence is visible as
+        // its own state — `not testified` is operator prose, NOT a
+        // sixth taxonomy value. Inference from `detector` /
+        // `witness_type` is forbidden by sentinel test.
+        out.push_str("  position: ");
+        match &t.position {
+            Some(p) => out.push_str(&format!("{}\n", position_token(*p))),
+            None => out.push_str("not testified\n"),
+        }
         if show_raw {
             if let Some(raw) = &f.raw {
                 out.push_str("  raw (NQ): ");
@@ -222,7 +253,8 @@ mod tests {
             evidence_hash: format!("sha256:{generation:08x}"),
             origin: None,
             silence: None,
-        };
+
+            position: None,        };
         let raw_line = format!(
             r#"{{"schema":"nq.finding_snapshot.v1","contract_version":1,"finding_key":"local/{host}/{detector}/{subject}","placeholder":true}}"#
         );

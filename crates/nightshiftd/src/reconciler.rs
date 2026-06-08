@@ -538,7 +538,8 @@ mod tests {
             evidence_hash: String::new(),
             origin: None,
             silence: None,
-        }
+
+            position: None,        }
     }
 
     #[test]

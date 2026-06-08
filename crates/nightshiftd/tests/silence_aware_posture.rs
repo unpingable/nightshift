@@ -103,6 +103,7 @@ fn synthesized_legacy_silence_snap(detector: &str) -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None, // load-bearing: legacy detector, NO envelope yet
+        position: None,
     }
 }
 

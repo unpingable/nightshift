@@ -699,6 +699,7 @@ fn build_success_packet(
         posture_class,
         origin: current_snapshot.origin.clone(),
         silence: current_snapshot.silence.clone(),
+        position: current_snapshot.position,
     };
 
     let (diagnosis, proposed_action) = build_verdict_surfaces(
@@ -907,6 +908,7 @@ fn hold_for_preflight(
         posture_class: crate::posture_class::derive_posture_class(captured_snapshot),
         origin: captured_snapshot.origin.clone(),
         silence: captured_snapshot.silence.clone(),
+        position: captured_snapshot.position,
     };
 
     let reconciliation_summary = crate::bundle::ReconciliationSummary {
@@ -1082,7 +1084,8 @@ fn liveness_gate_failed(
         // carry origin/silence from. Both absent by construction.
         origin: None,
         silence: None,
-    };
+
+        position: None,    };
 
     let reconciliation_summary = crate::bundle::ReconciliationSummary {
         ok_to_proceed: false,

@@ -92,7 +92,8 @@ fn sushi_k_packet() -> Packet {
             current_status: EvidenceState::Active,
             origin: None,
             silence: None,
-            posture_class: PostureClass::IncidentShape,
+
+            position: None,            posture_class: PostureClass::IncidentShape,
         },
         reconciliation_summary: ReconciliationSummary::default(),
         diagnosis: Diagnosis {

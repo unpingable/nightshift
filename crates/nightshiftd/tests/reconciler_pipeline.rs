@@ -56,7 +56,8 @@ fn baseline_snapshot() -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    }
+
+        position: None,    }
 }
 
 /// A scripted NQ source: returns the head of `snapshots` on each

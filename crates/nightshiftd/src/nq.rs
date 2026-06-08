@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::errors::{NightShiftError, Result};
 use crate::finding::{
     EvidenceState, FindingKey, FindingOrigin, FindingSilence, FindingSnapshot, Severity,
+    WitnessPosition,
 };
 
 /// Trait for pulling the current snapshot of a finding by stable identity.
@@ -135,6 +136,16 @@ pub struct NqExportDto {
     /// silence detectors pending migration.
     #[serde(default)]
     pub silence: Option<NqSilenceDto>,
+    /// Forward-compat: NQ witness position
+    /// (`nq-witness-api::WitnessPosition`, ad26dc4 2026-06-08).
+    /// `nq findings export` does not emit this field today —
+    /// position lives on `SupportingWitnessPacket` inside
+    /// `PreflightResult.supports[]`. Parsed as a raw token so an
+    /// unknown wire value is mapped to `None` at translate time
+    /// rather than rejecting the whole snapshot. Absent on every
+    /// current NQ snapshot.
+    #[serde(default)]
+    pub position: Option<String>,
 }
 
 /// Subset of NQ's `admissibility` block. Only `state` and `reason` are
@@ -314,6 +325,17 @@ pub fn translate_nq(dto: &NqExportDto) -> Result<FindingSnapshot> {
         expected: s.expected.clone(),
     });
 
+    // NQ witness position (ad26dc4, 2026-06-08). NQ ships
+    // `WitnessPosition` on `SupportingWitnessPacket`, not on
+    // `FindingSnapshot`; `nq findings export` therefore omits this
+    // field today, so `dto.position` is None in practice. The
+    // parse-time enum keeps NS aligned with NQ canonical taxonomy
+    // (substrate / application_internal / platform) the moment
+    // any wire surface threads it through. An unknown wire value
+    // is treated as absent — NS does not coin variants NQ has not
+    // shipped.
+    let position = dto.position.as_deref().and_then(parse_position_token);
+
     Ok(FindingSnapshot {
         finding_key,
         host: dto.identity.host.clone(),
@@ -327,7 +349,21 @@ pub fn translate_nq(dto: &NqExportDto) -> Result<FindingSnapshot> {
         evidence_hash: String::new(),
         origin,
         silence,
+        position,
     })
+}
+
+/// Parse a wire token into the canonical `WitnessPosition` enum.
+/// Unknown tokens return `None` rather than minting a local variant
+/// or rejecting the snapshot — NS adopts NQ canonical taxonomy, it
+/// does not extend it.
+fn parse_position_token(token: &str) -> Option<WitnessPosition> {
+    match token {
+        "substrate" => Some(WitnessPosition::Substrate),
+        "application_internal" => Some(WitnessPosition::ApplicationInternal),
+        "platform" => Some(WitnessPosition::Platform),
+        _ => None,
+    }
 }
 
 /// URL-encode bytes per NQ's `compute_finding_key` rules. Used to
@@ -603,7 +639,8 @@ mod tests {
             evidence_hash: String::new(),
             origin: None,
             silence: None,
-        }
+
+            position: None,        }
     }
 
     #[test]

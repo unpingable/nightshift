@@ -435,7 +435,8 @@ fn snapshot_with_origin(origin: FindingOrigin) -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: Some(origin),
         silence: None,
-    }
+
+        position: None,    }
 }
 
 fn run_pipeline_with_snapshot(

@@ -103,7 +103,8 @@ fn capture_input_for(key: &FindingKey, captured_at: DateTime<Utc>) -> CaptureInp
         evidence_hash: "sha256:baseline".into(),
         origin: None,
         silence: None,
-    };
+
+        position: None,    };
     CaptureInput {
         input_id: input_id_for(key),
         source: "nq".into(),

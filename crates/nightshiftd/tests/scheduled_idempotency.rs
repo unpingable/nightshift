@@ -63,7 +63,8 @@ fn snapshot_at_generation(generation: u64) -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    }
+
+        position: None,    }
 }
 
 /// A trivial NQ source that always returns the same snapshot. Useful

@@ -81,6 +81,29 @@ pub enum Severity {
     Critical,
 }
 
+/// Witness observation lane, per NQ canonical taxonomy
+/// (`nq_core::witness::WitnessPosition`). Three values shipped on
+/// NQ's wire as of `ad26dc4` (2026-06-08): `substrate`,
+/// `application_internal`, `platform`.
+///
+/// **Render-only.** Night Shift does not branch reconciliation,
+/// notification posture, ack obligation, or freshness semantics on
+/// this value. The render surface shows it when present; absence
+/// renders as an operator-prose absence label — *not* a sixth
+/// taxonomy variant. Inference from `witness_type` /
+/// `detector` is forbidden by sentinel test.
+///
+/// See `CLAUDE.md` invariant on NS not branching on NQ witness
+/// positions; this enum exists to render NQ's claim, not to
+/// re-derive it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WitnessPosition {
+    Substrate,
+    ApplicationInternal,
+    Platform,
+}
+
 /// Origin envelope for findings ingested through NQ's
 /// `nq.finding_import.v1` substrate (`DURABLE_ARTIFACT_SUBSTRATE_GAP`
 /// V1). Present only when the upstream NQ snapshot carries
@@ -173,4 +196,13 @@ pub struct FindingSnapshot {
     /// Visibility-only; no NS branching on this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silence: Option<FindingSilence>,
+    /// NQ witness observation lane per `nq-witness-api`
+    /// `WitnessPosition`. Present when NQ stamps it on the wire;
+    /// absent on packets predating the witness.position cut-over
+    /// (and absent on every wire surface NS consumes today —
+    /// `nq findings export` does not carry it). Render-only;
+    /// absent renders as `position: not testified`. No inference
+    /// from `witness_type` / detector — guarded by sentinel test.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<WitnessPosition>,
 }

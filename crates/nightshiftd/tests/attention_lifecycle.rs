@@ -68,7 +68,8 @@ fn snapshot_at(generation: u64) -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    }
+
+        position: None,    }
 }
 
 /// A scripted NQ source whose returned snapshot can be mutated

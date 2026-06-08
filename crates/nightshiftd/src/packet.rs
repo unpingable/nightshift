@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::agenda::AuthorityLevel;
 use crate::bundle::ReconciliationSummary;
-use crate::finding::{EvidenceState, FindingKey, FindingOrigin, FindingSilence, Severity};
+use crate::finding::{
+    EvidenceState, FindingKey, FindingOrigin, FindingSilence, Severity, WitnessPosition,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +66,16 @@ pub struct FindingSummary {
     /// not branch on this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silence: Option<FindingSilence>,
+    /// NQ witness observation lane (substrate / application_internal
+    /// / platform). Render-only — Night Shift does not branch on
+    /// this field. Absent in every packet today because
+    /// `nq findings export` does not carry it; field exists so that
+    /// when any NQ wire surface threads position onto the
+    /// snapshot, the packet renders the lane without further
+    /// code changes. Inference from `detector` / `witness_type` is
+    /// forbidden by sentinel test.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<WitnessPosition>,
     /// Slice C.1 posture class (surface-only). Derived from the
     /// finding's wire shape. Defaults to `Unknown` per the
     /// SILENCE_UNIFICATION rule: absence of envelope is "not yet

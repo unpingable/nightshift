@@ -220,7 +220,8 @@ fn baseline_snapshot() -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    }
+
+        position: None,    }
 }
 
 /// Canonical fresh-witness liveness DTO mirroring

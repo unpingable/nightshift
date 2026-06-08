@@ -462,7 +462,8 @@ mod tests {
                 evidence_hash: hash.into(),
                 origin: None,
                 silence: None,
-            }),
+
+                position: None,            }),
         }
     }
 

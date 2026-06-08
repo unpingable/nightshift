@@ -80,7 +80,8 @@ fn baseline_snapshot() -> FindingSnapshot {
         evidence_hash: String::new(),
         origin: None,
         silence: None,
-    }
+
+        position: None,    }
 }
 
 fn silence_shape_snapshot() -> FindingSnapshot {
