@@ -22,3 +22,13 @@ venv/
 .vscode/
 .idea/
 *.swp
+
+# Sandbox-tool refusal markers. Some sandboxed test runners wrap
+# `exec`, refuse the call, and drop a marker file shaped like
+# `,<hex>.<digits>` (e.g. `,19ea827b1e7.671531`) in the cwd
+# of the refused process. The `tests/nq_cli.rs` harness now
+# smoke-checks the resolved nq binary so the wrapper's output no
+# longer reaches the test, but the marker files still appear
+# whenever an exec is refused. The leading comma is the anchor —
+# no normal repo artifact starts with `,`.
+,[0-9a-f]*.[0-9]*

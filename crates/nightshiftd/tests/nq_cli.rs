@@ -1,23 +1,84 @@
 //! NQ CLI interface contract tests.
 //!
 //! These are skip-if-missing: if the `nq` binary is not reachable, the
-//! test prints a skip notice and passes. When it IS reachable, we
-//! invoke `nq findings export --help` and confirm the flag-name
-//! interface Night Shift relies on is present. This catches schema
-//! drift on NQ's side without requiring a live NQ database in the
-//! test run.
+//! test prints an explicit `[nq_cli skip]` notice on stderr and passes.
+//! When it IS reachable, we invoke `nq findings export --help` and
+//! confirm the flag-name interface Night Shift relies on is present.
+//! This catches schema drift on NQ's side without requiring a live NQ
+//! database in the test run.
 //!
-//! Resolution order: NIGHTSHIFT_NQ_BIN env var, then PATH, then the
-//! in-tree debug binary at ~/git/nq/target/debug/nq.
+//! Resolution order: `NIGHTSHIFT_NQ_BIN` env var, then PATH (`which
+//! nq`), then in-tree builds at `~/git/notquery/target/{release,debug}`
+//! and `~/git/nq/target/debug`.
+//!
+//! ## Why a smoke-check is required, not just `path.exists()`
+//!
+//! Two real failure modes the bare resolution can't tell apart from
+//! NotQuery:
+//!
+//! 1. The unix `nq` job-queue tool (often shipped as `/usr/bin/nq`,
+//!    ~14KB, 2020-vintage) — a completely different program. `which nq`
+//!    happily returns it, and the test then invokes
+//!    `/usr/bin/nq findings export --help`, which the queue tool
+//!    accepts as a queued command name, exits 0, and produces nothing
+//!    the test expects. Without a smoke-check, the test fails not
+//!    because NotQuery's contract drifted, but because we tested the
+//!    wrong binary.
+//! 2. Sandboxed test environments that wrap `exec` and refuse the
+//!    call. The wrapper returns success and writes a path-shaped
+//!    refusal marker (e.g. `,19ea827b1e7.671531`) to stdout. The test
+//!    parses the marker as if it were `nq --help` output and fails on
+//!    missing flags. The `.gitignore` rule `,[0-9a-f]*.[0-9]*` keeps
+//!    those markers out of `git status`; this smoke-check keeps them
+//!    from breaking the test.
+//!
+//! The smoke-check invokes candidate `--help` and requires the output
+//! to mention `findings` — a subcommand only NotQuery has. Both
+//! failure modes above flunk that check, and the test skips with a
+//! visible `[nq_cli skip]` notice. Harness hardening only — the actual
+//! `findings export --help` / `--format jsonl` expectations are
+//! unchanged.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Smoke-check that a candidate binary at `path` actually looks like
+/// NotQuery — not the unix `nq` job-queue tool, not a sandbox wrapper
+/// that refuses the exec. The discriminator is the literal substring
+/// `findings` in the candidate's top-level `--help` stdout, which only
+/// NotQuery's CLI emits (it's a subcommand name).
+///
+/// Returns `false` for any failure mode: process spawn fails, exit
+/// non-zero, stdout missing `findings`, stdout looks like a sandbox
+/// refusal marker. Conservative by design — if we can't confirm
+/// NotQuery, we skip rather than test the wrong thing.
+fn looks_like_notquery(path: &Path) -> bool {
+    let Ok(out) = Command::new(path).arg("--help").output() else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Refuse anything that looks like the sandbox-refusal marker
+    // pattern (a single line of the form `,<hex>.<digits>`).
+    let trimmed = stdout.trim();
+    if trimmed.starts_with(',') && !trimmed.contains('\n') {
+        return false;
+    }
+    // NotQuery's top-level help advertises the `findings` subcommand.
+    // The unix `nq` job-queue tool prints `usage: nq [-c] [-q] ...`,
+    // which does not contain that word.
+    stdout.contains("findings")
+}
+
 fn resolve_nq_bin() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
     if let Ok(p) = std::env::var("NIGHTSHIFT_NQ_BIN") {
         let pb = PathBuf::from(p);
         if pb.exists() {
-            return Some(pb);
+            candidates.push(pb);
         }
     }
     // Try "nq" on PATH.
@@ -27,30 +88,43 @@ fn resolve_nq_bin() -> Option<PathBuf> {
             if !s.is_empty() {
                 let pb = PathBuf::from(s);
                 if pb.exists() {
-                    return Some(pb);
+                    candidates.push(pb);
                 }
             }
         }
     }
-    // Fall back to in-tree debug build next to this repo.
+    // Fall back to in-tree builds. Prefer release (smaller, faster) over
+    // debug; check both `notquery` (current repo name) and `nq` (legacy
+    // location).
     if let Some(home) = std::env::var_os("HOME") {
-        let candidate = PathBuf::from(home)
-            .join("git")
-            .join("nq")
-            .join("target")
-            .join("debug")
-            .join("nq");
-        if candidate.exists() {
-            return Some(candidate);
+        let home = PathBuf::from(home);
+        for tail in [
+            ["git", "notquery", "target", "release", "nq"],
+            ["git", "notquery", "target", "debug", "nq"],
+            ["git", "nq", "target", "release", "nq"],
+            ["git", "nq", "target", "debug", "nq"],
+        ] {
+            let mut candidate = home.clone();
+            for seg in tail {
+                candidate.push(seg);
+            }
+            if candidate.exists() {
+                candidates.push(candidate);
+            }
         }
     }
-    None
+
+    candidates.into_iter().find(|p| looks_like_notquery(p))
 }
 
 #[test]
 fn nq_findings_export_help_advertises_expected_flags() {
     let Some(bin) = resolve_nq_bin() else {
-        eprintln!("skipping: nq binary not reachable (set NIGHTSHIFT_NQ_BIN)");
+        eprintln!(
+            "[nq_cli skip] no NotQuery binary reachable (resolved candidates \
+             either absent or failed the `nq --help` smoke-check). Set \
+             NIGHTSHIFT_NQ_BIN to a real NotQuery binary to exercise this test."
+        );
         return;
     };
 
@@ -211,7 +285,11 @@ fn cli_source_rejects_drifted_schema_on_wire() {
 #[test]
 fn nq_findings_export_default_format_is_jsonl() {
     let Some(bin) = resolve_nq_bin() else {
-        eprintln!("skipping: nq binary not reachable (set NIGHTSHIFT_NQ_BIN)");
+        eprintln!(
+            "[nq_cli skip] no NotQuery binary reachable (resolved candidates \
+             either absent or failed the `nq --help` smoke-check). Set \
+             NIGHTSHIFT_NQ_BIN to a real NotQuery binary to exercise this test."
+        );
         return;
     };
 
