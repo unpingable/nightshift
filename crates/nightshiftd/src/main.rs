@@ -86,6 +86,15 @@ struct Cli {
     /// which writes tolerance records on `Defer`, promotes packet
     /// Attention to `WatchUntil`, and forwards declarations to
     /// Governor via `record_receipt`. Requires `--governor-socket`.
+    ///
+    /// **Without this flag, the default `watchbill` path is
+    /// governor-blind**: it runs through `run_watchbill_with_liveness`
+    /// (the local/liveness-only path), emits no `record_receipt`
+    /// calls, and produces a packet without Governor receipt
+    /// references. The split is intentional — Governor receipt
+    /// emission is opt-in because it is an authority/coordination
+    /// act, not just logging.
+    ///
     /// See `docs/working/gaps/GAP-imported-basis-freshness.md` and
     /// `src/horizon_policy.rs`.
     #[arg(long, global = true)]
@@ -96,6 +105,11 @@ struct Cli {
     /// horizon-driven deferrals emit `record_receipt` calls so the
     /// tolerance declaration shows up in Governor's receipt chain.
     /// One fresh connection per call; no persistent connection.
+    ///
+    /// **Without this flag (and `--horizon-policy`), no
+    /// `record_receipt` calls are emitted to Governor.** The default
+    /// `watchbill` invocation produces a local packet only; Governor
+    /// receipt emission is opt-in. Either flag alone is a hard error.
     #[arg(long, global = true)]
     governor_socket: Option<PathBuf>,
 
@@ -845,6 +859,24 @@ fn maybe_run_mvp_a(cli: &Cli, packet: &nightshiftd::packet::Packet) -> anyhow::R
                 refusal.nq_status,
                 refusal.nq_content_hash,
                 refusal.nq_subject,
+            );
+        }
+        nightshiftd::mvp_a::MvpAResult::WlpAuthorizationRefused(refusal) => {
+            // WLP3: NS cooked + classified the packet (Wicket Intent
+            // and Outcome are on disk), but `packet.unsettled` carries
+            // a ratified refusal kind. No WLP AuthorizationReceipt
+            // was minted; the receiver-side gate refused to warrant
+            // downstream reliance. The Wicket chain remains walkable;
+            // the WLP-side warranty is intentionally absent.
+            eprintln!(
+                "mvp-a-wlp-refused: artifact={} reason={} unsettled_kinds={:?} \
+                 wicket_intent={} wicket_outcome={} governor_receipts={:?}",
+                refusal.refusal_artifact_path.display(),
+                refusal.reason_code,
+                refusal.unsettled_kinds,
+                refusal.wicket_intent_path.display(),
+                refusal.wicket_outcome_path.display(),
+                refusal.governor_receipt_ids,
             );
         }
     }

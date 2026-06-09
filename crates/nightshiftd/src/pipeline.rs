@@ -39,7 +39,7 @@ use crate::nq::{evidence_hash, NqSource};
 use crate::packet::{
     AlternativeRegime, Attention, AttentionState, AuthorityResult, Confidence, Diagnosis,
     DiagnosisReview, DiagnosisReviewMode, FindingSummary, OperationalUrgency, Packet,
-    ProposedAction, ProposedActionKind, ReceiptReferences,
+    ProposedAction, ProposedActionKind, ReceiptReferences, UnsettledSummary,
 };
 use crate::reconcile_horizon::{
     apply_horizon_outcomes, outcome_event_payload, process_horizon, HorizonOutcome, HorizonReceipt,
@@ -502,7 +502,7 @@ pub fn reconcile_phase_with_horizon(
     //    `receipt_references.governor_receipts` and a
     //    `RunHorizonOutcome` ledger event — so "authority executed"
     //    is also "authority addressable" from NS output.
-    let (target_outcome, target_governor_receipts) = match (horizon_policy, governor) {
+    let (target_outcome, target_governor_receipts, target_unsettled) = match (horizon_policy, governor) {
         (Some(policy), Some(gov)) => {
             let outcomes = process_horizon(
                 &reconciliation,
@@ -544,12 +544,28 @@ pub fn reconcile_phase_with_horizon(
                 .filter(|r| r.finding_key == target)
                 .map(|r| r.receipt_id.clone())
                 .collect();
+            // Derive operator-visible UnsettledSummary entries for
+            // the same target. One summary per claim per receipt;
+            // each carries its source `receipt_id` so the binding
+            // back to the authority artifact survives display.
+            let target_unsettled: Vec<UnsettledSummary> = receipts
+                .iter()
+                .filter(|r| r.finding_key == target)
+                .flat_map(|r| {
+                    let rid = r.receipt_id.clone();
+                    r.unsettled.iter().map(move |c| UnsettledSummary {
+                        kind: c.kind,
+                        reason: c.reason.clone(),
+                        receipt_id: rid.clone(),
+                    })
+                })
+                .collect();
             let target_outcome = outcomes
                 .into_iter()
                 .find(|o| o.finding_key == target);
-            (target_outcome, target_governor_receipts)
+            (target_outcome, target_governor_receipts, target_unsettled)
         }
-        _ => (None, Vec::new()),
+        _ => (None, Vec::new(), Vec::new()),
     };
 
     // 6. Build the packet from persisted bundle state — no live reads.
@@ -563,6 +579,7 @@ pub fn reconcile_phase_with_horizon(
         opts,
         target_outcome.as_ref(),
         target_governor_receipts,
+        target_unsettled,
     )?;
 
     // 6a. Slice 3 — operator-attention projection.
@@ -663,6 +680,7 @@ fn build_success_packet(
     opts: &PipelineOptions,
     target_horizon_outcome: Option<&HorizonOutcome>,
     target_governor_receipts: Vec<String>,
+    target_unsettled: Vec<UnsettledSummary>,
 ) -> Result<Packet> {
     let nq_result = reconciliation
         .results
@@ -838,6 +856,7 @@ fn build_success_packet(
             governor_receipts: target_governor_receipts,
             evidence_bundle: Some(format!("bundle://{run_id}")),
         },
+        unsettled: target_unsettled,
         closure_candidate,
     })
 }
@@ -1021,6 +1040,7 @@ fn hold_for_preflight(
             governor_receipts: vec![],
             evidence_bundle: Some(format!("bundle://{run_id}")),
         },
+        unsettled: vec![],
         closure_candidate,
     };
 
@@ -1199,6 +1219,7 @@ fn liveness_gate_failed(
             governor_receipts: vec![],
             evidence_bundle: None,
         },
+        unsettled: vec![],
         closure_candidate,
     };
 

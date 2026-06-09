@@ -45,7 +45,9 @@ use nightshiftd::bundle::{
     ReconciliationResult, ReconciliationSummary, RelianceClass, RelianceScope, ValidFor,
 };
 use nightshiftd::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity};
-use nightshiftd::governor_client::{EventKind, FixtureGovernorClient};
+use nightshiftd::governor_client::{
+    EventKind, FixtureGovernorClient, NonDischargeKind,
+};
 use nightshiftd::horizon::{HorizonAction, HorizonBlock, HorizonClass};
 use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
 use nightshiftd::reconcile_horizon::{apply_horizon_outcomes, process_horizon};
@@ -262,6 +264,25 @@ fn tolerated_active_continues_to_defer_before_expiry() {
             block.basis_hash.as_deref(),
             Some(HASH_BASIS_ABC),
             "call {i}"
+        );
+        // Defer outcomes must surface one typed `freshness`
+        // non-discharge claim — the v4 GateReceipt's `unsettled`
+        // field records what the Defer did not close. The prose
+        // `reason` is informational; the closed-enum `kind` is the
+        // load-bearing assertion.
+        assert_eq!(
+            call.unsettled.len(),
+            1,
+            "call {i}: Defer must carry exactly one unsettled claim"
+        );
+        assert_eq!(
+            call.unsettled[0].kind,
+            NonDischargeKind::Freshness,
+            "call {i}: Defer's unsettled claim kind must be Freshness"
+        );
+        assert!(
+            !call.unsettled[0].reason.is_empty(),
+            "call {i}: reason is informational but must not be empty"
         );
     }
     assert_eq!(calls[0].run_id, "run_a");

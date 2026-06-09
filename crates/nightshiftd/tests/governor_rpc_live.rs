@@ -91,6 +91,7 @@ fn live_record_receipt_with_horizon_round_trips() {
             basis_hash: Some(sha256_of("basis:defer-001")),
             expiry: Some("2026-04-24T03:00:00Z".parse().unwrap()),
         }),
+        unsettled: Vec::new(),
     };
 
     let response = client.record_receipt(&request).unwrap_or_else(|e| {

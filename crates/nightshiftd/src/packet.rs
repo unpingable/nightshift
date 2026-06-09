@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agenda::AuthorityLevel;
 use crate::bundle::ReconciliationSummary;
+use crate::governor_client::NonDischargeKind;
 use crate::finding::{
     EvidenceState, FindingKey, FindingOrigin, FindingSilence, Severity, WitnessPosition,
 };
@@ -230,6 +231,24 @@ pub struct ReceiptReferences {
     pub evidence_bundle: Option<String>,
 }
 
+/// Operator-visible summary of one non-discharge claim from a
+/// Governor receipt. **Display-only / derived.** The authority
+/// artifact remains the v4 `GateReceipt.unsettled` on Governor's
+/// side; this is a convenience surface so an operator reading the
+/// packet does not have to cross to `governor receipts show <id>`
+/// to see what the verdict left unsettled.
+///
+/// `receipt_id` is the binding back to the source receipt. The
+/// summary intentionally drops the claim's optional
+/// `required_consumer` / `required_witness` fields — those belong
+/// to the authority artifact, not the display surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsettledSummary {
+    pub kind: NonDischargeKind,
+    pub reason: String,
+    pub receipt_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Packet {
     pub packet_version: u32,
@@ -245,6 +264,18 @@ pub struct Packet {
     pub diagnosis_review: DiagnosisReview,
     pub attention: Attention,
     pub receipt_references: ReceiptReferences,
+    /// Operator-visible summaries of Governor receipt non-discharge
+    /// claims. Empty for non-horizon paths or for outcomes that
+    /// emit no `unsettled` (Allow / Deny / Escalate / Render in
+    /// current B.1 scope). Derived display surface ONLY — the
+    /// authority artifact is the v4 `GateReceipt.unsettled` on the
+    /// Governor side. `receipt_id` on each summary is the binding
+    /// back to the source.
+    ///
+    /// **Invariant:** the packet may *display* unsettled; it may
+    /// not become the thing that *settles* unsettled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsettled: Vec<UnsettledSummary>,
     /// Slice 4 — review-gating closure verdict per
     /// `working/decisions/pre-positioned-doctrine-gates.md` Gate 1.
     /// **Not closure authority**: the predicate refuses closure

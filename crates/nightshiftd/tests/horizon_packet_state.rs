@@ -31,7 +31,7 @@ use chrono::{TimeZone, Utc};
 use nightshiftd::agenda::Agenda;
 use nightshiftd::errors::Result;
 use nightshiftd::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity};
-use nightshiftd::governor_client::FixtureGovernorClient;
+use nightshiftd::governor_client::{FixtureGovernorClient, NonDischargeKind};
 use nightshiftd::horizon::{HorizonBlock, HorizonClass};
 use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonDeclaration};
 use nightshiftd::ledger::RunLedgerEventKind;
@@ -576,6 +576,52 @@ fn defer_makes_governor_receipt_observable_in_packet_and_ledger() {
     assert_eq!(
         packet.attention.tolerance_basis_hash.as_deref(),
         Some(BASIS_HASH)
+    );
+
+    // -- Surface 3: packet.unsettled (operator-visible summary) --
+    // The Defer outcome must surface exactly one UnsettledSummary on
+    // the packet so an operator reading the YAML can see kind=freshness
+    // and the reason without crossing to `governor receipts show <id>`.
+    // The summary's receipt_id must equal the same receipt_id the
+    // packet already exposed in receipt_references — that's the
+    // binding back to the authority artifact.
+    assert_eq!(
+        packet.unsettled.len(),
+        1,
+        "Defer must surface exactly one UnsettledSummary on the packet"
+    );
+    let summary = &packet.unsettled[0];
+    assert_eq!(
+        summary.kind,
+        NonDischargeKind::Freshness,
+        "summary kind must be Freshness"
+    );
+    assert!(
+        !summary.reason.is_empty(),
+        "summary reason is informational but must not be empty"
+    );
+    assert_eq!(
+        &summary.receipt_id, packet_receipt,
+        "summary receipt_id must equal the receipt_id in receipt_references"
+    );
+
+    // -- Surface 3, YAML rendering check --
+    // The packet is rendered as YAML to the operator (see main.rs
+    // run_watchbill_cmd). Confirm the rendered output actually
+    // contains the unsettled section with the kind and reason; this
+    // is what closes verdict B → A for the packet surface.
+    let rendered = serde_yaml::to_string(&packet).expect("packet must serialize as YAML");
+    assert!(
+        rendered.contains("unsettled:"),
+        "rendered packet YAML must contain an `unsettled:` section, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("freshness"),
+        "rendered packet YAML must surface the `freshness` kind, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("defer outcome does not settle closure authority"),
+        "rendered packet YAML must surface the prose reason, got:\n{rendered}"
     );
 }
 

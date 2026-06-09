@@ -46,11 +46,12 @@ use sha2::{Digest, Sha256};
 
 use nightshiftd::closure::ClosureCandidate;
 use nightshiftd::finding::{EvidenceState, FindingKey, Severity};
+use nightshiftd::governor_client::NonDischargeKind;
 use nightshiftd::mvp_a::{run_pipeline, MvpAResult, NqReceiptRef, NS_ACTOR, NS_POLICY_REF};
 use nightshiftd::packet::{
     Attention, AttentionState, AuthorityResult, Confidence, Diagnosis, DiagnosisReview,
     DiagnosisReviewMode, FindingSummary, OperationalUrgency, Packet, ProposedAction,
-    ProposedActionKind, ReceiptReferences,
+    ProposedActionKind, ReceiptReferences, UnsettledSummary,
 };
 use nightshiftd::posture_class::PostureClass;
 use nightshiftd::agenda::AuthorityLevel;
@@ -150,6 +151,7 @@ fn sushi_k_packet() -> Packet {
             tolerance_basis_hash: None,
         },
         receipt_references: ReceiptReferences::default(),
+        unsettled: vec![],
         closure_candidate: ClosureCandidate::UnassessableMissingConsequenceWitness,
     }
 }
@@ -189,6 +191,10 @@ fn mvp_a_pipeline_produces_walkable_hash_chain_against_sushi_k_receipt() {
         MvpAResult::Cooked(o) => o,
         MvpAResult::Refused(r) => panic!(
             "verified NQ receipt must cook, not refuse; got refused with reason `{}`",
+            r.reason_code
+        ),
+        MvpAResult::WlpAuthorizationRefused(r) => panic!(
+            "baseline packet has empty unsettled; WLP3 refusal not expected: {}",
             r.reason_code
         ),
     };
@@ -374,6 +380,9 @@ fn mvp_a_pipeline_produces_walkable_hash_chain_against_sushi_k_receipt() {
     let outcome_2 = match result_2 {
         MvpAResult::Cooked(o) => o,
         MvpAResult::Refused(_) => panic!("re-run must also cook (determinism)"),
+        MvpAResult::WlpAuthorizationRefused(_) => {
+            panic!("baseline re-run: WLP3 refusal not expected on empty unsettled")
+        }
     };
     let posture_bytes_2 = std::fs::read(&outcome_2.posture_packet_path).unwrap();
     let intent_bytes_2 = std::fs::read(&outcome_2.wicket_intent_path).unwrap();
@@ -425,4 +434,319 @@ fn mvp_a_pipeline_produces_walkable_hash_chain_against_sushi_k_receipt() {
     // `crates/nightshiftd/src/nq.rs` consumes or emits NS posture.
     // That absence is the test's keeper; this assertion documents
     // intent without grepping the entire codebase at test time.
+}
+
+/// WLP1 observational carry-forward: a packet whose `unsettled` field
+/// carries a typed non-discharge claim must surface that claim — kind,
+/// reason, AND the binding `receipt_id` — in the wrapped WLP
+/// `AuthorizationReceipt`'s `transition.payload.ns_unsettled`. The
+/// packet's `receipt_references.governor_receipts` must also appear as
+/// `transition.payload.governor_receipt_ids`. Both are preservation
+/// only: forwarding the claim is **not** accepting or rejecting it; a
+/// downstream receiver-side gate decides what reliance is appropriate.
+///
+/// This test uses `NonDischargeKind::Authority` rather than `Freshness`
+/// because WLP3 refuses to wrap when `Freshness` is present. The WLP1
+/// carry-forward invariant must hold for any kind that has NOT been
+/// ratified to trigger WLP3 refusal — that's the trap the WLP3 slice
+/// exists to avoid. A separate WLP3 test (below) covers the
+/// freshness-refusal path.
+#[test]
+fn wlp1_observational_carry_forward_preserves_unsettled_and_receipts() {
+    let receipt_path = fixtures_dir().join("sushi-k-disk-state-receipt.json");
+    let nq_receipt =
+        NqReceiptRef::from_file(&receipt_path).expect("fixture nq.receipt.v1 must load");
+
+    // Reuse the verified sushi-k packet shape and overlay a populated
+    // `unsettled` + `governor_receipts` pair. Use `Authority` (not
+    // `Freshness`) so WLP3 does NOT refuse — this test asserts WLP1
+    // carry-forward, not WLP3 refusal. The Authority kind is a
+    // non-ratified-for-refusal placeholder; if future slices ratify
+    // it, update this test to use whatever kinds remain non-refusal.
+    let mut packet = sushi_k_packet();
+    let receipt_id = "fixture_receipt_authority_001".to_string();
+    packet.unsettled = vec![UnsettledSummary {
+        kind: NonDischargeKind::Authority,
+        reason: "synthetic test claim — not a ratified WLP3 refusal kind".into(),
+        receipt_id: receipt_id.clone(),
+    }];
+    packet.receipt_references.governor_receipts = vec![receipt_id.clone()];
+
+    let out_dir = tempfile::tempdir().expect("tempdir for mvp-a sinks");
+    let reference_time = packet.produced_at;
+
+    let result = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
+        .expect("mvp-a pipeline must succeed");
+    let outcome = match result {
+        MvpAResult::Cooked(o) => o,
+        MvpAResult::Refused(r) => {
+            panic!("WLP1 carry-forward must NOT short-circuit cook: {r:?}")
+        }
+        MvpAResult::WlpAuthorizationRefused(r) => panic!(
+            "WLP3 must NOT fire on non-freshness unsettled kinds — \
+             trap-avoidance regression. Got reason `{}`, kinds {:?}",
+            r.reason_code, r.unsettled_kinds
+        ),
+    };
+
+    let auth_bytes = std::fs::read(&outcome.wlp_authorization_path)
+        .expect("AuthorizationReceipt artifact must exist");
+    let auth_json: Value =
+        serde_json::from_slice(&auth_bytes).expect("AuthorizationReceipt must be valid JSON");
+    let payload = &auth_json["transition"]["payload"];
+
+    // -- ns_unsettled: one non-freshness claim with the prose reason
+    //    and the source receipt_id intact. (Freshness would have
+    //    routed through WLP3 refusal; see wlp3_* tests below.) --
+    let unsettled = payload["ns_unsettled"].as_array().expect(
+        "WLP1: transition.payload.ns_unsettled must be an array (forwarded from packet.unsettled)",
+    );
+    assert_eq!(
+        unsettled.len(),
+        1,
+        "WLP1: exactly one unsettled summary must survive the cook/wrap"
+    );
+    let claim = &unsettled[0];
+    assert_eq!(
+        claim["kind"].as_str(),
+        Some("authority"),
+        "WLP1: closed-enum kind must serialize as snake_case 'authority'"
+    );
+    let reason = claim["reason"].as_str().expect("reason string");
+    assert!(
+        reason.contains("synthetic test claim"),
+        "WLP1: freeform reason must survive verbatim, got {reason:?}"
+    );
+    assert_eq!(
+        claim["receipt_id"].as_str(),
+        Some(receipt_id.as_str()),
+        "WLP1: receipt_id binding back to Governor receipt must survive the forward"
+    );
+
+    // -- governor_receipt_ids: the packet's receipt_references list
+    //    propagated unchanged. --
+    let receipt_ids = payload["governor_receipt_ids"].as_array().expect(
+        "WLP1: transition.payload.governor_receipt_ids must be an array",
+    );
+    assert_eq!(
+        receipt_ids.len(),
+        1,
+        "WLP1: exactly the receipt_id from packet.receipt_references.governor_receipts"
+    );
+    assert_eq!(
+        receipt_ids[0].as_str(),
+        Some(receipt_id.as_str()),
+        "WLP1: forwarded id must equal the packet's governor_receipts entry"
+    );
+}
+
+/// Empty `packet.unsettled` and empty `governor_receipts` still emit
+/// `ns_unsettled: []` and `governor_receipt_ids: []` — empty array is
+/// the positive claim "no unsettled claims surfaced," NOT silence.
+/// Mirrors the v4 GateReceipt schema's same discipline.
+#[test]
+fn wlp1_empty_unsettled_emits_empty_array_not_missing_field() {
+    let receipt_path = fixtures_dir().join("sushi-k-disk-state-receipt.json");
+    let nq_receipt =
+        NqReceiptRef::from_file(&receipt_path).expect("fixture nq.receipt.v1 must load");
+
+    let packet = sushi_k_packet(); // unsettled defaults to vec![]
+    assert!(packet.unsettled.is_empty(), "baseline: fixture has no unsettled");
+
+    let out_dir = tempfile::tempdir().expect("tempdir for mvp-a sinks");
+    let reference_time = packet.produced_at;
+
+    let result = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
+        .expect("mvp-a pipeline must succeed");
+    let outcome = match result {
+        MvpAResult::Cooked(o) => o,
+        MvpAResult::Refused(r) => panic!("baseline must cook: {r:?}"),
+        MvpAResult::WlpAuthorizationRefused(r) => panic!(
+            "empty unsettled must NOT trigger WLP3 refusal: {}",
+            r.reason_code
+        ),
+    };
+
+    let auth_bytes = std::fs::read(&outcome.wlp_authorization_path).expect("artifact must exist");
+    let auth_json: Value = serde_json::from_slice(&auth_bytes).expect("must be valid JSON");
+    let payload = &auth_json["transition"]["payload"];
+
+    let unsettled = payload["ns_unsettled"].as_array().expect(
+        "ns_unsettled must be present even when empty — missing != zero",
+    );
+    assert!(
+        unsettled.is_empty(),
+        "empty unsettled must serialize as an empty array, not be absent"
+    );
+    let receipt_ids = payload["governor_receipt_ids"].as_array().expect(
+        "governor_receipt_ids must be present even when empty — missing != zero",
+    );
+    assert!(
+        receipt_ids.is_empty(),
+        "no governor receipts must serialize as an empty array"
+    );
+}
+
+/// WLP3 receiver-side refusal: a packet carrying `ns_unsettled` with
+/// `kind == Freshness` must (a) still cook into a Wicket Intent and
+/// produce a Wicket Outcome (classification is honest), (b) NOT mint
+/// a WLP `AuthorizationReceipt` or `HandlingReceipt` (no warranty for
+/// downstream reliance), and (c) emit a `ns.wlp_refusal.v1` artifact
+/// carrying the closed reason code, the triggering kinds, the
+/// governor receipt ids, and references to the Wicket artifacts.
+///
+/// The hard fence under test: refusal here is "I will not stake my
+/// name on this," NOT "this never happened." The Wicket chain is
+/// preserved; the warranty is intentionally absent.
+#[test]
+fn wlp3_freshness_unsettled_refuses_authorization_but_preserves_wicket_chain() {
+    use nightshiftd::mvp_a::{WlpAuthorizationRefusal, WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED};
+
+    let receipt_path = fixtures_dir().join("sushi-k-disk-state-receipt.json");
+    let nq_receipt =
+        NqReceiptRef::from_file(&receipt_path).expect("fixture nq.receipt.v1 must load");
+
+    let mut packet = sushi_k_packet();
+    let governor_receipt_id = "fixture_receipt_freshness_001".to_string();
+    let reason_prose =
+        "defer outcome does not settle closure authority while horizon remains active";
+    packet.unsettled = vec![UnsettledSummary {
+        kind: NonDischargeKind::Freshness,
+        reason: reason_prose.into(),
+        receipt_id: governor_receipt_id.clone(),
+    }];
+    packet.receipt_references.governor_receipts = vec![governor_receipt_id.clone()];
+
+    let out_dir = tempfile::tempdir().expect("tempdir for mvp-a sinks");
+    let reference_time = packet.produced_at;
+
+    let result = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
+        .expect("mvp-a pipeline must succeed");
+
+    // -- Acceptance 1, 5: WlpAuthorizationRefused variant. --
+    let refusal: WlpAuthorizationRefusal = match result {
+        MvpAResult::WlpAuthorizationRefused(r) => r,
+        MvpAResult::Cooked(_) => panic!(
+            "freshness-unsettled packet must refuse at WLP3, not produce a Cooked variant"
+        ),
+        MvpAResult::Refused(r) => panic!(
+            "freshness-unsettled must refuse at WLP3 (downstream), NOT at A.5 \
+             (upstream). Got A.5 reason `{}`.",
+            r.reason_code
+        ),
+    };
+
+    // -- Acceptance 6: refusal carries the reason code, kinds, and
+    //    governor receipt ids. --
+    assert_eq!(
+        refusal.reason_code, WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED,
+        "WLP3 reason code must be the closed-vocabulary constant"
+    );
+    assert_eq!(
+        refusal.unsettled_kinds,
+        vec![NonDischargeKind::Freshness],
+        "WLP3 refusal must enumerate the triggering kinds (Freshness only here)"
+    );
+    assert_eq!(
+        refusal.governor_receipt_ids,
+        vec![governor_receipt_id.clone()],
+        "WLP3 refusal must carry the source Governor receipt ids"
+    );
+
+    // -- Acceptance 1, 2: Wicket Intent + Outcome still on disk. --
+    assert!(
+        refusal.wicket_intent_path.exists(),
+        "Wicket Intent artifact must exist on the WLP3-refused path \
+         (classification surface preserved)"
+    );
+    assert!(
+        refusal.wicket_outcome_path.exists(),
+        "Wicket Outcome artifact must exist on the WLP3-refused path"
+    );
+
+    // -- Acceptance 3: no WLP AuthorizationReceipt, no HandlingReceipt. --
+    let wlp_auth_path =
+        out_dir.path().join(format!("ns-wlp-authorization-{}.json", packet.run_id));
+    let wlp_handling_path =
+        out_dir.path().join(format!("ns-wlp-handling-{}.json", packet.run_id));
+    assert!(
+        !wlp_auth_path.exists(),
+        "WLP3 must NOT mint an AuthorizationReceipt; found {wlp_auth_path:?}"
+    );
+    assert!(
+        !wlp_handling_path.exists(),
+        "WLP3 must NOT mint a HandlingReceipt; found {wlp_handling_path:?}"
+    );
+
+    // -- Acceptance 4: ns.wlp_refusal.v1 artifact present and well-formed. --
+    let artifact_bytes = std::fs::read(&refusal.refusal_artifact_path)
+        .expect("ns.wlp_refusal.v1 artifact must exist on disk");
+    let artifact: Value =
+        serde_json::from_slice(&artifact_bytes).expect("refusal artifact must be valid JSON");
+    assert_eq!(
+        artifact["schema"].as_str(),
+        Some("ns.wlp_refusal.v1"),
+        "refusal artifact must declare the ns.wlp_refusal.v1 schema (distinct from ns.refusal.v1)"
+    );
+    assert_eq!(
+        artifact["reason_code"].as_str(),
+        Some(WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED),
+        "refusal artifact reason_code must match the closed constant"
+    );
+    let kinds_arr = artifact["unsettled_kinds"]
+        .as_array()
+        .expect("unsettled_kinds must be an array");
+    assert_eq!(kinds_arr.len(), 1);
+    assert_eq!(kinds_arr[0].as_str(), Some("freshness"));
+    let receipts_arr = artifact["governor_receipt_ids"]
+        .as_array()
+        .expect("governor_receipt_ids must be an array");
+    assert_eq!(receipts_arr[0].as_str(), Some(governor_receipt_id.as_str()));
+    let unsettled_arr = artifact["ns_unsettled"]
+        .as_array()
+        .expect("ns_unsettled (full UnsettledSummary list) must be carried in the artifact");
+    assert_eq!(unsettled_arr.len(), 1);
+    assert_eq!(unsettled_arr[0]["kind"].as_str(), Some("freshness"));
+    assert!(unsettled_arr[0]["reason"]
+        .as_str()
+        .map(|r| r.contains("defer outcome does not settle"))
+        .unwrap_or(false));
+}
+
+/// WLP3 trap-avoidance: a packet whose `ns_unsettled` contains kinds
+/// OTHER than `Freshness` must NOT trigger WLP3 refusal. The slice
+/// covers exactly one ratified kind; the others remain carried-but-
+/// not-adjudicated until they earn their own ratification.
+///
+/// This test is the structural defense against the laundering move
+/// `if packet.unsettled.is_empty() ... else refuse`. If anyone ever
+/// "simplifies" `wlp3_refusal_triggering_kinds` to a non-empty check,
+/// this test fails.
+#[test]
+fn wlp3_non_freshness_unsettled_does_not_refuse() {
+    let receipt_path = fixtures_dir().join("sushi-k-disk-state-receipt.json");
+    let nq_receipt =
+        NqReceiptRef::from_file(&receipt_path).expect("fixture nq.receipt.v1 must load");
+
+    let mut packet = sushi_k_packet();
+    packet.unsettled = vec![UnsettledSummary {
+        kind: NonDischargeKind::Authority, // NOT Freshness
+        reason: "synthetic Authority claim — non-ratified for WLP3 refusal".into(),
+        receipt_id: "fixture_receipt_authority_001".into(),
+    }];
+
+    let out_dir = tempfile::tempdir().expect("tempdir for mvp-a sinks");
+    let reference_time = packet.produced_at;
+
+    let result = run_pipeline(&packet, &nq_receipt, out_dir.path(), reference_time)
+        .expect("mvp-a pipeline must succeed");
+
+    match result {
+        MvpAResult::Cooked(_) => {} // expected
+        MvpAResult::WlpAuthorizationRefused(r) => panic!(
+            "WLP3 trap regression: non-freshness unsettled MUST NOT refuse; got `{}` for kinds {:?}",
+            r.reason_code, r.unsettled_kinds
+        ),
+        MvpAResult::Refused(r) => panic!("unexpected A.5 refusal: {}", r.reason_code),
+    }
 }

@@ -23,7 +23,10 @@ nightshift watchbill run wal-bloat-review
 3. Reconcile: compare captured state vs. current state
 4. Run bounded diagnosis workflow
 5. Emit a repair proposal packet
-6. Record run events; Governor emits authority receipts
+6. Record run events locally. **Governor receipts are emitted only when
+   `--horizon-policy` *and* `--governor-socket` are both passed**; the
+   default invocation is governor-blind by design (see [Authority model](#authority-model)
+   below — `observe` and `advise` levels may run without Governor).
 7. No mutation. No sudo. No cowboy shit.
 
 Ops mode (Watchbill) is first because it pressure-tests the authority

@@ -134,6 +134,7 @@ fn lil_nas_x_packet() -> Packet {
             tolerance_basis_hash: None,
         },
         receipt_references: ReceiptReferences::default(),
+        unsettled: vec![],
         closure_candidate: ClosureCandidate::UnassessableMissingConsequenceWitness,
     }
 }
@@ -175,6 +176,11 @@ fn ns_refuses_to_cook_not_verified_receipt_and_writes_refusal_artifact() {
         MvpAResult::Cooked(_) => panic!(
             "not_verified NQ receipt must refuse, not cook; got Cooked. \
              This is path (c) — forbidden by the A.5 plan."
+        ),
+        MvpAResult::WlpAuthorizationRefused(r) => panic!(
+            "not_verified NQ receipt must refuse at A.5 (upstream-data-unsuitable), \
+             NOT at WLP3 (downstream-receiver-side). Got WLP3 reason `{}`.",
+            r.reason_code
         ),
     };
     assert_eq!(refusal.reason_code, "BASIS_NOT_VERIFIED_UNREPRESENTABLE");
@@ -269,6 +275,9 @@ fn ns_refuses_to_cook_not_verified_receipt_and_writes_refusal_artifact() {
     let refusal_2 = match result_2 {
         MvpAResult::Refused(r) => r,
         MvpAResult::Cooked(_) => panic!("re-run must also refuse"),
+        MvpAResult::WlpAuthorizationRefused(_) => {
+            panic!("re-run must refuse at A.5, not WLP3")
+        }
     };
     let artifact_bytes_2 = std::fs::read(&refusal_2.refusal_artifact_path).unwrap();
     assert_eq!(

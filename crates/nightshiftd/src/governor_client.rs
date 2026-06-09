@@ -69,6 +69,40 @@ pub enum EventKind {
     EscalationPaged,
 }
 
+/// Closed enum of non-discharge kinds for `unsettled` claims on a
+/// gate receipt (Governor v4).
+///
+/// Mirrors `agent_gov/src/governor/gate_receipt.py:VALID_NON_DISCHARGE_KINDS`.
+/// New kinds require ratification on the Governor side first; this
+/// enum is a closed-set wire mirror, not an extensible vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NonDischargeKind {
+    Authority,
+    EvidenceSufficiency,
+    Freshness,
+    Scope,
+    Standing,
+    ConsumerReliance,
+}
+
+/// One thing the verdict carried by a Governor receipt explicitly
+/// does NOT settle.
+///
+/// Mirrors `agent_gov/src/governor/gate_receipt.py:NonDischargeClaim`.
+/// `reason` is freeform prose for human reviewers and does NOT
+/// participate in matching or dispatch. The closed-enum `kind`
+/// gates validity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NonDischargeClaim {
+    pub kind: NonDischargeKind,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_consumer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_witness: Option<String>,
+}
+
 /// Request payload for `nightshift.record_receipt`.
 ///
 /// Mirrors `agent_gov/src/governor/nightshift_adapter.py:RecordReceiptRequest`.
@@ -100,6 +134,14 @@ pub struct RecordReceiptRequest {
     /// `action.authorized` for horizon-driven deferral).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizon: Option<HorizonBlock>,
+    /// Non-discharge claims this verdict explicitly does NOT settle.
+    /// Empty by default. Populated by NS on horizon-Defer outcomes
+    /// (one `freshness` claim) so Governor's v4 GateReceipt can
+    /// surface what the Defer did not close. Other event kinds do
+    /// not yet populate; that is intentional — initial population
+    /// is scoped to the already-witnessed horizon path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsettled: Vec<NonDischargeClaim>,
 }
 
 /// Response payload for `nightshift.record_receipt`.
@@ -418,6 +460,7 @@ mod tests {
             from_level: None,
             to_level: None,
             horizon: None,
+            unsettled: Vec::new(),
         }
     }
 

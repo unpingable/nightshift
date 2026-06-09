@@ -55,6 +55,7 @@ use wlp::{
 };
 
 use crate::errors::{NightShiftError, Result};
+use crate::governor_client::NonDischargeKind;
 use crate::packet::Packet;
 
 /// NS component identity in actor strings.
@@ -195,6 +196,18 @@ struct PosturePacketSink {
 pub enum MvpAResult {
     Cooked(MvpAOutcome),
     Refused(MvpARefusal),
+    /// WLP3 receiver-side refusal. Cooking succeeded — Wicket Intent and
+    /// Wicket Outcome were both written to disk — but `packet.unsettled`
+    /// carries a kind that triggers refusal to mint a WLP
+    /// `AuthorizationReceipt`. NS does NOT invoke `wrap_authorization`
+    /// or `wlp::handle` on this path. The classification surface
+    /// survives; the warranty does not.
+    ///
+    /// Hard fence: this is not "everything unsettled is forbidden."
+    /// One ratified kind triggers refusal per slice. Currently:
+    /// `Freshness`. Other `NonDischargeKind` values are carried-but-
+    /// -not-adjudicated until they earn their own ratification.
+    WlpAuthorizationRefused(WlpAuthorizationRefusal),
 }
 
 /// Refusal record returned when NS will not cook a Wicket Intent.
@@ -210,6 +223,52 @@ pub struct MvpARefusal {
     pub nq_content_hash: String,
     pub nq_subject: String,
     pub nq_status: String,
+}
+
+/// WLP3 receiver-side refusal record. The packet cooked + classified
+/// cleanly (Wicket Intent + Outcome exist on disk), but
+/// `packet.unsettled` carried a ratified refusal kind, so NS did not
+/// invoke `wrap_authorization` / `wlp::handle`. The chain remains
+/// walkable to the Wicket side via `wicket_intent_path` and
+/// `wicket_outcome_path`; the WLP-side warranty is intentionally absent.
+#[derive(Debug, Clone, Serialize)]
+pub struct WlpAuthorizationRefusal {
+    pub posture_packet_path: PathBuf,
+    pub wicket_intent_path: PathBuf,
+    pub wicket_outcome_path: PathBuf,
+    pub refusal_artifact_path: PathBuf,
+    pub reason_code: String,
+    /// Kinds from `packet.unsettled` that triggered the refusal.
+    /// One-element vec in the current slice (Freshness only); the
+    /// type carries a Vec so future ratified kinds don't force a
+    /// shape change.
+    pub unsettled_kinds: Vec<NonDischargeKind>,
+    pub governor_receipt_ids: Vec<String>,
+}
+
+/// Closed reason-code vocabulary for WLP3 refusals. One code per
+/// ratified `NonDischargeKind`. Only `WLP_AUTHORIZATION_REFUSED_
+/// FRESHNESS_UNSETTLED` is wired into dispatch in the current slice.
+/// Other codes for other kinds remain candidates pending their own
+/// ratification slices (see witness 2026-06-09 WLP2 design audit).
+pub const WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED: &str =
+    "WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED";
+
+/// Scan `packet.unsettled` for kinds that trigger WLP3 refusal.
+/// Returns the ordered list of triggering kinds (empty when none).
+///
+/// **Hard fence:** this function returns ONLY kinds that have been
+/// individually ratified. Adding a new kind here is the only honest
+/// way to extend WLP3's teeth — and requires its own slice + reason
+/// code + tests. Do NOT replace this with a `!packet.unsettled.is_empty()`
+/// catch-all; that would be the laundering move WLP3 exists to refuse.
+fn wlp3_refusal_triggering_kinds(packet: &Packet) -> Vec<NonDischargeKind> {
+    packet
+        .unsettled
+        .iter()
+        .filter(|s| matches!(s.kind, NonDischargeKind::Freshness))
+        .map(|s| s.kind)
+        .collect()
 }
 
 /// MVP-A pipeline output: the five artifacts plus the canonical
@@ -365,6 +424,27 @@ pub fn wrap_authorization(
 ) -> Artifact {
     let finding_key = packet.attention.attention_key.as_string();
     let wicket_input_hash = outcome.receipt.input_hash.clone();
+    // WLP1 observational carry-forward.
+    //
+    // `ns_unsettled` and `governor_receipt_ids` are preserved into
+    // the AuthorizationReceipt payload so receiver-side consumers
+    // (Continuity persistence, future receiver gates) have custody
+    // of the non-discharge signal NS surfaced on the packet.
+    //
+    // **Invariant: forwarding is preservation, not adjudication.**
+    // Carrying `ns_unsettled` does NOT accept the unsettled claim,
+    // does NOT reject it, and does NOT imply automatic refusal of
+    // the AuthorizationReceipt. It records that the upstream Defer
+    // verdict explicitly did not settle these conditions, so a
+    // downstream receiver can decide what reliance is appropriate.
+    // Future gremlins will try to treat this as decorative metadata
+    // or as an automatic denial. Both wrong. Equal-opportunity
+    // wrongness. Don't.
+    //
+    // Both fields are always emitted (possibly empty arrays). An
+    // empty `ns_unsettled: []` is the positive claim "no unsettled
+    // claims surfaced," not silence — mirroring the v4 GateReceipt
+    // schema's same discipline.
     let payload = serde_json::json!({
         "wicket_surface_verdict": outcome.surface_verdict,
         "wicket_outcome_class": outcome.class,
@@ -383,6 +463,8 @@ pub fn wrap_authorization(
         "ns_attention_state": packet.attention.attention_state,
         "ns_posture_class": packet.attention.posture_class,
         "ns_evidence_state": packet.attention.evidence_state,
+        "ns_unsettled": packet.unsettled,
+        "governor_receipt_ids": packet.receipt_references.governor_receipts,
         "nq_content_hash": nq_receipt.content_hash,
         "nq_claim": nq_receipt.claim,
         "nq_subject": nq_receipt.subject,
@@ -509,6 +591,13 @@ pub struct SinkPaths {
     /// A.5 refusal artifact. Written only when `evaluate_basis_admissibility`
     /// returns `Some(reason_code)`.
     pub refusal: PathBuf,
+    /// WLP3 receiver-side refusal artifact. Written when the packet
+    /// cooks + classifies cleanly but `packet.unsettled` contains a
+    /// kind that triggers refusal-to-wrap (currently only
+    /// `Freshness`). The Wicket Intent/Outcome still exist; this
+    /// artifact records the receiver's refusal to mint a WLP
+    /// `AuthorizationReceipt` warranty.
+    pub wlp_refusal: PathBuf,
 }
 
 /// Compute sink paths for the MVP-A artifacts in `out_dir`.
@@ -520,6 +609,7 @@ pub fn sink_paths(out_dir: &Path, run_id: &str) -> SinkPaths {
         wlp_authorization: out_dir.join(format!("ns-wlp-authorization-{run_id}.json")),
         wlp_handling: out_dir.join(format!("ns-wlp-handling-{run_id}.json")),
         refusal: out_dir.join(format!("ns-refusal-{run_id}.json")),
+        wlp_refusal: out_dir.join(format!("ns-wlp-refusal-{run_id}.json")),
     }
 }
 
@@ -591,6 +681,58 @@ pub fn write_refusal_artifact(
             "{}@v{}",
             nq_receipt.evaluator.evaluator, nq_receipt.evaluator.version
         ),
+        "ns_actor": NS_ACTOR,
+        "ns_policy_ref": format!("{NS_POLICY_REF}@{NS_POLICY_VERSION}"),
+    });
+    write_canonical_json(path, &artifact)
+}
+
+/// Write the WLP3 receiver-side refusal artifact.
+///
+/// **Schema distinct from `ns.refusal.v1`.** `ns.refusal.v1` is for
+/// upstream-data-unsuitable refusals (e.g., unverified NQ receipt) and
+/// is emitted BEFORE Wicket sees the packet. `ns.wlp_refusal.v1` is
+/// emitted AFTER Wicket has classified the packet successfully — the
+/// classification surface is honest; the refusal is the receiver-side
+/// gate's choice not to warrant downstream reliance while a ratified
+/// unsettled condition remains open.
+///
+/// References (not inlines) the Wicket Intent and Outcome artifacts.
+/// A verifier walking from this refusal to the Wicket side reads the
+/// path fields and loads the canonical JSON; the refusal artifact
+/// itself stays a compact record, not a scrapbook of every upstream
+/// shape.
+#[allow(clippy::too_many_arguments)]
+pub fn write_wlp_refusal_artifact(
+    path: &Path,
+    packet: &Packet,
+    nq_receipt: &NqReceiptRef,
+    reason_code: &str,
+    unsettled_kinds: &[NonDischargeKind],
+    governor_receipt_ids: &[String],
+    wicket_intent_path: &Path,
+    wicket_outcome_path: &Path,
+    refused_at: DateTime<Utc>,
+) -> Result<()> {
+    let finding_key = packet.attention.attention_key.as_string();
+    let artifact = serde_json::json!({
+        "schema": "ns.wlp_refusal.v1",
+        "reason_code": reason_code,
+        "refused_at": refused_at.to_rfc3339(),
+        "agenda_id": packet.agenda_id,
+        "finding_key": finding_key,
+        "run_id": packet.run_id,
+        "unsettled_kinds": unsettled_kinds,
+        "ns_unsettled": packet.unsettled,
+        "governor_receipt_ids": governor_receipt_ids,
+        "wicket_intent_path": wicket_intent_path
+            .to_str()
+            .unwrap_or("<non-utf8 path>"),
+        "wicket_outcome_path": wicket_outcome_path
+            .to_str()
+            .unwrap_or("<non-utf8 path>"),
+        "nq_content_hash": nq_receipt.content_hash,
+        "nq_subject": nq_receipt.subject,
         "ns_actor": NS_ACTOR,
         "ns_policy_ref": format!("{NS_POLICY_REF}@{NS_POLICY_VERSION}"),
     });
@@ -685,6 +827,47 @@ pub fn run_pipeline(
     // just written above.
     let outcome = wicket::check(&intent);
     write_canonical_json(&paths.wicket_outcome, &outcome)?;
+
+    // WLP3 receiver-side gate: refuse to mint a WLP AuthorizationReceipt
+    // when `packet.unsettled` contains a ratified refusal kind. The
+    // classification surface (Wicket Intent + Outcome on disk above)
+    // is untouched — NS+Wicket understood the packet correctly. What
+    // NS refuses here is the *warranty for downstream reliance*: no
+    // AuthorizationReceipt is minted, so no downstream receiver can
+    // accept the WLP HandlingReceipt's `Accepted` verdict as a basis
+    // for state mutation.
+    //
+    // Trap to avoid: do NOT short-circuit on "any non-empty
+    // packet.unsettled." Each ratified kind earns its teeth through
+    // its own slice. `wlp3_refusal_triggering_kinds` is the closed-
+    // vocabulary filter. Currently: Freshness only.
+    let refusal_kinds = wlp3_refusal_triggering_kinds(packet);
+    if !refusal_kinds.is_empty() {
+        let governor_receipt_ids = packet
+            .receipt_references
+            .governor_receipts
+            .clone();
+        write_wlp_refusal_artifact(
+            &paths.wlp_refusal,
+            packet,
+            nq_receipt,
+            WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED,
+            &refusal_kinds,
+            &governor_receipt_ids,
+            &paths.wicket_intent,
+            &paths.wicket_outcome,
+            reference_time,
+        )?;
+        return Ok(MvpAResult::WlpAuthorizationRefused(WlpAuthorizationRefusal {
+            posture_packet_path: paths.posture,
+            wicket_intent_path: paths.wicket_intent,
+            wicket_outcome_path: paths.wicket_outcome,
+            refusal_artifact_path: paths.wlp_refusal,
+            reason_code: WLP_AUTHORIZATION_REFUSED_FRESHNESS_UNSETTLED.to_string(),
+            unsettled_kinds: refusal_kinds,
+            governor_receipt_ids,
+        }));
+    }
 
     // Slice 4: wrap as WLP AuthorizationReceipt, call handle().
     let auth_artifact = wrap_authorization(&outcome, packet, nq_receipt, reference_time);
@@ -935,6 +1118,7 @@ mod tests {
                 tolerance_basis_hash: None,
             },
             receipt_references: ReceiptReferences::default(),
+            unsettled: vec![],
             closure_candidate: ClosureCandidate::UnassessableMissingConsequenceWitness,
         }
     }

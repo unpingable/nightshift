@@ -35,7 +35,9 @@ use sha2::{Digest, Sha256};
 use crate::bundle::{CaptureInput, ReconciliationPhase, ReconciliationResult};
 use crate::errors::Result;
 use crate::finding::FindingKey;
-use crate::governor_client::{EventKind, GovernorClient, RecordReceiptRequest};
+use crate::governor_client::{
+    EventKind, GovernorClient, NonDischargeClaim, NonDischargeKind, RecordReceiptRequest,
+};
 use crate::horizon::{action_for, HorizonAction};
 use crate::horizon_policy::HorizonPolicySource;
 use crate::store::{Store, ToleranceRecord};
@@ -61,6 +63,13 @@ pub struct HorizonReceipt {
     pub action: HorizonAction,
     pub basis_id: String,
     pub expires_at: DateTime<Utc>,
+    /// Non-discharge claims attached to the outgoing
+    /// `RecordReceiptRequest` for this outcome. Retained so the
+    /// packet builder can derive operator-visible
+    /// `UnsettledSummary` entries without re-deriving the claim
+    /// set from the action variant. Empty for actions that emit
+    /// no unsettled (currently every action except Defer).
+    pub unsettled: Vec<crate::governor_client::NonDischargeClaim>,
 }
 
 /// One horizon decision for one finding in one run, after acquiring
@@ -248,6 +257,21 @@ pub fn apply_horizon_outcomes(
                     basis_hash: Some(basis_hash.clone()),
                     expiry: Some(*until),
                 };
+                // Defer outcomes do not settle the closure-authority
+                // condition that would let an operator close the
+                // finding. Surface that on the Governor receipt as a
+                // typed `freshness` non-discharge claim so the v4
+                // GateReceipt records what the Defer left open. The
+                // prose `reason` is informational; the closed-enum
+                // `kind` is the load-bearing field.
+                let unsettled = vec![NonDischargeClaim {
+                    kind: NonDischargeKind::Freshness,
+                    reason: "defer outcome does not settle closure authority \
+                             while horizon remains active"
+                        .into(),
+                    required_consumer: None,
+                    required_witness: None,
+                }];
                 let request = RecordReceiptRequest {
                     event_kind: EventKind::ActionAuthorized,
                     run_id: run_id.into(),
@@ -261,7 +285,9 @@ pub fn apply_horizon_outcomes(
                     from_level: None,
                     to_level: None,
                     horizon: Some(block),
+                    unsettled,
                 };
+                let unsettled_for_receipt = request.unsettled.clone();
                 let response = governor.record_receipt(&request)?;
                 receipts.push(HorizonReceipt {
                     finding_key: outcome.finding_key.clone(),
@@ -270,6 +296,7 @@ pub fn apply_horizon_outcomes(
                     action: outcome.action.clone(),
                     basis_id: basis_id.clone(),
                     expires_at: *until,
+                    unsettled: unsettled_for_receipt,
                 });
             }
             HorizonAction::EscalateExpired { .. }
