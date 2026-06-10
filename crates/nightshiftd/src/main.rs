@@ -326,13 +326,59 @@ enum WatchbillAction {
     /// Run an agenda end-to-end (capture then reconcile in one
     /// invocation). Thin convenience over `capture` + `reconcile`;
     /// same semantics, same-generation timing.
+    ///
+    /// Drill mode: when `--drill` is passed, the positional becomes a
+    /// workload name (e.g. `wal-bloat-review`), not a YAML path. The
+    /// drill runner shells into AG's `python3 -m
+    /// governor.drill_runner` and renders a deterministic transcript
+    /// of the receipt chain. `--scenario` selects which drill
+    /// scenario; D0d-a admits only `all-green`. In drill mode,
+    /// `--finding` is not consulted.
     Run {
-        /// Path to an agenda YAML file.
+        /// Path to an agenda YAML file. In `--drill` mode this is the
+        /// workload name (e.g. `wal-bloat-review`).
         agenda_path: PathBuf,
 
         /// Stable finding key to target: `<source>:<detector>:<subject>`.
+        /// Not required in `--drill` mode (the drill scenario controls
+        /// the finding).
         #[arg(long)]
-        finding: String,
+        finding: Option<String>,
+
+        /// Run a deterministic drill scenario instead of an agenda.
+        /// The positional argument becomes the workload name. D0d-a:
+        /// only `wal-bloat-review` + `--scenario=all-green` is wired.
+        ///
+        /// The drill emits real GateReceipts (origin_mode=drill) via
+        /// AG's cooked-context orchestrator and renders a
+        /// deterministic transcript — receipt render, NOT model
+        /// narration.
+        #[arg(long)]
+        drill: bool,
+
+        /// Drill scenario name. D0d-a admits only `all-green`. Ignored
+        /// when `--drill` is not set.
+        #[arg(long)]
+        scenario: Option<String>,
+
+        /// Override the receipt root directory the drill writes
+        /// receipts into. Defaults to
+        /// `$TMPDIR/nightshift-drill-<workload>-<scenario>`. Ignored
+        /// when `--drill` is not set.
+        #[arg(long)]
+        drill_receipt_root: Option<PathBuf>,
+
+        /// D3 — inject a confabulated citation into the proposal packet
+        /// step. Closed role set: ``standing`` (bogus standing receipt
+        /// id; existence-fail) / ``evidence`` (LA grant receipt id
+        /// cited in the standing slot; kind-fit-fail). Both modes
+        /// produce a ``dangling_receipt_reference`` refusal receipt
+        /// at the proposal_validator_seam after the chain reaches
+        /// Consumed; ``effect_count`` stays at 1 (failure cost real
+        /// budget). Requires ``--scenario=all-green``; AG refuses at
+        /// construction otherwise. Ignored when ``--drill`` is not set.
+        #[arg(long, value_parser = ["standing", "evidence"])]
+        confabulate_citation: Option<String>,
     },
     /// Freeze a baseline observation into a new run and leave the
     /// run open, awaiting `reconcile`. Runs capture-time gates
@@ -357,6 +403,33 @@ enum WatchbillAction {
         /// The run_id returned by a prior `capture`.
         run_id: String,
     },
+    /// D0e — run all six gauntlet scenarios + the D3 confabulated
+    /// citation closing beat and render the ticket-shaped show-surface
+    /// poster on stdout. Operator-facing single entry point per §3b
+    /// "Nightshift owns it". Shells AG's `python3 -m
+    /// governor.drill_poster --root <path>` and prints the resulting
+    /// deterministic poster. Exits nonzero if any harness assertion
+    /// fails (e.g., a BA3-classified internal guard fired a denial
+    /// during any spine run).
+    ///
+    /// Per the slice operator constraint: display-only plus invariant
+    /// assertions. No dashboard. No curses. No "operator experience"
+    /// pilgrimage. Receipt poster, deterministic, plain text.
+    Demo {
+        /// Workload name. D0e admits only `wal-bloat-review`.
+        workload: PathBuf,
+
+        /// `--drill` flag. Required (the demo is the drill gauntlet);
+        /// matched for CLI symmetry with `watchbill run --drill`.
+        #[arg(long)]
+        drill: bool,
+
+        /// Override the poster root directory. Defaults to
+        /// `$TMPDIR/nightshift-demo-<workload>`. Per-scenario receipts
+        /// land under `<root>/<scenario>/`.
+        #[arg(long)]
+        poster_root: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -367,12 +440,73 @@ fn main() -> anyhow::Result<()> {
             WatchbillAction::Run {
                 agenda_path,
                 finding,
-            } => run_watchbill_cmd(&cli, agenda_path, finding),
+                drill,
+                scenario,
+                drill_receipt_root,
+                confabulate_citation,
+            } => {
+                if *drill {
+                    // D0d-a drill path. Positional is the workload
+                    // name (e.g. `wal-bloat-review`). The drill module
+                    // shells into AG's `python3 -m
+                    // governor.drill_runner` and renders a
+                    // deterministic transcript.
+                    let workload = agenda_path
+                        .to_str()
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "drill workload name must be valid UTF-8"
+                        ))?;
+                    let scenario = scenario.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "watchbill run --drill requires --scenario; \
+                             D0d-1 admits one of: all-green, no-standing, \
+                             standing-expired, wicket-denied, \
+                             wicket-gap-accounted, replay-budget \
+                             (accepted alias: already-consumed)"
+                        )
+                    })?;
+                    let transcript = nightshiftd::drill::run_drill_command(
+                        workload,
+                        scenario,
+                        drill_receipt_root.clone(),
+                        confabulate_citation.as_deref(),
+                    )?;
+                    print!("{transcript}");
+                    Ok(())
+                } else {
+                    let finding = finding.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "watchbill run requires --finding when --drill is not set"
+                        )
+                    })?;
+                    run_watchbill_cmd(&cli, agenda_path, finding)
+                }
+            }
             WatchbillAction::Capture {
                 agenda_path,
                 finding,
             } => capture_cmd(&cli, agenda_path, finding),
             WatchbillAction::Reconcile { run_id } => reconcile_cmd(&cli, run_id),
+            WatchbillAction::Demo {
+                workload,
+                drill,
+                poster_root,
+            } => {
+                if !*drill {
+                    anyhow::bail!(
+                        "watchbill demo requires --drill (D0e is the drill gauntlet)"
+                    );
+                }
+                let workload = workload.to_str().ok_or_else(|| {
+                    anyhow::anyhow!("demo workload name must be valid UTF-8")
+                })?;
+                let poster = nightshiftd::drill::run_demo_command(
+                    workload,
+                    poster_root.clone(),
+                )?;
+                print!("{poster}");
+                Ok(())
+            }
         },
         Command::Runs { action } => match action {
             RunsAction::List {

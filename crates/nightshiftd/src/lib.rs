@@ -9,6 +9,7 @@ pub mod attention;
 pub mod bundle;
 pub mod closure;
 pub mod coordination;
+pub mod drill;
 pub mod errors;
 pub mod finding;
 pub mod freshness;
@@ -30,5 +31,6 @@ pub mod reconcile_horizon;
 pub mod reconciler;
 pub mod scheduled;
 pub mod store;
+pub mod wal_bloat_stager;
 
 pub use errors::{NightShiftError, Result};
