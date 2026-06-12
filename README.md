@@ -10,6 +10,89 @@ under this policy with this context and produce this kind of artifact."
 
 It is allowed to be useful before it is trusted with force.
 
+Night Shift does not make incidents go away. It refuses to close the loop
+until the witnesses needed for closure exist.
+
+## 30-second specimen: the refusal
+
+A review packet is only as good as the witness it was reconciled against.
+If the NQ liveness witness has gone silent, Night Shift does not produce a
+slightly-worse packet — it halts before consulting any findings, and the
+packet says so.
+
+Everything below runs from this repo with no live NQ. The finding source
+is the checked-in fixture manifest; the stale witness is replayed through
+the documented `--nq-bin` override:
+
+```bash
+cargo build --release
+
+# A stale liveness witness: age_seconds 600 vs the 90s default threshold,
+# replayed by a stub standing in for the real `nq` binary.
+mkdir -p /tmp/ns-specimen
+cat > /tmp/ns-specimen/stale-liveness.json <<'EOF'
+{
+  "schema": "nq.liveness_snapshot.v1",
+  "contract_version": 1,
+  "instance_id": "labelwatch-host",
+  "witness": {
+    "generation_id": 43755,
+    "generated_at": "2026-04-20T17:38:17.064301118Z",
+    "schema_version": 29,
+    "status": "ok",
+    "findings_observed": 9,
+    "findings_suppressed": 0,
+    "detectors_run": 3,
+    "liveness_format_version": 1
+  },
+  "freshness": { "age_seconds": 600, "stale_threshold_seconds": null, "fresh": null },
+  "source": { "artifact_path": "/opt/notquery/liveness.json", "artifact_kind": "file" },
+  "export": { "exported_at": "2026-04-20T17:38:42.546651838Z", "source": "nq", "contract_version": 1 }
+}
+EOF
+printf '#!/bin/sh\ncat /tmp/ns-specimen/stale-liveness.json\n' > /tmp/ns-specimen/nq-stub
+chmod +x /tmp/ns-specimen/nq-stub
+
+./target/release/nightshift \
+  --store /tmp/ns-specimen/demo.sqlite \
+  --nq-liveness /tmp/ns-specimen/stale-liveness.json \
+  --nq-bin /tmp/ns-specimen/nq-stub \
+  watchbill run \
+  --finding "nq:wal_bloat:labelwatch-host:/var/lib/labelwatch.sqlite" \
+  tests/fixtures/wal-bloat-review.yaml
+```
+
+The run halts at the liveness gate. The packet it emits is a refusal, not
+a diagnosis:
+
+```yaml
+reconciliation_summary:
+  admissible_for_authorization: []
+  admissible_for_proposal: []
+  admissible_for_diagnosis: []
+  blocked:
+  - 'liveness_gate: liveness stale: witness silent for 600s (threshold 90s)'
+  ok_to_proceed: false
+diagnosis:
+  regime: 'stale: NQ liveness gate did not clear; no findings consulted'
+proposed_action:
+  kind: advisory
+  steps:
+  - 'revalidate the NQ liveness artifact: confirm the publisher/aggregator is healthy …'
+  - if witness clock is skewed, resolve clock sync before retrying
+  - rerun this watchbill once liveness is current
+  risk_notes:
+  - 'no remediation proposed: liveness gate failure is not a basis for action'
+  - no NQ findings were consulted on this run
+authority_result:
+  governor_verdict: not consulted — liveness gate halted the run
+```
+
+Drop the `--nq-liveness`/`--nq-bin` flags and the same command emits a
+normal packet from the fixture findings: `ok_to_proceed: true`, the finding
+admissible for diagnosis, proposal, and authorization. `run_id`,
+`packet_id`, and `produced_at` are run-dependent; the refusal shape is not.
+
 ## Starting point: governed ops review packets from real NQ findings
 
 The MVP is narrow and real:
