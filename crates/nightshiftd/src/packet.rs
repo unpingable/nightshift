@@ -43,6 +43,31 @@ pub enum Confidence {
     High,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RefusalKind {
+    /// The witness is silent: age exceeded the staleness threshold.
+    /// Both numbers participated in the verdict that produced this
+    /// refusal.
+    LivenessStale {
+        age_seconds: i64,
+        threshold_seconds: u64,
+    },
+    /// The witness timestamp is in the future — an epistemic hole,
+    /// *not* staleness (see `liveness::LivenessVerdict::Skewed`).
+    ///
+    /// Deliberately carries no `threshold_seconds`: skew is detected
+    /// before any threshold comparison happens (`liveness::verdict_for`
+    /// returns `Skewed` on negative age and never consults the
+    /// threshold), so there is no threshold to report. Synthesizing one
+    /// here would state a number that took no part in the verdict.
+    LivenessSkewed {
+        age_seconds: i64,
+    },
+    BasisInvalidated,
+    PreflightHeld,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindingSummary {
     pub source: String,
@@ -291,8 +316,287 @@ pub struct Packet {
     /// fires.
     #[serde(default = "default_closure_candidate")]
     pub closure_candidate: crate::closure::ClosureCandidate,
+    /// NS-1 — typed refusal reason when a packet is emitted because a
+    /// gate (liveness, preflight, etc.) blocked the run. `None`
+    /// everywhere except refusal paths. The free-text `blocked` array
+    /// on `reconciliation_summary` serves as display; this field
+    /// provides structured classification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<RefusalKind>,
 }
 
 fn default_closure_candidate() -> crate::closure::ClosureCandidate {
     crate::closure::ClosureCandidate::UnassessableMissingConsequenceWitness
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refusal_kind_liveness_stale_serializes_with_tag() {
+        let refusal = RefusalKind::LivenessStale {
+            age_seconds: 150,
+            threshold_seconds: 90,
+        };
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        assert_eq!(json["kind"], "liveness_stale");
+        assert_eq!(json["age_seconds"], 150);
+        assert_eq!(json["threshold_seconds"], 90);
+    }
+
+    #[test]
+    fn refusal_kind_basis_invalidated_serializes_with_tag() {
+        let refusal = RefusalKind::BasisInvalidated;
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        assert_eq!(json["kind"], "basis_invalidated");
+    }
+
+    #[test]
+    fn refusal_kind_preflight_held_serializes_with_tag() {
+        let refusal = RefusalKind::PreflightHeld;
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        assert_eq!(json["kind"], "preflight_held");
+    }
+
+    #[test]
+    fn refusal_kind_liveness_skewed_serializes_with_tag() {
+        let refusal = RefusalKind::LivenessSkewed {
+            age_seconds: -116750929,
+        };
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        assert_eq!(json["kind"], "liveness_skewed");
+        assert_eq!(json["age_seconds"], -116750929i64);
+        // Load-bearing: skew carries no threshold, because none took
+        // part in the verdict. A synthesized threshold here would be a
+        // number the free-text never renders.
+        assert!(
+            !json.as_object().unwrap().contains_key("threshold_seconds"),
+            "skew refusal must not carry a staleness threshold; got {json}"
+        );
+    }
+
+    #[test]
+    fn refusal_kind_liveness_stale_round_trips() {
+        // Non-negative age: a negative age is a Skewed verdict, never
+        // Stale (see `liveness::verdict_for`).
+        let refusal = RefusalKind::LivenessStale {
+            age_seconds: 150,
+            threshold_seconds: 90,
+        };
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        let deserialized: RefusalKind =
+            serde_json::from_value(json).expect("deserialization must succeed");
+        assert_eq!(deserialized, refusal);
+    }
+
+    #[test]
+    fn refusal_kind_liveness_skewed_round_trips() {
+        let refusal = RefusalKind::LivenessSkewed { age_seconds: -42 };
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        let deserialized: RefusalKind =
+            serde_json::from_value(json).expect("deserialization must succeed");
+        assert_eq!(deserialized, refusal);
+    }
+
+    #[test]
+    fn refusal_kind_preflight_held_round_trips() {
+        let refusal = RefusalKind::PreflightHeld;
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        let deserialized: RefusalKind =
+            serde_json::from_value(json).expect("deserialization must succeed");
+        assert_eq!(deserialized, refusal);
+    }
+
+    #[test]
+    fn packet_with_refusal_none_skips_field_in_json() {
+        use crate::agenda::AuthorityLevel;
+        use crate::bundle::ReconciliationSummary;
+        use crate::finding::{EvidenceState, FindingKey, Severity};
+        use chrono::Utc;
+
+        let key = FindingKey {
+            source: "nq".into(),
+            detector: "test".into(),
+            subject: "test".into(),
+        };
+        let now = Utc::now();
+
+        let packet = Packet {
+            packet_version: 0,
+            packet_id: "test".into(),
+            agenda_id: "test".into(),
+            run_id: "test".into(),
+            produced_at: now,
+            finding_summary: FindingSummary {
+                source: "nq".into(),
+                detector: "test".into(),
+                host: "test".into(),
+                subject: "test".into(),
+                severity: Severity::Warning,
+                domain: None,
+                persistence_generations: 0,
+                first_seen_at: now,
+                current_status: EvidenceState::Active,
+                origin: None,
+                silence: None,
+                position: None,
+                posture_class: crate::posture_class::PostureClass::IncidentShape,
+            },
+            reconciliation_summary: ReconciliationSummary::default(),
+            diagnosis: Diagnosis {
+                regime: "test".into(),
+                evidence: vec![],
+                confidence: Confidence::Low,
+                alternatives_considered: vec![],
+            },
+            proposed_action: ProposedAction {
+                kind: ProposedActionKind::Advisory,
+                steps: vec![],
+                risk_notes: vec![],
+                reversible: true,
+                blast_radius: "none".into(),
+                requested_authority_level: AuthorityLevel::Advise,
+            },
+            authority_result: AuthorityResult {
+                requested: AuthorityLevel::Advise,
+                governor_present: false,
+                governor_verdict: None,
+                authority_receipts: vec![],
+                ceiling_note: None,
+            },
+            diagnosis_review: DiagnosisReview {
+                mode: DiagnosisReviewMode::SelfCheck,
+                unsafe_assumptions: vec![],
+                stale_context_risks: vec![],
+                promotion_overreach: vec![],
+                missing_verification: vec![],
+                recommended_downgrade: None,
+            },
+            attention: Attention {
+                attention_key: key,
+                evidence_state: EvidenceState::Active,
+                attention_state: AttentionState::Unowned,
+                posture_class: crate::posture_class::PostureClass::IncidentShape,
+                operational_urgency: OperationalUrgency::Medium,
+                owner: None,
+                last_touched_by: None,
+                last_touched_at: None,
+                acknowledged_at: None,
+                ack_expires_at: None,
+                follow_up_by: None,
+                handoff_note: None,
+                re_alert_after: None,
+                silence_reason: None,
+                tolerance_basis_id: None,
+                tolerance_basis_hash: None,
+            },
+            receipt_references: ReceiptReferences::default(),
+            unsettled: vec![],
+            closure_candidate: crate::closure::ClosureCandidate::UnassessableMissingConsequenceWitness,
+            refusal: None,
+        };
+
+        let serialized = serde_json::to_value(&packet).expect("serialization must succeed");
+        assert!(!serialized.as_object().unwrap().contains_key("refusal"));
+    }
+
+    #[test]
+    fn packet_with_refusal_some_includes_field_in_json() {
+        use crate::agenda::AuthorityLevel;
+        use crate::bundle::ReconciliationSummary;
+        use crate::finding::{EvidenceState, FindingKey, Severity};
+        use chrono::Utc;
+
+        let key = FindingKey {
+            source: "nq".into(),
+            detector: "test".into(),
+            subject: "test".into(),
+        };
+        let now = Utc::now();
+
+        let packet = Packet {
+            packet_version: 0,
+            packet_id: "test".into(),
+            agenda_id: "test".into(),
+            run_id: "test".into(),
+            produced_at: now,
+            finding_summary: FindingSummary {
+                source: "nq".into(),
+                detector: "test".into(),
+                host: "test".into(),
+                subject: "test".into(),
+                severity: Severity::Warning,
+                domain: None,
+                persistence_generations: 0,
+                first_seen_at: now,
+                current_status: EvidenceState::Active,
+                origin: None,
+                silence: None,
+                position: None,
+                posture_class: crate::posture_class::PostureClass::IncidentShape,
+            },
+            reconciliation_summary: ReconciliationSummary::default(),
+            diagnosis: Diagnosis {
+                regime: "test".into(),
+                evidence: vec![],
+                confidence: Confidence::Low,
+                alternatives_considered: vec![],
+            },
+            proposed_action: ProposedAction {
+                kind: ProposedActionKind::Advisory,
+                steps: vec![],
+                risk_notes: vec![],
+                reversible: true,
+                blast_radius: "none".into(),
+                requested_authority_level: AuthorityLevel::Advise,
+            },
+            authority_result: AuthorityResult {
+                requested: AuthorityLevel::Advise,
+                governor_present: false,
+                governor_verdict: None,
+                authority_receipts: vec![],
+                ceiling_note: None,
+            },
+            diagnosis_review: DiagnosisReview {
+                mode: DiagnosisReviewMode::SelfCheck,
+                unsafe_assumptions: vec![],
+                stale_context_risks: vec![],
+                promotion_overreach: vec![],
+                missing_verification: vec![],
+                recommended_downgrade: None,
+            },
+            attention: Attention {
+                attention_key: key,
+                evidence_state: EvidenceState::Active,
+                attention_state: AttentionState::Unowned,
+                posture_class: crate::posture_class::PostureClass::IncidentShape,
+                operational_urgency: OperationalUrgency::Medium,
+                owner: None,
+                last_touched_by: None,
+                last_touched_at: None,
+                acknowledged_at: None,
+                ack_expires_at: None,
+                follow_up_by: None,
+                handoff_note: None,
+                re_alert_after: None,
+                silence_reason: None,
+                tolerance_basis_id: None,
+                tolerance_basis_hash: None,
+            },
+            receipt_references: ReceiptReferences::default(),
+            unsettled: vec![],
+            closure_candidate: crate::closure::ClosureCandidate::UnassessableMissingConsequenceWitness,
+            refusal: Some(RefusalKind::LivenessStale {
+                age_seconds: 200,
+                threshold_seconds: 90,
+            }),
+        };
+
+        let serialized = serde_json::to_value(&packet).expect("serialization must succeed");
+        assert!(serialized.as_object().unwrap().contains_key("refusal"));
+        assert_eq!(serialized["refusal"]["kind"], "liveness_stale");
+        assert_eq!(serialized["refusal"]["age_seconds"], 200);
+        assert_eq!(serialized["refusal"]["threshold_seconds"], 90);
+    }
 }

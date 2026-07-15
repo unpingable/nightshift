@@ -1120,6 +1120,7 @@ mod tests {
             receipt_references: ReceiptReferences::default(),
             unsettled: vec![],
             closure_candidate: ClosureCandidate::UnassessableMissingConsequenceWitness,
+            refusal: None,
         }
     }
 }

@@ -858,6 +858,7 @@ fn build_success_packet(
         },
         unsettled: target_unsettled,
         closure_candidate,
+        refusal: None,
     })
 }
 
@@ -1042,6 +1043,7 @@ fn hold_for_preflight(
         },
         unsettled: vec![],
         closure_candidate,
+        refusal: Some(crate::packet::RefusalKind::PreflightHeld),
     };
 
     store.save_packet(run_id, &packet)?;
@@ -1057,6 +1059,31 @@ fn hold_for_preflight(
     store.complete_run(run_id)?;
 
     Ok(packet)
+}
+
+/// Map a liveness verdict to its typed refusal (NS-1).
+///
+/// Each variant carries only values the verdict itself produced — the
+/// same numbers `LivenessVerdict::explain()` renders into the free-text
+/// `blocked[]` entry beside it. In particular `Skewed` maps to
+/// `LivenessSkewed`, never to `LivenessStale`: skew is an epistemic
+/// hole rather than freshness, and no threshold takes part in it.
+fn refusal_for_verdict(verdict: &LivenessVerdict) -> Option<crate::packet::RefusalKind> {
+    match verdict {
+        LivenessVerdict::Stale {
+            age_seconds,
+            threshold_seconds,
+        } => Some(crate::packet::RefusalKind::LivenessStale {
+            age_seconds: *age_seconds,
+            threshold_seconds: *threshold_seconds,
+        }),
+        LivenessVerdict::Skewed { age_seconds } => {
+            Some(crate::packet::RefusalKind::LivenessSkewed {
+                age_seconds: *age_seconds,
+            })
+        }
+        LivenessVerdict::Fresh => None,
+    }
 }
 
 /// Terminate a run that failed the NQ liveness gate. No NQ snapshot
@@ -1201,6 +1228,8 @@ fn liveness_gate_failed(
         crate::closure::RunOutcome::LivenessGateFailed,
     );
 
+    let refusal = refusal_for_verdict(verdict);
+
     let packet = Packet {
         packet_version: 0,
         packet_id,
@@ -1221,6 +1250,7 @@ fn liveness_gate_failed(
         },
         unsettled: vec![],
         closure_candidate,
+        refusal,
     };
 
     store.save_packet(run_id, &packet)?;
@@ -1645,5 +1675,50 @@ mod tests {
             InputStatus::Committed,
         );
         assert_eq!(u, OperationalUrgency::Critical);
+    }
+
+    // NS-1 verdict→refusal mapping. These call the real production
+    // mapping (`refusal_for_verdict`) that `liveness_gate_failed` uses;
+    // they do not re-implement it in the test body.
+
+    #[test]
+    fn stale_verdict_maps_to_typed_liveness_stale_refusal() {
+        let refusal = refusal_for_verdict(&LivenessVerdict::Stale {
+            age_seconds: 150,
+            threshold_seconds: 90,
+        });
+
+        assert_eq!(
+            refusal,
+            Some(crate::packet::RefusalKind::LivenessStale {
+                age_seconds: 150,
+                threshold_seconds: 90,
+            })
+        );
+    }
+
+    #[test]
+    fn skewed_verdict_maps_to_typed_liveness_skewed_never_stale() {
+        let refusal = refusal_for_verdict(&LivenessVerdict::Skewed { age_seconds: -42 });
+
+        // Skew is an epistemic hole, not staleness. It must carry the
+        // verdict's own age and nothing else — no threshold is
+        // synthesized, because none took part in the verdict.
+        assert_eq!(
+            refusal,
+            Some(crate::packet::RefusalKind::LivenessSkewed { age_seconds: -42 })
+        );
+        assert!(
+            !matches!(
+                refusal,
+                Some(crate::packet::RefusalKind::LivenessStale { .. })
+            ),
+            "a skewed verdict must never be typed as stale"
+        );
+    }
+
+    #[test]
+    fn fresh_verdict_maps_to_no_refusal() {
+        assert_eq!(refusal_for_verdict(&LivenessVerdict::Fresh), None);
     }
 }

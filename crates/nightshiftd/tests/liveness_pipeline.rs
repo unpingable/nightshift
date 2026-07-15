@@ -21,6 +21,7 @@ use nightshiftd::finding::{EvidenceState, FindingKey, FindingSnapshot, Severity}
 use nightshiftd::ledger::RunLedgerEventKind;
 use nightshiftd::liveness::FixtureLivenessSource;
 use nightshiftd::nq::NqSource;
+use nightshiftd::packet::RefusalKind;
 use nightshiftd::pipeline::{run_watchbill_with_liveness, PipelineOptions};
 use nightshiftd::store::sqlite::SqliteStore;
 use nightshiftd::store::{RunFilter, Store};
@@ -296,6 +297,110 @@ fn pipeline_halts_when_liveness_is_skewed_even_if_upstream_says_fresh() {
     assert!(
         evidence_text.contains("clock skew"),
         "skewed verdict must be explained in packet evidence; got {evidence_text:?}"
+    );
+}
+
+// ---------------------------------------------------------------
+// NS-1 packet-level acceptance: the typed refusal registry.
+//
+// The typed `refusal` field classifies; the free-text `blocked[]`
+// entry displays. Both must be present on a gate-failure packet, and
+// the typed field must carry only numbers the verdict produced — the
+// same ones the free-text renders.
+// ---------------------------------------------------------------
+
+/// Stale witness → typed `LivenessStale` carrying the age and the
+/// threshold that actually decided the verdict, alongside the
+/// untouched free-text entry.
+#[test]
+fn stale_gate_packet_carries_typed_stale_refusal_and_free_text() {
+    let nq = CountingNqSource::new(baseline_snapshot());
+    let liveness = FixtureLivenessSource::from_json(stale_dto()).unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
+    let (agenda, target) = agenda_and_target();
+
+    // age_seconds 600 vs threshold 60 → Stale.
+    let packet =
+        run_watchbill_with_liveness(&agenda, &target, &nq, Some(&liveness), &store, &opts(60))
+            .unwrap();
+
+    assert_eq!(
+        packet.refusal,
+        Some(RefusalKind::LivenessStale {
+            age_seconds: 600,
+            threshold_seconds: 60,
+        }),
+        "stale gate packet must carry the typed LivenessStale refusal"
+    );
+
+    let blocked = packet.reconciliation_summary.blocked.join("\n");
+    assert!(
+        blocked.contains("liveness stale: witness silent for 600s (threshold 60s)"),
+        "stale packet must keep the free-text blocked[] entry; got {blocked:?}"
+    );
+
+    // The serialized packet carries both, per the NS-1 acceptance
+    // criterion.
+    let json = serde_json::to_value(&packet).expect("packet must serialize");
+    assert_eq!(json["refusal"]["kind"], "liveness_stale");
+    assert_eq!(json["refusal"]["age_seconds"], 600);
+    assert_eq!(json["refusal"]["threshold_seconds"], 60);
+    let blocked_json = json["reconciliation_summary"]["blocked"].to_string();
+    assert!(
+        blocked_json.contains("liveness stale: witness silent for 600s (threshold 60s)"),
+        "packet JSON must retain the free-text blocked[] entry; got {blocked_json}"
+    );
+}
+
+/// Skewed witness → typed `LivenessSkewed`, **distinct** from stale.
+/// Skew is an epistemic hole, not freshness: no threshold takes part
+/// in the verdict, so none is reported.
+#[test]
+fn skewed_gate_packet_carries_distinct_skew_refusal_and_free_text() {
+    let nq = CountingNqSource::new(baseline_snapshot());
+    let liveness = FixtureLivenessSource::from_json(skewed_dto()).unwrap();
+    let store = SqliteStore::open_in_memory().unwrap();
+    let (agenda, target) = agenda_and_target();
+
+    let packet =
+        run_watchbill_with_liveness(&agenda, &target, &nq, Some(&liveness), &store, &opts(60))
+            .unwrap();
+
+    assert_eq!(
+        packet.refusal,
+        Some(RefusalKind::LivenessSkewed {
+            age_seconds: -116750929,
+        }),
+        "skewed gate packet must carry the distinct typed LivenessSkewed refusal"
+    );
+    assert!(
+        !matches!(packet.refusal, Some(RefusalKind::LivenessStale { .. })),
+        "a skewed witness must never be typed as stale"
+    );
+
+    let blocked = packet.reconciliation_summary.blocked.join("\n");
+    assert!(
+        blocked.contains(
+            "liveness skewed: artifact timestamp is in the future (age_seconds=-116750929)"
+        ),
+        "skewed packet must keep the free-text blocked[] entry; got {blocked:?}"
+    );
+
+    let json = serde_json::to_value(&packet).expect("packet must serialize");
+    assert_eq!(json["refusal"]["kind"], "liveness_skewed");
+    assert_eq!(json["refusal"]["age_seconds"], -116750929i64);
+    assert!(
+        !json["refusal"]
+            .as_object()
+            .unwrap()
+            .contains_key("threshold_seconds"),
+        "skew refusal must not synthesize a staleness threshold; got {}",
+        json["refusal"]
+    );
+    let blocked_json = json["reconciliation_summary"]["blocked"].to_string();
+    assert!(
+        blocked_json.contains("liveness skewed: artifact timestamp is in the future"),
+        "packet JSON must retain the free-text blocked[] entry; got {blocked_json}"
     );
 }
 

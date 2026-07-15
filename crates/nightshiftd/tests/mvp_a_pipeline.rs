@@ -153,6 +153,7 @@ fn sushi_k_packet() -> Packet {
         receipt_references: ReceiptReferences::default(),
         unsettled: vec![],
         closure_candidate: ClosureCandidate::UnassessableMissingConsequenceWitness,
+        refusal: None,
     }
 }
 
