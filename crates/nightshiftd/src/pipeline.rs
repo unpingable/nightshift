@@ -858,7 +858,12 @@ fn build_success_packet(
         },
         unsettled: target_unsettled,
         closure_candidate,
-        refusal: None,
+        refusal: refusal_for_reconciliation(
+            nq_result.status,
+            nq_result.previous_evidence_hash.clone(),
+            nq_result.current_evidence_hash.clone(),
+            target_horizon_outcome,
+        ),
     })
 }
 
@@ -1059,6 +1064,51 @@ fn hold_for_preflight(
     store.complete_run(run_id)?;
 
     Ok(packet)
+}
+
+/// Map a reconciled NQ result plus its horizon outcome to the typed
+/// refusal that belongs on the success-path packet (NS-1).
+///
+/// Two basis-invalidation refusals can arise on this path, and they
+/// are kept typed rather than left to the free-text `blocked[]` array:
+///
+/// * The reconciler ruled the input `Invalidated` — the captured
+///   *evidence premise* no longer holds. Carries the previous/current
+///   evidence hashes that participated (`current` absent ⇒ finding
+///   gone; present ⇒ identity drift).
+/// * The horizon phase produced `EscalateBasisInvalidated` — a
+///   *tolerance grant's* basis diverged from the live artifact.
+///
+/// Precedence when both fire: the evidence-premise invalidation wins.
+/// If the premise itself is gone, the tolerance question is moot, and
+/// `Packet.refusal` is single-slot (gates short-circuit; two
+/// simultaneous refusals are not representable in v1). The tolerance
+/// divergence still surfaces in the horizon ledger event and its
+/// Governor receipt, so nothing is lost.
+fn refusal_for_reconciliation(
+    nq_status: InputStatus,
+    previous_evidence_hash: Option<String>,
+    current_evidence_hash: Option<String>,
+    target_horizon_outcome: Option<&HorizonOutcome>,
+) -> Option<crate::packet::RefusalKind> {
+    if matches!(nq_status, InputStatus::Invalidated) {
+        return Some(crate::packet::RefusalKind::BasisInvalidated {
+            previous_evidence_hash,
+            current_evidence_hash,
+        });
+    }
+    if let Some(HorizonAction::EscalateBasisInvalidated {
+        prior,
+        current_basis_hash,
+    }) = target_horizon_outcome.map(|o| &o.action)
+    {
+        return Some(crate::packet::RefusalKind::ToleranceBasisInvalidated {
+            tolerated_basis_id: prior.basis_id.clone(),
+            tolerated_basis_hash: prior.basis_hash.clone(),
+            current_basis_hash: current_basis_hash.clone(),
+        });
+    }
+    None
 }
 
 /// Map a liveness verdict to its typed refusal (NS-1).

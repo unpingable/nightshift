@@ -222,10 +222,35 @@ fn pipeline_renders_invalidated_when_finding_disappears() {
         "invalidated input must mark ok_to_proceed=false"
     );
 
+    // NS-1: the refusal must reach the *typed* stratum, not only the
+    // free-text `blocked[]` display. A finding that disappeared has no
+    // current evidence hash, so the absence shape carries a previous
+    // hash and omits the current one.
+    match &packet.refusal {
+        Some(nightshiftd::packet::RefusalKind::BasisInvalidated {
+            previous_evidence_hash,
+            current_evidence_hash,
+        }) => {
+            assert!(
+                previous_evidence_hash.is_some(),
+                "absence refusal must carry the captured basis hash"
+            );
+            assert!(
+                current_evidence_hash.is_none(),
+                "a disappeared finding has no current hash to report; got {current_evidence_hash:?}"
+            );
+        }
+        other => panic!("invalidated packet must carry a typed BasisInvalidated refusal; got {other:?}"),
+    }
+
     // The run completed and the packet persisted — disappearance is
-    // recorded, not swallowed.
+    // recorded, not swallowed — and the typed refusal survives storage.
     let stored = store.get_packet(&packet.run_id).unwrap().unwrap();
     assert_eq!(stored.packet_id, packet.packet_id);
+    assert_eq!(
+        stored.refusal, packet.refusal,
+        "typed refusal must survive serialization to the store"
+    );
 }
 
 #[test]

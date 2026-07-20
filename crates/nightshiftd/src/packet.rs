@@ -64,7 +64,35 @@ pub enum RefusalKind {
     LivenessSkewed {
         age_seconds: i64,
     },
-    BasisInvalidated,
+    /// The captured evidence premise no longer holds: the reconciler
+    /// ruled the NQ input `Invalidated`. Carries the two hashes that
+    /// participated in that verdict. `current_evidence_hash` is the
+    /// discriminant between the two invalidation shapes without a
+    /// separate flag: `None` means the finding is *absent* from the
+    /// current NQ generation (under a declared absence rule); `Some`
+    /// means *identity drift* — NQ now returns a different finding
+    /// under the same input_id, so the two hashes differ.
+    /// `previous_evidence_hash` is the captured basis and is present
+    /// in both shapes.
+    BasisInvalidated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_evidence_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current_evidence_hash: Option<String>,
+    },
+    /// A horizon tolerance grant's justifying basis diverged from the
+    /// live artifact, voiding the grant regardless of expiry
+    /// (`HorizonAction::EscalateBasisInvalidated`). Deliberately
+    /// *distinct* from `BasisInvalidated`: this refuses a **tolerance
+    /// grant**, not an evidence premise, and the evidence that
+    /// participated is the grant's basis id plus the tolerated and
+    /// live basis hashes — not evidence hashes. Collapsing the two
+    /// into one variant would be the near-miss the registry forbids.
+    ToleranceBasisInvalidated {
+        tolerated_basis_id: String,
+        tolerated_basis_hash: String,
+        current_basis_hash: String,
+    },
     PreflightHeld,
 }
 
@@ -346,10 +374,55 @@ mod tests {
     }
 
     #[test]
-    fn refusal_kind_basis_invalidated_serializes_with_tag() {
-        let refusal = RefusalKind::BasisInvalidated;
+    fn refusal_kind_basis_invalidated_absent_serializes_without_current_hash() {
+        // Finding absent from the current generation: no current hash
+        // took part, so the field must not be synthesized (same
+        // discipline as `LivenessSkewed` omitting a threshold).
+        let refusal = RefusalKind::BasisInvalidated {
+            previous_evidence_hash: Some("sha256:abc".into()),
+            current_evidence_hash: None,
+        };
         let json = serde_json::to_value(&refusal).expect("serialization must succeed");
         assert_eq!(json["kind"], "basis_invalidated");
+        assert_eq!(json["previous_evidence_hash"], "sha256:abc");
+        assert!(
+            !json.as_object().unwrap().contains_key("current_evidence_hash"),
+            "absence carries no current hash; got {json}"
+        );
+        let round: RefusalKind = serde_json::from_value(json).expect("round-trip");
+        assert_eq!(round, refusal);
+    }
+
+    #[test]
+    fn refusal_kind_basis_invalidated_drift_round_trips_both_hashes() {
+        // Identity drift: both hashes participated and both survive.
+        let refusal = RefusalKind::BasisInvalidated {
+            previous_evidence_hash: Some("sha256:old".into()),
+            current_evidence_hash: Some("sha256:new".into()),
+        };
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        assert_eq!(json["kind"], "basis_invalidated");
+        let round: RefusalKind = serde_json::from_value(json).expect("round-trip");
+        assert_eq!(round, refusal);
+    }
+
+    #[test]
+    fn refusal_kind_tolerance_basis_invalidated_is_a_distinct_tag() {
+        // The horizon tolerance-basis refusal must not wear the
+        // reconciler's `basis_invalidated` tag: distinct claims,
+        // distinct tags, no collapse.
+        let refusal = RefusalKind::ToleranceBasisInvalidated {
+            tolerated_basis_id: "runbook:v3".into(),
+            tolerated_basis_hash: "sha256:tol".into(),
+            current_basis_hash: "sha256:live".into(),
+        };
+        let json = serde_json::to_value(&refusal).expect("serialization must succeed");
+        assert_eq!(json["kind"], "tolerance_basis_invalidated");
+        assert_eq!(json["tolerated_basis_id"], "runbook:v3");
+        assert_eq!(json["tolerated_basis_hash"], "sha256:tol");
+        assert_eq!(json["current_basis_hash"], "sha256:live");
+        let round: RefusalKind = serde_json::from_value(json).expect("round-trip");
+        assert_eq!(round, refusal);
     }
 
     #[test]
