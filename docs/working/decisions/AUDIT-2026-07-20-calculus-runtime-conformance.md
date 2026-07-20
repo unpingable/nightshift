@@ -142,6 +142,13 @@ One uncovered seam falsifies the guarantee; these are conjunctive.
 
 ## Correspondence map (toward a conformance claim)
 
+> **Promoted.** The correspondence map below has been lifted into a
+> first-class candidate manifest, `CALCULUS-CONFORMANCE.md`, which also
+> names the constitutional transition (formal-reference → runtime
+> governing spec) whose absence was the root-cause loophole. This
+> section is retained as the audit-time snapshot; the manifest is the
+> living surface.
+
 Per lean-side discipline, a runtime-conformance claim needs an explicit
 correspondence map plus evidence/refinement. Current fit:
 
@@ -162,21 +169,28 @@ correspondence map plus evidence/refinement. Current fit:
 
 ## Fix ladder
 
-- [ ] 1. Wire `BasisInvalidated` at both sites; horizon
-      `EscalateBasisInvalidated` refusal mapping carrying both hashes.
-- [ ] 2. Status-filter `process_horizon` / pass `result.status` into the
-      horizon decision; `receipt_id` on `ToleranceRecord`; reorder
-      save-after-receipt.
-- [ ] 3. Payload `PreflightHeld` (outcome + reasons); split NQ contract
-      refusals out of `InvalidAgenda`.
+- [x] 1. Wire `BasisInvalidated` at both sites; horizon gets a distinct
+      `ToleranceBasisInvalidated` carrying its basis hashes. *(commit
+      a9eb5a8; deviation noted — split rather than one variant.)*
+- [x] 2a. `receipt_id` on `ToleranceRecord`; reorder save-after-receipt.
+      *(commit cde4a64.)*
+- [ ] 2b. Status-filter `process_horizon` / pass `result.status` into
+      the horizon decision. **Design-scoped** (F2: missing conjunct vs
+      documented freeze) — owed a decision record.
+- [x] 3a. Payload `PreflightHeld` (outcome + reasons). *(commit
+      42d1e00.)*
+- [ ] 3b. Split NQ contract refusals out of `InvalidAgenda`.
+      *(Mechanical; not yet applied.)*
 - [ ] 4. Resolve posture-class basis divergence (use stored decision or
       mark basis on packet).
 - [ ] 5. Enforce `governor_binding`; decide reconcile-time liveness
-      (missing conjunct vs documented freeze).
-- [ ] 6. Docs: flip `AUDIT-BACKLOG` lean entry to conformance-target
-      register (promotion condition 3 fired); `Packet.refusal`
-      single-slot doc line.
+      (missing conjunct vs documented freeze). **Design-scoped.**
+- [x] 6a. Flip `AUDIT-BACKLOG` lean entry to conformance-target register
+      (promotion condition 3 fired). *(commit a99ff91.)*
+- [ ] 6b. `Packet.refusal` single-slot doc line.
 
-Items 5 (preflight witness), 9 (reconcile-time liveness), and 11
-(break-glass implementation) are design-scoped, not mechanical; they get
-their own decision records before code.
+Items 2b, 5 (preflight witness + `governor_binding`), the reconcile-time
+liveness question, and break-glass implementation (F6/§3.4 of the
+manifest) are design-scoped, not mechanical; each gets its own decision
+record before code. They are now tracked as **BLOCKER** rows in
+`CALCULUS-CONFORMANCE.md §3`, not footnotes.
