@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::errors::{NightShiftError, Result};
+use crate::errors::{NightShiftError, NqContractViolationKind, Result};
 use crate::finding::{
     EvidenceState, FindingKey, FindingOrigin, FindingSilence, FindingSnapshot, Severity,
     WitnessPosition,
@@ -213,16 +213,22 @@ pub struct NqSilenceDto {
 pub fn parse_nq_line(line: &str) -> Result<NqExportDto> {
     let dto: NqExportDto = serde_json::from_str(line)?;
     if dto.schema != NQ_EXPORT_SCHEMA {
-        return Err(NightShiftError::InvalidAgenda(format!(
-            "NQ export schema mismatch: expected {NQ_EXPORT_SCHEMA}, got {}",
-            dto.schema
-        )));
+        return Err(NightShiftError::NqContractViolation {
+            kind: NqContractViolationKind::SchemaMismatch,
+            detail: format!(
+                "NQ export schema mismatch: expected {NQ_EXPORT_SCHEMA}, got {}",
+                dto.schema
+            ),
+        });
     }
     if dto.contract_version != NQ_EXPORT_CONTRACT_VERSION {
-        return Err(NightShiftError::InvalidAgenda(format!(
-            "NQ export contract_version mismatch: expected {NQ_EXPORT_CONTRACT_VERSION}, got {}",
-            dto.contract_version
-        )));
+        return Err(NightShiftError::NqContractViolation {
+            kind: NqContractViolationKind::ContractVersionMismatch,
+            detail: format!(
+                "NQ export contract_version mismatch: expected {NQ_EXPORT_CONTRACT_VERSION}, got {}",
+                dto.contract_version
+            ),
+        });
     }
     if dto.admissibility.state != "observable" {
         return Err(NightShiftError::NqInadmissible {
@@ -261,17 +267,15 @@ pub fn translate_nq(dto: &NqExportDto) -> Result<FindingSnapshot> {
 
     let first_seen_at = DateTime::parse_from_rfc3339(&dto.lifecycle.first_seen_at)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            NightShiftError::InvalidAgenda(format!(
-                "NQ lifecycle.first_seen_at not RFC3339: {e}"
-            ))
+        .map_err(|e| NightShiftError::NqContractViolation {
+            kind: NqContractViolationKind::MalformedField,
+            detail: format!("NQ lifecycle.first_seen_at not RFC3339: {e}"),
         })?;
     let last_seen_at = DateTime::parse_from_rfc3339(&dto.lifecycle.last_seen_at)
         .map(|dt| dt.with_timezone(&Utc))
-        .map_err(|e| {
-            NightShiftError::InvalidAgenda(format!(
-                "NQ lifecycle.last_seen_at not RFC3339: {e}"
-            ))
+        .map_err(|e| NightShiftError::NqContractViolation {
+            kind: NqContractViolationKind::MalformedField,
+            detail: format!("NQ lifecycle.last_seen_at not RFC3339: {e}"),
         })?;
 
     let persistence_generations = u32::try_from(dto.lifecycle.consecutive_gens.max(0))
@@ -687,6 +691,18 @@ mod tests {
     fn parse_rejects_wrong_schema() {
         let wrong = r#"{"schema":"nq.finding_snapshot.v2","contract_version":1,"finding_key":"x","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":0,"severity":"info","condition_state":"open"},"admissibility":{"state":"observable","reason":"none"}}"#;
         let err = parse_nq_line(wrong).unwrap_err();
+        // An NQ contract refusal arrives in its own stratum, not wearing
+        // agenda vocabulary (no-vocabulary-laundering).
+        assert!(
+            matches!(
+                err,
+                NightShiftError::NqContractViolation {
+                    kind: NqContractViolationKind::SchemaMismatch,
+                    ..
+                }
+            ),
+            "wrong schema must be a typed SchemaMismatch, not InvalidAgenda: {err:?}"
+        );
         assert!(
             format!("{err}").contains("schema mismatch"),
             "error did not mention schema mismatch: {err}"
@@ -697,6 +713,16 @@ mod tests {
     fn parse_rejects_wrong_contract_version() {
         let wrong = r#"{"schema":"nq.finding_snapshot.v1","contract_version":999,"finding_key":"x","identity":{"scope":"local","host":"h","detector":"d","subject":"s"},"lifecycle":{"first_seen_gen":0,"first_seen_at":"2026-01-01T00:00:00Z","last_seen_gen":0,"last_seen_at":"2026-01-01T00:00:00Z","consecutive_gens":0,"severity":"info","condition_state":"open"},"admissibility":{"state":"observable","reason":"none"}}"#;
         let err = parse_nq_line(wrong).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                NightShiftError::NqContractViolation {
+                    kind: NqContractViolationKind::ContractVersionMismatch,
+                    ..
+                }
+            ),
+            "wrong contract_version must be a typed ContractVersionMismatch: {err:?}"
+        );
         assert!(
             format!("{err}").contains("contract_version mismatch"),
             "error did not mention contract_version: {err}"

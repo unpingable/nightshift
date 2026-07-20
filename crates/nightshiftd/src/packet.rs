@@ -363,6 +363,19 @@ pub struct Packet {
     /// everywhere except refusal paths. The free-text `blocked` array
     /// on `reconciliation_summary` serves as display; this field
     /// provides structured classification.
+    ///
+    /// **Single-slot by design (v1).** At most one refusal because the
+    /// gates short-circuit: liveness → capture → preflight →
+    /// adjudication/horizon, each terminal, so a run never holds two
+    /// simultaneously-computed refusals. This is NOT a lossy encoding —
+    /// a second refusal is genuinely never *computed*, not computed and
+    /// dropped. Precedence where two could otherwise arise (e.g. an
+    /// `Invalidated` premise under an `EscalateBasisInvalidated`
+    /// horizon) is documented at `refusal_for_reconciliation` in
+    /// `pipeline.rs`; the subordinate refusal still surfaces in its own
+    /// ledger event / Governor receipt. If the gate chain ever composes
+    /// so two refusals coexist, this becomes the Crossing `bothRefused`
+    /// case and the field must widen — see `CALCULUS-CONFORMANCE.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<RefusalKind>,
 }

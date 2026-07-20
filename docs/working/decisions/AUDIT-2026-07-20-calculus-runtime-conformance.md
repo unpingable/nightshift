@@ -179,15 +179,18 @@ correspondence map plus evidence/refinement. Current fit:
       documented freeze) — owed a decision record.
 - [x] 3a. Payload `PreflightHeld` (outcome + reasons). *(commit
       42d1e00.)*
-- [ ] 3b. Split NQ contract refusals out of `InvalidAgenda`.
-      *(Mechanical; not yet applied.)*
+- [x] 3b. Split NQ contract refusals out of `InvalidAgenda` into typed
+      `NqContractViolation { kind, detail }`. Two adjacent non-contract
+      sites (key-mapping, bundle-integrity) left as residue on purpose —
+      see manifest §3.2.
 - [ ] 4. Resolve posture-class basis divergence (use stored decision or
       mark basis on packet).
 - [ ] 5. Enforce `governor_binding`; decide reconcile-time liveness
       (missing conjunct vs documented freeze). **Design-scoped.**
 - [x] 6a. Flip `AUDIT-BACKLOG` lean entry to conformance-target register
       (promotion condition 3 fired). *(commit a99ff91.)*
-- [ ] 6b. `Packet.refusal` single-slot doc line.
+- [x] 6b. `Packet.refusal` single-slot doc line (documents short-circuit
+      precedence + the Crossing `bothRefused` widening trigger).
 
 Items 2b, 5 (preflight witness + `governor_binding`), the reconcile-time
 liveness question, and break-glass implementation (F6/§3.4 of the

@@ -124,11 +124,21 @@ exclusivity at a boundary. **Needs:** a design record for a typed
 admission witness, or an explicit refinement argument that the diffuse
 representation is faithful. (Design-scoped; not a mechanical fix.)
 
-### 3.2 `InvalidAgenda(String)` is a cross-strata catch-all
-NQ export-schema and contract-version refusals arrive typed as agenda
-errors — vocabulary laundering (Spine no-core-obstruction law). Audit
-finding 7. **Needs:** split NQ wire-contract refusals into their own
-error family. (Mechanical; ladder item 3b, not yet applied.)
+### 3.2 `InvalidAgenda(String)` catch-all — narrowed 2026-07-20, residue tracked
+The four inbound NQ-export parsing refusals (schema mismatch,
+contract-version mismatch, two malformed-timestamp fields) were moved
+out of `InvalidAgenda` into a typed `NqContractViolation { kind, detail }`
+(`kind` a closed `SchemaMismatch`/`ContractVersionMismatch`/`MalformedField`),
+so NQ's refusals arrive in their own stratum. The taxonomy is by
+*category*, deliberately not pinned to today's wire schema — nq-ng
+(`~/git/skunkworks/nq-ng`) is being rebuilt correctness-first.
+**Residue (not folded, on purpose):** two adjacent non-NQ-contract
+sites still use `InvalidAgenda` — `nq_canonical_key` (an NS-internal
+`FindingKey` convention violation on the *outbound* NQ-query path) and
+`parse_target_from_bundle` (a bundle-integrity issue). Folding these
+into `NqContractViolation` would re-launder an NS-side / bundle-side
+problem as an NQ-contract one. They want their own classification, not
+this one.
 
 ### 3.3 `Standing` seams with no witness
 Three guarantee-typed seams where authority is granted without checking
