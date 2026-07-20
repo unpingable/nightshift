@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS tolerance_state (
     expires_at          TEXT NOT NULL,
     granted_at          TEXT NOT NULL,
     granted_in_run_id   TEXT NOT NULL,
+    receipt_id          TEXT NOT NULL,
     source              TEXT NOT NULL,
     detector            TEXT NOT NULL,
     subject             TEXT NOT NULL
@@ -435,9 +436,9 @@ impl Store for SqliteStore {
             tx.execute(
                 "INSERT OR REPLACE INTO tolerance_state (
                     finding_key, basis_id, basis_hash, prior_class,
-                    expires_at, granted_at, granted_in_run_id,
+                    expires_at, granted_at, granted_in_run_id, receipt_id,
                     source, detector, subject
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     key_str,
                     record.basis_id,
@@ -446,6 +447,7 @@ impl Store for SqliteStore {
                     expires_at,
                     granted_at,
                     record.granted_in_run_id,
+                    record.receipt_id,
                     record.finding_key.source,
                     record.finding_key.detector,
                     record.finding_key.subject,
@@ -462,7 +464,8 @@ impl Store for SqliteStore {
             let row = conn
                 .query_row(
                     "SELECT basis_id, basis_hash, prior_class, expires_at,
-                            granted_at, granted_in_run_id, source, detector, subject
+                            granted_at, granted_in_run_id, receipt_id,
+                            source, detector, subject
                      FROM tolerance_state WHERE finding_key = ?",
                     params![key_str],
                     |r| {
@@ -476,6 +479,7 @@ impl Store for SqliteStore {
                             r.get::<_, String>(6)?,
                             r.get::<_, String>(7)?,
                             r.get::<_, String>(8)?,
+                            r.get::<_, String>(9)?,
                         ))
                     },
                 )
@@ -490,6 +494,7 @@ impl Store for SqliteStore {
                     expires_s,
                     granted_s,
                     run_id,
+                    receipt_id,
                     source,
                     detector,
                     subject,
@@ -510,6 +515,7 @@ impl Store for SqliteStore {
                         expires_at: parse_ts(&expires_s)?,
                         granted_at: parse_ts(&granted_s)?,
                         granted_in_run_id: run_id,
+                        receipt_id,
                     }))
                 }
             }
@@ -889,6 +895,7 @@ diagnosis: { mode: self_check }
             expires_at: Utc.with_ymd_and_hms(2026, 4, 23, 20, 0, 0).unwrap(),
             granted_at: Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap(),
             granted_in_run_id: run_id.into(),
+            receipt_id: "rcpt_test".into(),
         }
     }
 

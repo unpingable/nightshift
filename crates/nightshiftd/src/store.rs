@@ -64,6 +64,13 @@ pub struct ToleranceRecord {
     pub expires_at: DateTime<Utc>,
     pub granted_at: DateTime<Utc>,
     pub granted_in_run_id: String,
+    /// The Governor receipt that authorized this tolerance grant. The
+    /// grant is persisted only *after* this receipt exists (see
+    /// `apply_horizon_outcomes`), so a later run that loads this record
+    /// as `PriorTolerance` can address the archived authority directly
+    /// rather than inferring it from `granted_in_run_id`. Custody of
+    /// the grant travels with the grant.
+    pub receipt_id: String,
 }
 
 impl ToleranceRecord {

@@ -207,9 +207,19 @@ fn tolerated_active_continues_to_defer_before_expiry() {
     assert_eq!(outcomes_a.len(), 1);
     assert!(matches!(outcomes_a[0].action, HorizonAction::Defer { .. }));
     apply_horizon_outcomes(&outcomes_a, &store, &governor, "run_a", TEST_AGENDA, t0).unwrap();
-    assert!(
-        store.load_tolerance(&key).unwrap().is_some(),
-        "run A must write tolerance record"
+    let grant_a = store
+        .load_tolerance(&key)
+        .unwrap()
+        .expect("run A must write tolerance record");
+    // Audit F3 / witness_preserves_custody: the persisted grant is
+    // bound to the Governor receipt that authorized it. The fixture
+    // Governor mints receipt ids sequentially, so run A's Defer — the
+    // first record_receipt call — is fixture_receipt_0001. An empty or
+    // wrong id here means the grant was saved without (or before) its
+    // authorizing receipt.
+    assert_eq!(
+        grant_a.receipt_id, "fixture_receipt_0001",
+        "run A's tolerance grant must carry the Governor receipt that authorized it"
     );
 
     let phase_b = reconciliation_phase_for(&input.input_id, t_mid);

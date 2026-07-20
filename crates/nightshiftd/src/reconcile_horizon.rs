@@ -237,20 +237,15 @@ pub fn apply_horizon_outcomes(
                 basis_hash,
                 class,
             } => {
-                let record = ToleranceRecord {
-                    finding_key: outcome.finding_key.clone(),
-                    basis_id: basis_id.clone(),
-                    basis_hash: basis_hash.clone(),
-                    prior_class: *class,
-                    expires_at: *until,
-                    granted_at,
-                    granted_in_run_id: run_id.into(),
-                };
-                store.save_tolerance(&record)?;
-
-                // Forward the deferral to Governor as an authority
-                // receipt. The horizon block rides along unchanged;
-                // Governor is the archivist here, not the decider.
+                // Governor first, then persist. The tolerance grant is
+                // authority the Governor archives, so the receipt must
+                // exist before the grant is stored. Saving first (the
+                // prior order) left an orphan grant behind a failed RPC
+                // that the next run would consume as `PriorTolerance`
+                // with nothing attesting it — audit F3,
+                // `witness_preserves_custody`. The horizon block rides
+                // along unchanged; Governor is the archivist here, not
+                // the decider.
                 let block = crate::horizon::HorizonBlock {
                     class: *class,
                     basis_id: Some(basis_id.clone()),
@@ -289,6 +284,23 @@ pub fn apply_horizon_outcomes(
                 };
                 let unsettled_for_receipt = request.unsettled.clone();
                 let response = governor.record_receipt(&request)?;
+
+                // Now persist the grant, bound to the receipt that
+                // authorized it. The record carries `receipt_id` so a
+                // later run loading it as `PriorTolerance` can address
+                // the archived authority directly.
+                let record = ToleranceRecord {
+                    finding_key: outcome.finding_key.clone(),
+                    basis_id: basis_id.clone(),
+                    basis_hash: basis_hash.clone(),
+                    prior_class: *class,
+                    expires_at: *until,
+                    granted_at,
+                    granted_in_run_id: run_id.into(),
+                    receipt_id: response.receipt_id.clone(),
+                };
+                store.save_tolerance(&record)?;
+
                 receipts.push(HorizonReceipt {
                     finding_key: outcome.finding_key.clone(),
                     receipt_id: response.receipt_id,
@@ -638,6 +650,7 @@ mod tests {
                 expires_at: expiry,
                 granted_at: Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap(),
                 granted_in_run_id: "run_a".into(),
+                receipt_id: "rcpt_prior".into(),
             })
             .unwrap();
         assert!(store.load_tolerance(&key).unwrap().is_some());
@@ -690,6 +703,7 @@ mod tests {
                 expires_at: expiry,
                 granted_at: Utc.with_ymd_and_hms(2026, 4, 23, 12, 0, 0).unwrap(),
                 granted_in_run_id: "run_a".into(),
+                receipt_id: "rcpt_prior".into(),
             })
             .unwrap();
 
