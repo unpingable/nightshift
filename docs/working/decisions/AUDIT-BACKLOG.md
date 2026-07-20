@@ -524,3 +524,24 @@ alignment with four NS invariant families and weaker alignment
 with a fifth. The breadcrumb captures the recoverable shape;
 chatgpt and NS-Claude independently agreed on the
 retrieval-handle framing and the hard-guardrail line.
+
+**Update 2026-07-20: promotion condition 3 fired; entry superseded as
+a posture, retained as provenance.**
+
+All five modules named above are now `PUBLIC-SHIPPED` /
+`PUBLIC-EVIDENCE` (lean v13 custody migration), and the capital-C
+`Admissibility.Calculus` root (Core / Spine / Crossing / Comparison +
+BreakGlass terminal instance) is on the lean repo's **stable surface**
+as of v14 (2026-07-18). Operator direction (2026-07-20): runtime
+conformance is now the goal; the lean repo's "no runtime conformance
+claim" is a fence for third-party consumers, not a ceiling on this
+program. The alignment is therefore a *conformance target*, no longer
+"resonance, not backing."
+
+The full conformance audit, findings, correspondence-map assessment,
+and fix ladder live in
+`AUDIT-2026-07-20-calculus-runtime-conformance.md`. The hard
+guardrail above survives in narrowed form: do not claim NS is
+*formally verified* or *implemented from* the Lean kernel — a
+conformance claim still requires an explicit correspondence map plus
+evidence/refinement, and none is asserted yet.
