@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agenda::AuthorityLevel;
 use crate::bundle::ReconciliationSummary;
+use crate::coordination::CoordinationOutcome;
 use crate::governor_client::NonDischargeKind;
 use crate::finding::{
     EvidenceState, FindingKey, FindingOrigin, FindingSilence, Severity, WitnessPosition,
@@ -93,7 +94,20 @@ pub enum RefusalKind {
         tolerated_basis_hash: String,
         current_basis_hash: String,
     },
-    PreflightHeld,
+    /// A coordination preflight did not clear the run past capture.
+    /// Carries the specific `CoordinationOutcome` that held it —
+    /// `HoldForContext` / `Coordinate` / `BlockForResolution` are
+    /// genuinely distinct outcomes with distinct ledger event kinds,
+    /// and a bare unit variant collapsed all three into one value.
+    /// `reasons` is the risky-class classification that triggered the
+    /// preflight (the same list rendered into `blocked[]`). `Clear`
+    /// and `OperatorOverride` never appear here: the hold path is the
+    /// only writer.
+    PreflightHeld {
+        outcome: CoordinationOutcome,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        reasons: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,9 +441,34 @@ mod tests {
 
     #[test]
     fn refusal_kind_preflight_held_serializes_with_tag() {
-        let refusal = RefusalKind::PreflightHeld;
+        let refusal = RefusalKind::PreflightHeld {
+            outcome: CoordinationOutcome::BlockForResolution,
+            reasons: vec!["protected-class service in scope".into()],
+        };
         let json = serde_json::to_value(&refusal).expect("serialization must succeed");
         assert_eq!(json["kind"], "preflight_held");
+        // The specific hold outcome survives — the three hold outcomes
+        // no longer collapse to one value.
+        assert_eq!(json["outcome"], "block_for_resolution");
+        assert_eq!(json["reasons"][0], "protected-class service in scope");
+    }
+
+    #[test]
+    fn refusal_kind_preflight_held_distinguishes_hold_outcomes() {
+        let a = serde_json::to_value(RefusalKind::PreflightHeld {
+            outcome: CoordinationOutcome::HoldForContext,
+            reasons: vec![],
+        })
+        .unwrap();
+        let b = serde_json::to_value(RefusalKind::PreflightHeld {
+            outcome: CoordinationOutcome::Coordinate,
+            reasons: vec![],
+        })
+        .unwrap();
+        assert_ne!(
+            a["outcome"], b["outcome"],
+            "distinct hold outcomes must not encode to the same value"
+        );
     }
 
     #[test]
@@ -474,7 +513,10 @@ mod tests {
 
     #[test]
     fn refusal_kind_preflight_held_round_trips() {
-        let refusal = RefusalKind::PreflightHeld;
+        let refusal = RefusalKind::PreflightHeld {
+            outcome: CoordinationOutcome::Coordinate,
+            reasons: vec!["protected-class service in scope".into()],
+        };
         let json = serde_json::to_value(&refusal).expect("serialization must succeed");
         let deserialized: RefusalKind =
             serde_json::from_value(json).expect("deserialization must succeed");

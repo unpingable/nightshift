@@ -1048,7 +1048,10 @@ fn hold_for_preflight(
         },
         unsettled: vec![],
         closure_candidate,
-        refusal: Some(crate::packet::RefusalKind::PreflightHeld),
+        refusal: Some(crate::packet::RefusalKind::PreflightHeld {
+            outcome,
+            reasons: risk.reasons().iter().map(|s| s.to_string()).collect(),
+        }),
     };
 
     store.save_packet(run_id, &packet)?;
