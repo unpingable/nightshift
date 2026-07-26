@@ -9,6 +9,7 @@ pub mod attention;
 pub mod bundle;
 pub mod closure;
 pub mod coordination;
+pub mod diagnostic_operations;
 pub mod drill;
 pub mod errors;
 pub mod finding;

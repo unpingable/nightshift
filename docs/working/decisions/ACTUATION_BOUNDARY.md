@@ -2,9 +2,15 @@
 
 <!--
 Adopted verbatim from ~/git/cartography/doctrine/nightshift-actuation-boundary.md
-2026-05-28. Single canonical source is in cartography; do not amend locally —
-if amendment needed, file feedback in cartography (PR or coordination note)
-and the doctrine evolves there.
+2026-05-28; re-adopted verbatim 2026-07-26 after the cartography amendment
+adding the "bounded diagnostic execution" category and correcting the
+2026-05-28 grounded-reality paragraph. Single canonical source is in
+cartography; do not amend locally — if amendment needed, file feedback in
+cartography (PR or coordination note) and the doctrine evolves there.
+
+The declared operations this repository classifies under that category live
+in `crates/nightshiftd/src/diagnostic_operations.rs` and are enforced by
+`scripts/check_no_actuation_surface.sh`.
 -->
 
 
@@ -31,12 +37,89 @@ itself. Nothing is lost except the part that was dangerous.
 | Emit a `ProposedAction` (the trigger) | Write to a control plane (HTTP post/put/delete) |
 | Present options / notify | Both decide *and* enact in one trust boundary |
 
-**Grounded reality (checked, not assumed):** Nightshift today is already on the
-right side of this line. Every `Command::new` in the codebase shells to `nq` /
-`liveness` with `export` verbs — pure reads. The danger is entirely *additive*:
-a future `Command::new("salt")`, an `ssh … reboot`, a control-plane `POST`, or
-an ssh client in `Cargo.toml`. So the boundary preserves exactly what exists and
-forbids only what would creep in.
+**Grounded reality (checked, not assumed) — as of 2026-05-28:** Nightshift was
+already on the right side of this line. Every `Command::new` in the codebase
+shelled to `nq` / `liveness` with `export` verbs — pure reads. The danger was
+entirely *additive*: a future `Command::new("salt")`, an `ssh … reboot`, a
+control-plane `POST`, or an ssh client in `Cargo.toml`. So the boundary
+preserved exactly what existed and forbade only what would creep in.
+
+> **Correction, 2026-07-26.** The paragraph above stopped being true on
+> 2026-06-10, when `crates/nightshiftd/src/drill.rs` landed with subprocess
+> sites that are not `export` verbs and not pure reads. It is retained above as
+> the 2026-05-28 statement it was, and corrected here rather than silently
+> rewritten. The two-column table was also *incomplete*, not wrong: it had no
+> row for an operation that executes something bounded while remaining unable to
+> mutate any governed substrate. See **Bounded diagnostic execution** below.
+
+## Bounded diagnostic execution (added 2026-07-26)
+
+A third category. **It is not a read.** Do not call it one merely because it is
+non-actuating — that is the same flattening the boundary exists to refuse.
+
+> **A read observes without executing. A bounded diagnostic executes a named
+> operation in order to observe. Neither holds the creds.**
+
+### What it establishes
+
+That a **named, enumerated** operation invoked an **explicitly identified**
+diagnostic dependency, observed or computed evidence, and returned testimony.
+
+### What it does not establish
+
+That anything was authorized, executed against a governed substrate, settled, or
+made safe. Diagnostic output is evidence, not permission.
+
+### Constraints — conjunctive; all eleven must hold
+
+An operation qualifies only if it:
+
+1. invokes an **explicitly identified** diagnostic/probe operation — declared,
+   not inferred from context;
+2. observes, computes, or collects evidence;
+3. writes only to **declared disposable/local evidence state**;
+4. emits testimony, findings, proposals, or advisory packets only;
+5. possesses **no** standing, authority, lease, capability, credential, or
+   reusable execution token;
+6. cannot mutate Git refs, repositories, control planes, services, system
+   configuration, or governed application state;
+7. cannot issue AG authorization or Docket standing;
+8. cannot call a repair or actuator;
+9. cannot convert its result into an automatic action;
+10. remains replayable and operator-visible;
+11. is **structurally enumerable and testable**.
+
+An operation that violates any one of these is **not** in this category. It
+remains blocked, or the enclosing function is split until the qualifying part
+stands alone.
+
+### The mechanical statements
+
+- **Non-actuating does not imply read-only.**
+- **Diagnostic execution is not authority.**
+- **A proposal is not an effect.**
+- **An advisory packet is not an execution lease.**
+- **An acknowledgment does not discharge or rewrite source evidence.**
+- **Adding an actuator to a diagnostic module invalidates the classification.**
+  The classification attaches to declared *operations*, never to a file, a
+  directory, or a module name.
+- **The category is closed and explicitly enumerated.** Membership is a listed
+  declaration naming the exact executable and verb, checkable by a gate. An
+  undeclared subprocess site is not in the category by resemblance.
+
+### Where it sits
+
+| category | executes a subprocess? | may write? | holds authority? |
+|---|---|---|---|
+| read / export | yes — `export`-class verbs | no | no |
+| **bounded diagnostic execution** | **yes — a declared operation** | **declared disposable evidence only** | **no** |
+| proposal | no | Nightshift-local state only | no |
+| actuation | — | — | **forbidden** |
+
+The "May never do" column above is unchanged and continues to bind this
+category in full: no substrate actuator, no credentials that could mutate the
+substrate, no control-plane write, and never deciding *and* enacting inside one
+trust boundary.
 
 ## The contract: `ProposedAction` (inert by construction)
 
