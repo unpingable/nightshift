@@ -1,6 +1,6 @@
 //! Closed declaration of Night Shift's subprocess operations.
 //!
-//! Every `Command::new` site in a declared-diagnostic module must appear here,
+//! Every subprocess call site in a declared-diagnostic module must appear here,
 //! naming the exact executable and verb it invokes. `scripts/check_no_actuation_surface.sh`
 //! enforces that correspondence; an undeclared site fails the build.
 //!
@@ -105,7 +105,8 @@ pub const DECLARED_DIAGNOSTIC_OPERATIONS: &[DiagnosticOperation] = &[
         verb: "why",
         writes: DiagnosticWrites::Nothing,
         category: DiagnosticCategory::PureRead,
-        rationale: "Renders an existing receipt chain. Reads only.",
+        rationale: "Renders an existing receipt chain through AG's own walk. \
+                    Reads a receipt already written; produces text only.",
     },
     DiagnosticOperation {
         name: "ag.governor_reachable",
@@ -114,7 +115,8 @@ pub const DECLARED_DIAGNOSTIC_OPERATIONS: &[DiagnosticOperation] = &[
         verb: "--help",
         writes: DiagnosticWrites::Nothing,
         category: DiagnosticCategory::PureRead,
-        rationale: "Reachability probe.",
+        rationale: "Reachability probe: runs --help and reads the exit status. \
+                    Observes whether the AG CLI answers; changes nothing.",
     },
     DiagnosticOperation {
         name: "nq.bin_reachable",
@@ -123,7 +125,8 @@ pub const DECLARED_DIAGNOSTIC_OPERATIONS: &[DiagnosticOperation] = &[
         verb: "--help",
         writes: DiagnosticWrites::Nothing,
         category: DiagnosticCategory::PureRead,
-        rationale: "Reachability probe for the hop that runs first.",
+        rationale: "Reachability probe for the NQ hop, which runs before AG is \
+                    reached at all. Runs --help and reads the exit status.",
     },
     DiagnosticOperation {
         name: "ag.drill_runner_importable",
@@ -153,7 +156,8 @@ pub const DECLARED_DIAGNOSTIC_OPERATIONS: &[DiagnosticOperation] = &[
         verb: "-c",
         writes: DiagnosticWrites::Nothing,
         category: DiagnosticCategory::PureRead,
-        rationale: "Import probe. Fixed literal argument.",
+        rationale: "Import probe for the poster module. The -c argument is a \
+                    fixed literal import statement, not caller input.",
     },
 ];
 
@@ -197,8 +201,18 @@ mod tests {
     fn no_declared_executable_is_a_substrate_actuator_or_shell() {
         // The doctrine's "May never do" column, mechanically.
         for forbidden in [
-            "ssh", "salt", "ansible", "systemctl", "kubectl", "docker", "sh", "bash", "git",
-            "sudo", "curl", "wget",
+            "ssh",
+            "salt",
+            "ansible",
+            "systemctl",
+            "kubectl",
+            "docker",
+            "sh",
+            "bash",
+            "git",
+            "sudo",
+            "curl",
+            "wget",
         ] {
             assert!(
                 !DECLARED_DIAGNOSTIC_EXECUTABLES.contains(&forbidden),

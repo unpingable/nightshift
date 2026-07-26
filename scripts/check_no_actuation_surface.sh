@@ -156,32 +156,69 @@ if [ -n "$hits" ]; then
 fi
 
 # -------------------------------------------------------------------
-# 5. New subprocess call sites outside the read-adapter allowlist
+# 5. Subprocess call sites: read adapters, and declared diagnostics
 # -------------------------------------------------------------------
-# Doctrine doc: vetted allowlist as of 2026-05-28 is `nq.rs` and
-# `liveness.rs`. Any `Command::new(...)` call in another file is a
-# new subprocess site and must be reviewed by doctrine. Tracking is
-# at file granularity (not call-site granularity) so adding a new
-# call to nq.rs/liveness.rs is implicitly allowed; opening a new
-# file with a Command::new is not.
+# Two kinds of file may hold a `Command::new`, and nothing else may.
+#
+#   a. Read adapters (`nq.rs`, `liveness.rs`) — vetted 2026-05-28, tracked
+#      at file granularity because every call is an `export`-class read.
+#
+#   b. The declared-diagnostic module (`drill.rs`) — tracked at *operation*
+#      granularity against the closed table in
+#      `crates/nightshiftd/src/diagnostic_operations.rs`, per the
+#      "bounded diagnostic execution" category added to the cartography
+#      doctrine 2026-07-26.
+#
+# (b) is deliberately NOT an allowlist entry. The doctrine says
+# classification attaches to declared operations, never to a file, so the
+# file is not trusted: its call sites are counted against the declaration.
+# Add a `Command::new` without declaring it and the counts diverge and this
+# check fails — which is the operator signal that the invocation shape
+# changed. Checks 1-4 above are file-independent and still apply here, so an
+# actuator added to drill.rs fails regardless of any declaration.
 allowlisted_subprocess_files=(
     crates/nightshiftd/src/nq.rs
     crates/nightshiftd/src/liveness.rs
 )
+declared_diagnostic_module="crates/nightshiftd/src/drill.rs"
+declaration_table="crates/nightshiftd/src/diagnostic_operations.rs"
+
 declare -A allowlist_lookup=()
 for f in "${allowlisted_subprocess_files[@]}"; do
     allowlist_lookup["$f"]=1
 done
+
 # Files containing Command::new under the NS source tree.
 while IFS= read -r file; do
     [ -z "$file" ] && continue
-    # Strip leading ./ if present (grep -r yields paths relative to
-    # cwd which is the repo root).
     file_rel="${file#./}"
-    if [ -z "${allowlist_lookup[$file_rel]:-}" ]; then
-        fail "new subprocess call site outside read-adapter allowlist: ${file_rel}"
-        grep -nE "Command::new" "$file_rel" >&2 || true
+    if [ -n "${allowlist_lookup[$file_rel]:-}" ]; then
+        continue
     fi
+    if [ "$file_rel" = "$declared_diagnostic_module" ]; then
+        # Every subprocess site must be covered by a declared operation.
+        if [ ! -f "$declaration_table" ]; then
+            fail "declared-diagnostic module ${file_rel} has no declaration table at ${declaration_table}"
+            continue
+        fi
+        site_count=$(grep -cE "Command::new" "$file_rel" || true)
+        decl_count=$(grep -cE "^        name: \"" "$declaration_table" || true)
+        if [ "$site_count" -ne "$decl_count" ]; then
+            fail "declared-diagnostic drift: ${file_rel} has ${site_count} subprocess call site(s) but ${declaration_table} declares ${decl_count} operation(s). Every site must be a declared operation naming its exact executable and verb; see docs/working/decisions/ACTUATION_BOUNDARY.md, 'Bounded diagnostic execution'."
+            grep -nE "Command::new" "$file_rel" >&2 || true
+            continue
+        fi
+        # Every executable the module invokes must be a declared executable.
+        while IFS= read -r exe; do
+            [ -z "$exe" ] && continue
+            if ! grep -qE "^pub const DECLARED_DIAGNOSTIC_EXECUTABLES.*\"${exe}\"" "$declaration_table"; then
+                fail "undeclared diagnostic executable ${exe:-?} invoked from ${file_rel}"
+            fi
+        done < <(grep -oE 'Command::new\("[a-z0-9_.-]+"\)' "$file_rel" | sed -E 's/Command::new\("(.*)"\)/\1/' | sort -u)
+        continue
+    fi
+    fail "new subprocess call site outside read-adapter allowlist and declared diagnostics: ${file_rel}"
+    grep -nE "Command::new" "$file_rel" >&2 || true
 done < <(grep -rlE "Command::new" "${ns_src_paths[@]}" 2>/dev/null || true)
 
 # -------------------------------------------------------------------
