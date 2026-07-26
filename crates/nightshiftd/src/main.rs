@@ -1,6 +1,6 @@
 //! Night Shift daemon — `nightshift` CLI entry.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -292,6 +292,49 @@ enum NqAction {
         #[arg(long)]
         show_raw: bool,
     },
+
+    /// Ask NQ for a reliance decision and derive Night Shift's read-only
+    /// disposition. Prints the `nightshift.readonly_disposition.v1` record;
+    /// sends nothing anywhere. Exit 0 means a disposition was derived —
+    /// including `stop`; the record, not the shell status, is the product.
+    Disposition {
+        /// `nq.reliance.request.v1` document.
+        #[arg(long)]
+        request: PathBuf,
+
+        /// The sealed `nq.receipt.v1` being relied upon.
+        #[arg(long)]
+        receipt: PathBuf,
+
+        /// `nq.reliance.profiles.v1` catalog.
+        #[arg(long)]
+        profiles: PathBuf,
+
+        /// Optional evidence context document.
+        #[arg(long)]
+        evidence: Option<PathBuf>,
+
+        /// Sealed supporting receipts, passed through to NQ verbatim
+        /// (repeatable). Whether they satisfy the profile is NQ's law.
+        #[arg(long)]
+        supporting: Vec<PathBuf>,
+
+        /// The consumer profile the returned receipt must be addressed to.
+        #[arg(long, default_value = nightshiftd::nq_disposition::EXPECTED_CONSUMER_PROFILE)]
+        expected_profile: String,
+
+        /// Night Shift's own timeout for the NQ invocation, in seconds.
+        #[arg(long, default_value_t = 30)]
+        timeout_seconds: u64,
+
+        /// Night Shift's own freshness policy for the returned receipt.
+        #[arg(long, default_value_t = 900)]
+        max_age_seconds: u64,
+
+        /// Output format: `json` (default; the record verbatim) or `text`.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -532,6 +575,28 @@ fn main() -> anyhow::Result<()> {
                 format,
                 *show_raw,
             ),
+            NqAction::Disposition {
+                request,
+                receipt,
+                profiles,
+                evidence,
+                supporting,
+                expected_profile,
+                timeout_seconds,
+                max_age_seconds,
+                format,
+            } => nq_disposition_cmd(
+                &cli,
+                request,
+                receipt,
+                profiles,
+                evidence.as_ref(),
+                supporting,
+                expected_profile,
+                *timeout_seconds,
+                *max_age_seconds,
+                format,
+            ),
         },
         Command::Liveness { action } => match action {
             LivenessAction::Peek { format } => liveness_peek_cmd(&cli, format),
@@ -679,6 +744,72 @@ fn liveness_peek_cmd(cli: &Cli, format: &str) -> anyhow::Result<()> {
     match format {
         "json" => println!("{}", doc.to_json_pretty()),
         _ => print!("{}", render_liveness_peek_text(&doc)),
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn nq_disposition_cmd(
+    cli: &Cli,
+    request: &Path,
+    receipt: &Path,
+    profiles: &Path,
+    evidence: Option<&PathBuf>,
+    supporting: &[PathBuf],
+    expected_profile: &str,
+    timeout_seconds: u64,
+    max_age_seconds: u64,
+    format: &str,
+) -> anyhow::Result<()> {
+    use nightshiftd::nq::RelianceInvocation;
+    use nightshiftd::nq_disposition::derive_disposition;
+
+    let nq_bin = cli
+        .nq_bin
+        .as_ref()
+        .cloned()
+        .or_else(|| std::env::var_os("NIGHTSHIFT_NQ_BIN").map(PathBuf::from))
+        .ok_or_else(|| {
+            anyhow::anyhow!("nq disposition requires --nq-bin <path> or NIGHTSHIFT_NQ_BIN")
+        })?;
+
+    let inv = RelianceInvocation {
+        nq_bin,
+        request: request.to_path_buf(),
+        receipt: receipt.to_path_buf(),
+        evidence: evidence.cloned(),
+        profiles: profiles.to_path_buf(),
+        supporting: supporting.to_vec(),
+        expected_profile: expected_profile.to_string(),
+        timeout_seconds,
+        max_age_seconds,
+    };
+    let now = chrono::Utc::now();
+    let out = inv.evaluate(now);
+    let record = derive_disposition(
+        &out.state,
+        out.receipt.as_ref(),
+        &now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        expected_profile,
+    );
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&record)?),
+        "text" => {
+            println!("disposition: {}", serde_json::to_value(record.disposition)?);
+            println!("disposition_id: {}", record.disposition_id);
+            println!("expected_consumer_profile: {}", record.expected_consumer_profile);
+            for r in &record.reasons {
+                println!("reason: {r}");
+            }
+            if let Some(src) = &record.source {
+                println!("source decision: {} ({})", src.decision, src.decision_id);
+                for s in &src.supporting_receipts {
+                    println!("supporting: {} {} ({})", s.claim, s.content_hash, s.status);
+                }
+            }
+        }
+        other => anyhow::bail!("unknown format {other:?}: expected json or text"),
     }
     Ok(())
 }

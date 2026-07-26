@@ -309,3 +309,190 @@ fn nq_findings_export_default_format_is_jsonl() {
         "nq help should document jsonl default; got:\n{help}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `nightshift nq disposition` — the supported machine surface (2026-07-26).
+//
+// These tests drive the real binary against a fake NQ (a script that answers
+// with a canned receipt), so they need no live NQ. The contract under test:
+// exit 0 means "a disposition was derived" — including refusals and stop —
+// and the record on stdout, not the shell status, is the product.
+// ---------------------------------------------------------------------------
+
+fn nightshift_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_nightshift"))
+}
+
+fn canned_receipt(profile: &str, decision: &str, with_supporting: bool) -> serde_json::Value {
+    let supporting = if with_supporting {
+        serde_json::json!([{
+            "claim": "continuity_rely_eligible",
+            "content_hash": "sha256:ssss",
+            "status": "verified",
+            "subject": "continuity-record:mem-1"
+        }])
+    } else {
+        serde_json::json!([])
+    };
+    serde_json::json!({
+        "schema": "nq.reliance.receipt.v1",
+        "decision_id": "sha256:dddd",
+        "request_digest": "sha256:rrrr",
+        "evidence_context_digest": "sha256:eeee",
+        "consumer_profile_id": profile,
+        "caller_binding": "configured",
+        "caller_binding_disclosure":
+            "consumer profile was selected from local configuration; this is not an \
+             authenticated consumer identity",
+        "purpose": "continue_observing",
+        "claim": "docket_attempt_settled",
+        "receipt_content_hash": "sha256:cccc",
+        "underlying_status": "verified",
+        "decision": decision,
+        "premises": [],
+        "coverage_limits": [],
+        "unresolved_residuals": [],
+        "retained_contradictions": [],
+        "refusal_reasons": [],
+        "establishes": [],
+        "does_not_establish": ["this decision grants no execution authority"],
+        "supporting_receipts": supporting,
+        "policy_version": "v1",
+        // Freshly stamped so the freshness policy sees a young receipt.
+        "generated_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    })
+}
+
+fn fake_nq(dir: &Path, receipt: &serde_json::Value, exit_code: u8) -> PathBuf {
+    let receipt_file = dir.join("canned-receipt.json");
+    std::fs::write(&receipt_file, serde_json::to_vec(receipt).unwrap()).unwrap();
+    let script = dir.join("fake-nq.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat {}\nexit {}\n",
+            receipt_file.display(),
+            exit_code
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    script
+}
+
+fn run_disposition(fake: &Path, dir: &Path, extra: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(nightshift_bin());
+    cmd.arg("--nq-bin")
+        .arg(fake)
+        .arg("nq")
+        .arg("disposition")
+        .arg("--request")
+        .arg(dir.join("req.json"))
+        .arg("--receipt")
+        .arg(dir.join("rec.json"))
+        .arg("--profiles")
+        .arg(dir.join("profiles.json"));
+    for e in extra {
+        cmd.arg(e);
+    }
+    cmd.output().expect("nightshift invocation")
+}
+
+#[test]
+fn disposition_cli_continuity_profile_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = fake_nq(
+        dir.path(),
+        &canned_receipt("nightshift-readonly-continuity", "authorized_reliance", true),
+        0,
+    );
+    let sup = dir.path().join("sup.json");
+    std::fs::write(&sup, "{}").unwrap();
+    let out = run_disposition(
+        &fake,
+        dir.path(),
+        &[
+            "--supporting",
+            sup.to_str().unwrap(),
+            "--expected-profile",
+            "nightshift-readonly-continuity",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let rec: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rec["schema"], "nightshift.readonly_disposition.v1");
+    assert_eq!(rec["disposition"], "continue_observing");
+    assert_eq!(rec["expected_consumer_profile"], "nightshift-readonly-continuity");
+    assert!(rec["disposition_id"].as_str().unwrap().starts_with("sha256:"));
+    assert_eq!(
+        rec["source"]["supporting_receipts"][0]["claim"],
+        "continuity_rely_eligible"
+    );
+}
+
+#[test]
+fn disposition_cli_refusal_is_a_product_not_a_process_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = fake_nq(
+        dir.path(),
+        &canned_receipt("nightshift-readonly-continuity", "coverage_insufficient", false),
+        0,
+    );
+    let out = run_disposition(
+        &fake,
+        dir.path(),
+        &["--expected-profile", "nightshift-readonly-continuity"],
+    );
+    assert!(out.status.success(), "refusals still exit 0");
+    let rec: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rec["disposition"], "human_judgment_required");
+    assert_eq!(rec["human_judgment_required"], true);
+}
+
+#[test]
+fn disposition_cli_default_expectation_is_the_base_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    // NQ answers with a continuity-profile receipt; the CLI, given no
+    // --expected-profile, expects the base profile → integrity stop.
+    let fake = fake_nq(
+        dir.path(),
+        &canned_receipt("nightshift-readonly-continuity", "authorized_reliance", true),
+        0,
+    );
+    let out = run_disposition(&fake, dir.path(), &[]);
+    assert!(out.status.success());
+    let rec: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rec["expected_consumer_profile"], "nightshift-readonly");
+    assert_eq!(rec["disposition"], "stop");
+    assert_eq!(rec["source_state"]["kind"], "malformed");
+}
+
+#[test]
+fn disposition_cli_no_decision_is_evidence_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = fake_nq(
+        dir.path(),
+        &canned_receipt("nightshift-readonly", "authorized_reliance", false),
+        1, // NQ reached no decision
+    );
+    let out = run_disposition(&fake, dir.path(), &[]);
+    assert!(out.status.success(), "an honest observation still exits 0");
+    let rec: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rec["disposition"], "evidence_unavailable");
+    assert_eq!(rec["source_state"]["kind"], "transport_unavailable");
+    assert!(rec.get("source").is_none() || rec["source"].is_null());
+}
+
+#[test]
+fn disposition_cli_missing_required_argument_is_a_usage_error() {
+    let out = Command::new(nightshift_bin())
+        .arg("nq")
+        .arg("disposition")
+        .output()
+        .expect("nightshift invocation");
+    assert_eq!(out.status.code(), Some(2), "clap usage errors exit 2");
+}
