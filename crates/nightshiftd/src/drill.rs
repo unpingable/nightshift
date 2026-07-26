@@ -180,8 +180,30 @@ pub enum DrillError {
     #[error("drill_runner subprocess produced invalid JSON: {0}")]
     InvalidJsonEnvelope(#[from] serde_json::Error),
 
-    #[error("io error invoking drill_runner: {0}")]
+    /// Blanket io failure somewhere in the drill path.
+    ///
+    /// Deliberately does **not** name an operation: eight distinct sites
+    /// feed this variant — the `nq-monitor` spawn, the `drill_runner` and
+    /// `drill_poster` spawns, the `governor` spawn, and four filesystem
+    /// calls. It previously read "io error invoking drill_runner", which
+    /// misattributed a missing `nq-monitor` to the AG-side Python module
+    /// and cost a full campaign's diagnosis. Missing executables are
+    /// reported by [`DrillError::DependencyMissing`] instead.
+    #[error("drill io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A required external executable was not found.
+    ///
+    /// Names the binary and how to supply it, so a missing dependency is
+    /// actionable rather than a bare `os error 2`.
+    #[error(
+        "required drill dependency {binary:?} was not found on PATH; \
+         set {env_var} to its absolute path, or install it"
+    )]
+    DependencyMissing {
+        binary: String,
+        env_var: &'static str,
+    },
 
     #[error("WAL-bloat staging failed: {0}")]
     Stager(#[from] StagerError),
@@ -353,7 +375,8 @@ pub fn capture_genuine_nq_finding(
         // on stdout. The drill subcommand emits no info-level logs in
         // its own code path.
         .env("RUST_LOG", "warn")
-        .output()?;
+        .output();
+    let output = spawned(output, &nq_bin, "NIGHTSHIFT_NQ_BIN")?;
 
     if !output.status.success() {
         return Err(DrillError::NqEvaluatorFailed {
@@ -451,7 +474,7 @@ pub fn run_drill(config: &DrillConfig) -> Result<DrillRunResult, DrillError> {
     if let Some(role) = &config.confabulate_citation {
         cmd.arg("--confabulate-citation").arg(role);
     }
-    let output = cmd.output()?;
+    let output = spawned(cmd.output(), &python_bin, "NIGHTSHIFT_PYTHON")?;
 
     if !output.status.success() {
         return Err(DrillError::SubprocessFailed {
@@ -566,11 +589,52 @@ pub fn shell_governor_why(receipt_id: &str) -> Result<String, DrillError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Map a spawn failure to a named-dependency error.
+///
+/// `Command::output()` returns a bare `NotFound` when the executable is
+/// absent, which reaches the operator as `os error 2` with no indication of
+/// *which* program is missing. Every drill spawn goes through here.
+fn spawned(
+    result: std::io::Result<std::process::Output>,
+    binary: &Path,
+    env_var: &'static str,
+) -> Result<std::process::Output, DrillError> {
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(DrillError::DependencyMissing {
+                binary: binary.display().to_string(),
+                env_var,
+            })
+        }
+        other => Ok(other?),
+    }
+}
+
 /// Sanity helper for callers that need to verify their `governor` CLI
 /// is reachable before driving the drill. Returns whether the binary
 /// answers `--help` cleanly. Not load-bearing for the drill itself.
 pub fn governor_cli_reachable() -> bool {
     Command::new("governor")
+        .arg("--help")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Sanity helper: is the `nq-monitor` binary the drill needs reachable?
+///
+/// The D0-Origin path (`origin_real_nq`, on by default) spawns
+/// `nq-monitor drill wal-bloat` *before* touching AG at all, so a drill on a
+/// host without NQ installed fails at the NQ hop. Tests use this to skip
+/// rather than fail, the same way `drill_runner_module_importable` guards the
+/// AG hop.
+#[must_use]
+pub fn nq_bin_reachable(nq_bin: Option<&Path>) -> bool {
+    let bin = nq_bin
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("NIGHTSHIFT_NQ_BIN").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_NQ_BIN));
+    Command::new(&bin)
         .arg("--help")
         .output()
         .map(|o| o.status.success())

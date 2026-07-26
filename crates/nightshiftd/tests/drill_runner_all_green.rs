@@ -34,6 +34,19 @@ fn nightshift_bin() -> PathBuf {
 /// it, the cross-repo subprocess will fail; that failure is not a
 /// regression in scheduler.
 fn skip_if_drill_runner_missing() -> bool {
+    // The D0-Origin path spawns `nq-monitor drill wal-bloat` before it
+    // reaches AG at all, so NQ's absence fails this test at the NQ hop —
+    // previously reported as "io error invoking drill_runner", which named
+    // the wrong dependency entirely. Check the hop that runs first.
+    if !drill::nq_bin_reachable(None) {
+        eprintln!(
+            "[drill_runner_all_green skip] the `nq-monitor` binary is not \
+             reachable; the drill's D0-Origin path needs it before AG is \
+             invoked. Set NIGHTSHIFT_NQ_BIN to an absolute path, or install \
+             nq-monitor, to exercise this cross-repo wiring."
+        );
+        return true;
+    }
     if !drill::drill_runner_module_importable(None) {
         eprintln!(
             "[drill_runner_all_green skip] python3 -m \
