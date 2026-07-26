@@ -1,0 +1,38 @@
+{
+  "caller_binding": "configured",
+  "caller_binding_disclosure": "consumer profile was selected from local configuration; this is not an authenticated consumer identity",
+  "claim": "nq_trustworthy",
+  "consumer_profile_id": "operator-review",
+  "coverage_limits": [],
+  "decision": "claim_not_authorized_for_consumer",
+  "decision_id": "sha256:41e13a237bf4ab97ac04df5e650229370acfea0360cd070404405fd99d8ef0e8",
+  "does_not_establish": [
+    "this decision grants no execution authority",
+    "this decision is operational evidence, not sealed custody",
+    "this decision names no action and licenses no retry, clearing, or escalation",
+    "a reliance refusal is not a refutation of the underlying claim"
+  ],
+  "establishes": [],
+  "evidence_context_digest": "sha256:6afc100b53dd4b58c2963ccfd2b6c07fc7e0a6c8ff6817be527c2705a0225b87",
+  "generated_at": "2026-07-26T00:00:00Z",
+  "policy_version": "v1",
+  "premises": [],
+  "purpose": "review",
+  "receipt_content_hash": "sha256:1e4de67b31e106c92aa28cdfe65326111b56fdc2c61f6a186d16232cea913da5",
+  "refusal_reasons": [
+    "profile \"operator-review\" is not permitted to rely on claim \"nq_trustworthy\""
+  ],
+  "request_digest": "sha256:41e13a237bf4ab97ac04df5e650229370acfea0360cd070404405fd99d8ef0e8",
+  "retained_contradictions": [],
+  "schema": "nq.reliance.receipt.v1",
+  "underlying_status": "verified",
+  "unresolved_residuals": [],
+  "witnesses": [
+    {
+      "custody_basis": "native_observation",
+      "digest": "sha256:bb",
+      "observed_at": "2026-07-26T00:00:00Z",
+      "witness_type": "nq_self"
+    }
+  ]
+}

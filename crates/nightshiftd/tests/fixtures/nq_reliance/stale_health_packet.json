@@ -1,0 +1,38 @@
+{
+  "caller_binding": "configured",
+  "caller_binding_disclosure": "consumer profile was selected from local configuration; this is not an authenticated consumer identity",
+  "claim": "nq_evaluator_state",
+  "consumer_profile_id": "operator-review",
+  "coverage_limits": [],
+  "decision": "stale_evidence",
+  "decision_id": "sha256:07bae6a1f31ef4d8a3b763b3088e248a4e2ca6ce332994abc4630f3642359a45",
+  "does_not_establish": [
+    "this decision grants no execution authority",
+    "this decision is operational evidence, not sealed custody",
+    "this decision names no action and licenses no retry, clearing, or escalation",
+    "a reliance refusal is not a refutation of the underlying claim"
+  ],
+  "establishes": [],
+  "evidence_context_digest": "sha256:178dc4f8817662e9dc6a5d3700f8dc128dd8fd9434d3c9fb7d66986308e82f78",
+  "generated_at": "2026-07-26T00:00:00Z",
+  "policy_version": "v1",
+  "premises": [],
+  "purpose": "review",
+  "receipt_content_hash": "sha256:4459714d41e5cba5d22912f4628fd81c14f74e4e955c37dda49e7194002422bd",
+  "refusal_reasons": [
+    "the evaluator marked the observation stale"
+  ],
+  "request_digest": "sha256:07bae6a1f31ef4d8a3b763b3088e248a4e2ca6ce332994abc4630f3642359a45",
+  "retained_contradictions": [],
+  "schema": "nq.reliance.receipt.v1",
+  "underlying_status": "verified",
+  "unresolved_residuals": [],
+  "witnesses": [
+    {
+      "custody_basis": "native_observation",
+      "digest": "sha256:bb",
+      "observed_at": "2026-07-01T00:00:00Z",
+      "witness_type": "nq_self"
+    }
+  ]
+}
