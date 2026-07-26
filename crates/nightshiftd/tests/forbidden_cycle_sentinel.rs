@@ -142,24 +142,37 @@ fn forbidden_cycle_structural_absence_sentinel_ns_does_not_write_to_nq() {
         );
     }
 
-    // 2. Every `Command::new(...)` site in nq.rs / liveness.rs must be
-    //    paired with an `.arg("export")` somewhere in the same file.
-    //    Today both files contain only `findings export` and `liveness
-    //    export` subprocess invocations; the counts must match.
+    // 2. Every subprocess call site in nq.rs / liveness.rs must be paired
+    //    with a read-only NQ verb somewhere in the same file; the counts
+    //    must match. A call site without a read-only verb is an unreviewed
+    //    channel.
     //
-    //    If a new read-only NQ verb lands that does not use the `export`
-    //    subcommand (e.g. a future `nq peek` invocation from NS code),
-    //    this assertion must be updated deliberately. That update is the
-    //    operator signal that NS's NQ-CLI invocation shape has changed.
+    //    Read-only verb set, expanded deliberately on 2026-07-26 when the
+    //    consumer-indexed reliance integration landed:
+    //
+    //    - `export`   — `findings export`, `liveness export`. Reads NQ's own
+    //                   store through NQ's own CLI.
+    //    - `evaluate` — `reliance evaluate`. Decides whether this consumer
+    //                   may rely on an already-sealed `nq.receipt.v1`.
+    //                   Read-only in the strong sense: it opens no database,
+    //                   contacts no service, writes nothing, and is a pure
+    //                   function of the files handed to it. It cannot write
+    //                   NQ truth because it has nothing to write to.
+    //
+    //    This expansion is the operator signal that NS's NQ-CLI invocation
+    //    shape changed. The forbidden edge is unaffected: `reliance
+    //    evaluate` consumes NQ testimony and yields an NS-side posture,
+    //    which is the forward DAG edge, not the back-edge.
     let nq_command_count = nq_rs.matches("Command::new").count();
-    let nq_export_count = nq_rs.matches(".arg(\"export\")").count();
+    let nq_read_only_verb_count =
+        nq_rs.matches(".arg(\"export\")").count() + nq_rs.matches(".arg(\"evaluate\")").count();
     assert_eq!(
-        nq_command_count, nq_export_count,
-        "nq.rs has {nq_command_count} `Command::new` site(s) but only \
-         {nq_export_count} `.arg(\"export\")` site(s). Every NS → NQ \
-         subprocess call must be a read-only `export` verb. If a new \
-         read-only NQ verb is required, expand this test deliberately. \
-         See docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md."
+        nq_command_count, nq_read_only_verb_count,
+        "nq.rs has {nq_command_count} subprocess call site(s) but \
+         {nq_read_only_verb_count} read-only verb site(s). Every NS → NQ \
+         subprocess call must be a read-only verb (`export` or `evaluate`). \
+         If a new read-only NQ verb is required, expand this test \
+         deliberately. See docs/working/gaps/NQ_NS_CHANNEL_SPLIT_NS_SIDE.md."
     );
 
     let liveness_command_count = liveness_rs.matches("Command::new").count();

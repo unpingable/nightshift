@@ -1,0 +1,470 @@
+//! Read-only dispositions derived from NQ reliance testimony.
+//!
+//! Night Shift consumes `nq.reliance.receipt.v1` exactly as NQ emits it and
+//! proposes a **posture**. It does not re-evaluate evidence, resolve
+//! contradictions, discharge obligations, retry, repair, or execute anything.
+//!
+//! # The distinction this module exists to hold
+//!
+//! > A fresh NQ refusal is NQ testimony.
+//! > No fresh NQ response is Night Shift's own observation.
+//!
+//! [`SourceState`] keeps the six input cases apart. Only `Fresh` is current NQ
+//! testimony. `NoResponse`, `TransportUnavailable`, and `Malformed` are Night
+//! Shift orchestration or integrity observations, and **no synthetic NQ receipt
+//! is ever fabricated for them**.
+//!
+//! Deliberately *not* reused, per the boundary audit: `bundle::RelianceClass`
+//! (Night Shift's own weighting of how far a bundle input may be leaned on — a
+//! different question with a different owner) and `packet::AttentionState`
+//! (who is looking, not what to do).
+
+use serde::{Deserialize, Serialize};
+
+use crate::errors::{NightShiftError, NqContractViolationKind, Result};
+
+/// The reliance receipt schema this consumer speaks.
+pub const NQ_RELIANCE_RECEIPT_SCHEMA: &str = "nq.reliance.receipt.v1";
+
+/// The consumer profile Night Shift is configured to be.
+pub const EXPECTED_CONSUMER_PROFILE: &str = "nightshift-readonly";
+
+/// One `nq.reliance.receipt.v1`, deserialize-only.
+///
+/// Unknown fields are ignored so NQ can add non-breaking detail; every field
+/// Night Shift acts on is required and load-bearing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NqRelianceReceiptDto {
+    pub schema: String,
+    pub decision_id: String,
+    pub request_digest: String,
+    pub evidence_context_digest: String,
+    pub consumer_profile_id: String,
+    pub caller_binding: String,
+    pub caller_binding_disclosure: String,
+    pub purpose: String,
+    pub claim: String,
+    pub receipt_content_hash: String,
+    pub underlying_status: String,
+    pub decision: String,
+    #[serde(default)]
+    pub premises: Vec<String>,
+    #[serde(default)]
+    pub coverage_limits: Vec<String>,
+    #[serde(default)]
+    pub unresolved_residuals: Vec<String>,
+    #[serde(default)]
+    pub retained_contradictions: Vec<String>,
+    #[serde(default)]
+    pub refusal_reasons: Vec<String>,
+    #[serde(default)]
+    pub establishes: Vec<String>,
+    #[serde(default)]
+    pub does_not_establish: Vec<String>,
+    pub policy_version: String,
+    pub generated_at: String,
+}
+
+impl NqRelianceReceiptDto {
+    /// Parse and check the contract. Rejects before any disposition is derived.
+    ///
+    /// # Errors
+    ///
+    /// [`NightShiftError::NqContractViolation`] on schema mismatch, undecodable
+    /// bytes, an unexpected consumer profile, or a missing binding disclosure.
+    pub fn parse_checked(bytes: &[u8]) -> Result<Self> {
+        let dto: Self = serde_json::from_slice(bytes).map_err(|e| {
+            NightShiftError::NqContractViolation {
+                kind: NqContractViolationKind::MalformedField,
+                detail: format!("reliance receipt is not decodable: {e}"),
+            }
+        })?;
+        if dto.schema != NQ_RELIANCE_RECEIPT_SCHEMA {
+            return Err(NightShiftError::NqContractViolation {
+                kind: NqContractViolationKind::SchemaMismatch,
+                detail: format!(
+                    "expected {NQ_RELIANCE_RECEIPT_SCHEMA}, got {:?}",
+                    dto.schema
+                ),
+            });
+        }
+        // A receipt addressed to a different consumer is not ours to act on.
+        if dto.consumer_profile_id != EXPECTED_CONSUMER_PROFILE {
+            return Err(NightShiftError::NqContractViolation {
+                kind: NqContractViolationKind::MalformedField,
+                detail: format!(
+                    "receipt is for consumer {:?}, this consumer is {EXPECTED_CONSUMER_PROFILE:?}",
+                    dto.consumer_profile_id
+                ),
+            });
+        }
+        // An undisclosed binding is not consumable: without the disclosure a
+        // reader cannot tell a configured selection from an authenticated one.
+        if dto.caller_binding_disclosure.trim().is_empty() {
+            return Err(NightShiftError::NqContractViolation {
+                kind: NqContractViolationKind::MalformedField,
+                detail: "caller_binding_disclosure is empty".into(),
+            });
+        }
+        if dto.decision_id.is_empty() || dto.receipt_content_hash.is_empty() {
+            return Err(NightShiftError::NqContractViolation {
+                kind: NqContractViolationKind::MalformedField,
+                detail: "decision_id and receipt_content_hash must be present".into(),
+            });
+        }
+        Ok(dto)
+    }
+}
+
+/// What Night Shift observed when it asked NQ.
+///
+/// Only [`SourceState::Fresh`] is NQ testimony. The rest are Night Shift's own
+/// observations and must never be phrased as NQ conclusions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SourceState {
+    /// NQ returned a typed decision within the freshness window. NQ testimony.
+    Fresh,
+    /// NQ returned a typed decision, but it is older than this consumer's
+    /// freshness policy. Still NQ testimony — aged.
+    Stale { age_seconds: i64, max_age_seconds: u64 },
+    /// NQ did not answer before Night Shift's timeout. **Night Shift's own
+    /// observation.** Carries both numbers, as `LivenessVerdict::Stale` does.
+    NoResponse {
+        elapsed_seconds: u64,
+        timeout_seconds: u64,
+    },
+    /// The NQ transport could not be invoked at all. Night Shift's observation.
+    TransportUnavailable { detail: String },
+    /// NQ output failed the contract check, or the receipt did not match what
+    /// was asked for. Night Shift's integrity observation.
+    Malformed { detail: String },
+}
+
+impl SourceState {
+    /// Whether this state carries current NQ testimony.
+    #[must_use]
+    pub fn is_nq_testimony(&self) -> bool {
+        matches!(self, Self::Fresh | Self::Stale { .. })
+    }
+}
+
+/// A read-only posture proposal. **None of these is an instruction to act.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    /// Bounded evidence is fresh and permits continued read-only consideration.
+    ContinueObserving,
+    /// The answer may change with newer evidence. Not a retry instruction.
+    WaitForFreshEvidence,
+    /// Night Shift's own observation that no fresh NQ testimony arrived.
+    EvidenceUnavailable,
+    /// A named further piece of evidence would resolve this.
+    RequestAdditionalEvidence,
+    /// A person must decide. Night Shift will not, and this sends no message.
+    HumanJudgmentRequired,
+    /// Do not proceed on this line.
+    Stop,
+}
+
+/// The record Night Shift emits. Carries source identities verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DispositionRecord {
+    pub schema: String,
+    pub observed_at: String,
+    pub source_state: SourceState,
+    pub disposition: Disposition,
+    pub reasons: Vec<String>,
+    /// Present only when NQ testimony was available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_next_evidence: Option<String>,
+    pub human_judgment_required: bool,
+    pub establishes: Vec<String>,
+    pub does_not_establish: Vec<String>,
+}
+
+/// Exact NQ identities, carried through unmodified.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceBinding {
+    pub schema: String,
+    pub decision_id: String,
+    pub receipt_content_hash: String,
+    pub request_digest: String,
+    pub evidence_context_digest: String,
+    pub consumer_profile_id: String,
+    pub caller_binding: String,
+    pub caller_binding_disclosure: String,
+    pub purpose: String,
+    pub claim: String,
+    pub underlying_status: String,
+    pub decision: String,
+    pub premises: Vec<String>,
+    pub coverage_limits: Vec<String>,
+    pub unresolved_residuals: Vec<String>,
+    pub retained_contradictions: Vec<String>,
+    pub policy_version: String,
+    pub generated_at: String,
+}
+
+impl From<&NqRelianceReceiptDto> for SourceBinding {
+    fn from(d: &NqRelianceReceiptDto) -> Self {
+        Self {
+            schema: d.schema.clone(),
+            decision_id: d.decision_id.clone(),
+            receipt_content_hash: d.receipt_content_hash.clone(),
+            request_digest: d.request_digest.clone(),
+            evidence_context_digest: d.evidence_context_digest.clone(),
+            consumer_profile_id: d.consumer_profile_id.clone(),
+            caller_binding: d.caller_binding.clone(),
+            caller_binding_disclosure: d.caller_binding_disclosure.clone(),
+            purpose: d.purpose.clone(),
+            claim: d.claim.clone(),
+            underlying_status: d.underlying_status.clone(),
+            decision: d.decision.clone(),
+            premises: d.premises.clone(),
+            coverage_limits: d.coverage_limits.clone(),
+            unresolved_residuals: d.unresolved_residuals.clone(),
+            retained_contradictions: d.retained_contradictions.clone(),
+            policy_version: d.policy_version.clone(),
+            generated_at: d.generated_at.clone(),
+        }
+    }
+}
+
+pub const DISPOSITION_SCHEMA: &str = "nightshift.readonly_disposition.v1";
+
+/// Limits stamped on every record, whatever the disposition.
+fn mandatory_does_not_establish() -> Vec<String> {
+    vec![
+        "no action was executed or authorized by this disposition".to_string(),
+        "this is a read-only posture proposal, not execution authority".to_string(),
+        "this disposition is Night Shift's, not an NQ claim".to_string(),
+    ]
+}
+
+/// Derive a read-only disposition.
+///
+/// Pure: no I/O, no state mutation, no message sent to anyone.
+#[must_use]
+pub fn derive_disposition(
+    state: &SourceState,
+    receipt: Option<&NqRelianceReceiptDto>,
+    observed_at: &str,
+) -> DispositionRecord {
+    let mut reasons = Vec::new();
+    let mut required_next_evidence = None;
+
+    let disposition = match state {
+        // Night Shift's own observations. No NQ conclusion is implied, and the
+        // reasons say whose observation this is.
+        SourceState::NoResponse {
+            elapsed_seconds,
+            timeout_seconds,
+        } => {
+            reasons.push(format!(
+                "no fresh NQ response within Night Shift's {timeout_seconds}s timeout \
+                 (elapsed {elapsed_seconds}s); this is Night Shift's observation, not NQ testimony"
+            ));
+            Disposition::EvidenceUnavailable
+        }
+        SourceState::TransportUnavailable { detail } => {
+            reasons.push(format!(
+                "NQ transport unavailable: {detail}; this is Night Shift's observation, \
+                 not NQ testimony"
+            ));
+            Disposition::EvidenceUnavailable
+        }
+        SourceState::Malformed { detail } => {
+            reasons.push(format!("NQ output failed the contract check: {detail}"));
+            Disposition::Stop
+        }
+        SourceState::Stale {
+            age_seconds,
+            max_age_seconds,
+        } => {
+            reasons.push(format!(
+                "NQ testimony is {age_seconds}s old, beyond Night Shift's {max_age_seconds}s \
+                 freshness policy"
+            ));
+            required_next_evidence = Some("a fresher NQ reliance decision".to_string());
+            Disposition::WaitForFreshEvidence
+        }
+        SourceState::Fresh => {
+            let Some(r) = receipt else {
+                reasons
+                    .push("source state is fresh but no receipt was supplied".to_string());
+                return finish(
+                    Disposition::Stop,
+                    state,
+                    None,
+                    reasons,
+                    None,
+                    observed_at,
+                );
+            };
+            match r.decision.as_str() {
+                "authorized_reliance" => {
+                    reasons.push(format!(
+                        "NQ authorized reliance on {:?} for purpose {:?}",
+                        r.claim, r.purpose
+                    ));
+                    Disposition::ContinueObserving
+                }
+                // Never a retry licence.
+                "claim_not_verified" => {
+                    reasons.push(format!(
+                        "NQ did not verify {:?} (underlying status {:?}); this is not \
+                         permission to retry or proceed",
+                        r.claim, r.underlying_status
+                    ));
+                    required_next_evidence =
+                        Some(format!("evidence sufficient to verify {}", r.claim));
+                    Disposition::RequestAdditionalEvidence
+                }
+                // Inability is never success.
+                "cannot_testify" => {
+                    reasons.push(format!(
+                        "NQ constitutionally declines to testify to {:?}; inability is not \
+                         authorization",
+                        r.claim
+                    ));
+                    Disposition::HumanJudgmentRequired
+                }
+                "contradiction_retained" => {
+                    reasons.push(
+                        "NQ retained a contradiction in the source testimony; Night Shift \
+                         does not resolve contradictions"
+                            .to_string(),
+                    );
+                    Disposition::HumanJudgmentRequired
+                }
+                "premise_not_accepted" => {
+                    reasons.push(
+                        "a source premise is not acceptable under this consumer's policy; \
+                         a premise-qualified operator decision is required"
+                            .to_string(),
+                    );
+                    Disposition::HumanJudgmentRequired
+                }
+                "residual_obligation_blocks" => {
+                    reasons.push(
+                        "an unresolved upstream obligation blocks reliance; Night Shift \
+                         discharges nothing"
+                            .to_string(),
+                    );
+                    Disposition::HumanJudgmentRequired
+                }
+                "stale_evidence" => {
+                    reasons.push("NQ judged the underlying evidence stale".to_string());
+                    required_next_evidence = Some("fresher underlying evidence".to_string());
+                    Disposition::WaitForFreshEvidence
+                }
+                "claim_non_mintable" | "coverage_insufficient" | "custody_basis_not_accepted" => {
+                    reasons.push(format!(
+                        "NQ refused reliance: {}; this is a statement about reliance, not a \
+                         refutation of the claim",
+                        r.decision
+                    ));
+                    Disposition::HumanJudgmentRequired
+                }
+                // Configuration or policy errors: stop rather than adapt.
+                "consumer_unknown"
+                | "claim_not_authorized_for_consumer"
+                | "purpose_not_authorized" => {
+                    reasons.push(format!(
+                        "configuration or policy error: {}; Night Shift does not widen its \
+                         own permissions",
+                        r.decision
+                    ));
+                    Disposition::Stop
+                }
+                "malformed_request" => {
+                    reasons.push(
+                        "NQ refused the request as malformed or substituted; integrity failure"
+                            .to_string(),
+                    );
+                    Disposition::Stop
+                }
+                other => {
+                    reasons.push(format!(
+                        "unrecognized NQ decision {other:?}; Night Shift does not guess at \
+                         an unknown outcome"
+                    ));
+                    Disposition::HumanJudgmentRequired
+                }
+            }
+        }
+    };
+
+    finish(
+        disposition,
+        state,
+        receipt,
+        reasons,
+        required_next_evidence,
+        observed_at,
+    )
+}
+
+fn finish(
+    disposition: Disposition,
+    state: &SourceState,
+    receipt: Option<&NqRelianceReceiptDto>,
+    reasons: Vec<String>,
+    required_next_evidence: Option<String>,
+    observed_at: &str,
+) -> DispositionRecord {
+    let mut does_not_establish = mandatory_does_not_establish();
+    let mut establishes = Vec::new();
+
+    if let Some(r) = receipt {
+        // Carried facts survive the projection, whatever the disposition.
+        if !r.unresolved_residuals.is_empty() {
+            does_not_establish.push(
+                "upstream residual obligations carried here remain undischarged".to_string(),
+            );
+        }
+        if !r.retained_contradictions.is_empty() {
+            does_not_establish.push(
+                "a retained contradiction is preserved here and is not resolved".to_string(),
+            );
+        }
+        if !r.premises.is_empty() {
+            does_not_establish.push(
+                "source premises are carried, not discharged or independently verified"
+                    .to_string(),
+            );
+        }
+        does_not_establish.push(r.caller_binding_disclosure.clone());
+        if disposition == Disposition::ContinueObserving {
+            establishes.push(format!(
+                "NQ authorized this consumer to rely on {:?} for {:?}; Night Shift may \
+                 continue read-only consideration",
+                r.claim, r.purpose
+            ));
+        }
+    }
+
+    if !state.is_nq_testimony() {
+        does_not_establish.push(
+            "no current NQ testimony was available; absence of a response is not evidence \
+             of health or of failure"
+                .to_string(),
+        );
+    }
+
+    DispositionRecord {
+        schema: DISPOSITION_SCHEMA.to_string(),
+        observed_at: observed_at.to_string(),
+        source_state: state.clone(),
+        disposition,
+        reasons,
+        source: receipt.map(SourceBinding::from),
+        required_next_evidence,
+        human_judgment_required: disposition == Disposition::HumanJudgmentRequired,
+        establishes,
+        does_not_establish,
+    }
+}

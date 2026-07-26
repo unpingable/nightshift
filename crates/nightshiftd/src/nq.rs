@@ -819,3 +819,176 @@ mod tests {
         assert!(nq_canonical_key(&key).is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Consumer-indexed reliance: bounded invocation of `nq-monitor reliance evaluate`.
+//
+// This lives in `nq.rs` deliberately. The actuation-boundary guard tracks
+// subprocess call sites at file granularity with a two-file allowlist, of which
+// this is one; opening a new file with a subprocess call site would be a new
+// violation.
+//
+// The invocation is *bounded*. Night Shift owns the timeout, because NQ cannot
+// report its own unresponsiveness. An elapsed-time observation here is what
+// makes "no fresh NQ response" distinguishable from "a fresh NQ refusal".
+// ---------------------------------------------------------------------------
+
+use crate::nq_disposition::{NqRelianceReceiptDto, SourceState};
+
+/// Where the reliance inputs live and how long Night Shift will wait.
+#[derive(Debug, Clone)]
+pub struct RelianceInvocation {
+    /// Path to the `nq-monitor` binary.
+    pub nq_bin: PathBuf,
+    /// `nq.reliance.request.v1` document.
+    pub request: PathBuf,
+    /// The sealed `nq.receipt.v1` being relied upon.
+    pub receipt: PathBuf,
+    /// Optional evidence context.
+    pub evidence: Option<PathBuf>,
+    /// `nq.reliance.profiles.v1` catalog.
+    pub profiles: PathBuf,
+    /// Night Shift's own timeout. NQ has no say in it.
+    pub timeout_seconds: u64,
+    /// Night Shift's own freshness policy for the returned receipt.
+    pub max_age_seconds: u64,
+}
+
+/// The outcome of asking NQ, with the receipt when one arrived.
+pub struct RelianceOutcome {
+    pub state: SourceState,
+    pub receipt: Option<NqRelianceReceiptDto>,
+}
+
+impl RelianceInvocation {
+    /// Ask NQ, bounded by Night Shift's timeout.
+    ///
+    /// Never returns an error for "NQ said no" — a refusal is a decision and
+    /// arrives as a receipt. Errors and timeouts become [`SourceState`] values
+    /// that are explicitly Night Shift's own observations.
+    #[must_use]
+    pub fn evaluate(&self, now: DateTime<Utc>) -> RelianceOutcome {
+        let mut cmd = Command::new(&self.nq_bin);
+        cmd.arg("reliance")
+            .arg("evaluate")
+            .arg("--request")
+            .arg(&self.request)
+            .arg("--receipt")
+            .arg(&self.receipt)
+            .arg("--profiles")
+            .arg(&self.profiles)
+            .args(["--format", "json"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some(e) = &self.evidence {
+            cmd.arg("--evidence").arg(e);
+        }
+
+        let started = std::time::Instant::now();
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return RelianceOutcome {
+                    state: SourceState::TransportUnavailable {
+                        detail: format!("could not spawn {}: {e}", self.nq_bin.display()),
+                    },
+                    receipt: None,
+                }
+            }
+        };
+
+        // Bounded wait. Polling rather than blocking is what lets Night Shift
+        // observe elapsed time at all; a plain `output()` would hang forever
+        // and produce no observation to record.
+        let timeout = std::time::Duration::from_secs(self.timeout_seconds);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if started.elapsed() >= timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return RelianceOutcome {
+                            state: SourceState::NoResponse {
+                                elapsed_seconds: started.elapsed().as_secs(),
+                                timeout_seconds: self.timeout_seconds,
+                            },
+                            receipt: None,
+                        };
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => {
+                    return RelianceOutcome {
+                        state: SourceState::TransportUnavailable {
+                            detail: format!("waiting on nq-monitor: {e}"),
+                        },
+                        receipt: None,
+                    }
+                }
+            }
+        }
+
+        let out = match child.wait_with_output() {
+            Ok(o) => o,
+            Err(e) => {
+                return RelianceOutcome {
+                    state: SourceState::TransportUnavailable {
+                        detail: format!("collecting nq-monitor output: {e}"),
+                    },
+                    receipt: None,
+                }
+            }
+        };
+
+        // Exit 1 means NQ reached no decision at all. That is not testimony,
+        // and it must not be read as a refusal.
+        if !out.status.success() {
+            return RelianceOutcome {
+                state: SourceState::TransportUnavailable {
+                    detail: format!(
+                        "nq-monitor reached no decision (exit {:?}): {}",
+                        out.status.code(),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                },
+                receipt: None,
+            };
+        }
+
+        let dto = match NqRelianceReceiptDto::parse_checked(&out.stdout) {
+            Ok(d) => d,
+            Err(e) => {
+                return RelianceOutcome {
+                    state: SourceState::Malformed {
+                        detail: e.to_string(),
+                    },
+                    receipt: None,
+                }
+            }
+        };
+
+        // Night Shift's own freshness policy, applied to NQ's envelope stamp.
+        let state = match DateTime::parse_from_rfc3339(&dto.generated_at) {
+            Err(e) => SourceState::Malformed {
+                detail: format!("generated_at is not RFC3339: {e}"),
+            },
+            Ok(g) => {
+                let age = now.signed_duration_since(g.with_timezone(&Utc)).num_seconds();
+                if age > self.max_age_seconds as i64 {
+                    SourceState::Stale {
+                        age_seconds: age,
+                        max_age_seconds: self.max_age_seconds,
+                    }
+                } else {
+                    SourceState::Fresh
+                }
+            }
+        };
+        RelianceOutcome {
+            state,
+            receipt: Some(dto),
+        }
+    }
+}
