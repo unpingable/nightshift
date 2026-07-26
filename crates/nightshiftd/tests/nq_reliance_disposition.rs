@@ -7,8 +7,8 @@
 use chrono::{TimeZone, Utc};
 use nightshiftd::nq::RelianceInvocation;
 use nightshiftd::nq_disposition::{
-    derive_disposition, Disposition, NqRelianceReceiptDto, SourceState,
-    EXPECTED_CONSUMER_PROFILE, NQ_RELIANCE_RECEIPT_SCHEMA,
+    derive_disposition, Disposition, NqRelianceReceiptDto, SourceState, EXPECTED_CONSUMER_PROFILE,
+    NQ_RELIANCE_RECEIPT_SCHEMA,
 };
 
 const NOW: &str = "2026-07-26T00:00:00Z";
@@ -336,7 +336,10 @@ fn a_missing_transport_is_observed_not_invented() {
         max_age_seconds: 900,
     };
     let out = inv.evaluate(Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 0).unwrap());
-    assert!(matches!(out.state, SourceState::TransportUnavailable { .. }));
+    assert!(matches!(
+        out.state,
+        SourceState::TransportUnavailable { .. }
+    ));
     assert!(out.receipt.is_none());
     let rec = derive_disposition(&out.state, None, NOW);
     assert_eq!(rec.disposition, Disposition::EvidenceUnavailable);

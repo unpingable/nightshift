@@ -21,8 +21,8 @@ use nightshiftd::nq_disposition::{
 const NOW: &str = "2026-07-26T00:00:00Z";
 
 fn fixtures() -> BTreeMap<String, Vec<u8>> {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/nq_reliance");
+    let dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nq_reliance");
     let mut out = BTreeMap::new();
     for entry in std::fs::read_dir(&dir).expect("fixture dir") {
         let p = entry.unwrap().path();
@@ -38,11 +38,20 @@ fn fixtures() -> BTreeMap<String, Vec<u8>> {
 /// Receipts addressed to `nightshift-readonly`, and the posture each must yield.
 fn expected_for_this_consumer() -> BTreeMap<&'static str, Disposition> {
     BTreeMap::from([
-        ("valid_reliance_nightshift_readonly", Disposition::ContinueObserving),
+        (
+            "valid_reliance_nightshift_readonly",
+            Disposition::ContinueObserving,
+        ),
         ("contradiction_retained", Disposition::HumanJudgmentRequired),
         ("premise_not_accepted", Disposition::HumanJudgmentRequired),
-        ("residual_blocks_reliance", Disposition::HumanJudgmentRequired),
-        ("custody_basis_not_accepted", Disposition::HumanJudgmentRequired),
+        (
+            "residual_blocks_reliance",
+            Disposition::HumanJudgmentRequired,
+        ),
+        (
+            "custody_basis_not_accepted",
+            Disposition::HumanJudgmentRequired,
+        ),
         ("unauthorized_claim", Disposition::Stop),
         ("unauthorized_purpose", Disposition::Stop),
     ])
@@ -52,7 +61,9 @@ fn expected_for_this_consumer() -> BTreeMap<&'static str, Disposition> {
 fn nq_golden_vectors_addressed_to_this_consumer_map_to_the_expected_posture() {
     let fx = fixtures();
     for (name, expected) in expected_for_this_consumer() {
-        let bytes = fx.get(name).unwrap_or_else(|| panic!("missing fixture {name}"));
+        let bytes = fx
+            .get(name)
+            .unwrap_or_else(|| panic!("missing fixture {name}"));
         let dto = NqRelianceReceiptDto::parse_checked(bytes)
             .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
         let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
@@ -73,7 +84,9 @@ fn receipts_addressed_to_another_consumer_are_refused_not_reinterpreted() {
         "substituted_health_packet",
         "unknown_consumer",
     ] {
-        let bytes = fx.get(name).unwrap_or_else(|| panic!("missing fixture {name}"));
+        let bytes = fx
+            .get(name)
+            .unwrap_or_else(|| panic!("missing fixture {name}"));
         let err = NqRelianceReceiptDto::parse_checked(bytes)
             .err()
             .unwrap_or_else(|| panic!("{name} is not addressed to this consumer and must refuse"));
@@ -92,7 +105,10 @@ fn no_accepted_vector_yields_an_action_or_capability() {
         let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
         let text = serde_json::to_string(&rec).unwrap();
         for forbidden in ["\"capability\"", "\"lease\"", "\"execute\"", "\"retry\""] {
-            assert!(!text.contains(forbidden), "{name} must not carry {forbidden}");
+            assert!(
+                !text.contains(forbidden),
+                "{name} must not carry {forbidden}"
+            );
         }
         assert!(rec
             .does_not_establish

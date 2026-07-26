@@ -73,12 +73,11 @@ impl NqRelianceReceiptDto {
     /// [`NightShiftError::NqContractViolation`] on schema mismatch, undecodable
     /// bytes, an unexpected consumer profile, or a missing binding disclosure.
     pub fn parse_checked(bytes: &[u8]) -> Result<Self> {
-        let dto: Self = serde_json::from_slice(bytes).map_err(|e| {
-            NightShiftError::NqContractViolation {
+        let dto: Self =
+            serde_json::from_slice(bytes).map_err(|e| NightShiftError::NqContractViolation {
                 kind: NqContractViolationKind::MalformedField,
                 detail: format!("reliance receipt is not decodable: {e}"),
-            }
-        })?;
+            })?;
         if dto.schema != NQ_RELIANCE_RECEIPT_SCHEMA {
             return Err(NightShiftError::NqContractViolation {
                 kind: NqContractViolationKind::SchemaMismatch,
@@ -127,7 +126,10 @@ pub enum SourceState {
     Fresh,
     /// NQ returned a typed decision, but it is older than this consumer's
     /// freshness policy. Still NQ testimony — aged.
-    Stale { age_seconds: i64, max_age_seconds: u64 },
+    Stale {
+        age_seconds: i64,
+        max_age_seconds: u64,
+    },
     /// NQ did not answer before Night Shift's timeout. **Night Shift's own
     /// observation.** Carries both numbers, as `LivenessVerdict::Stale` does.
     NoResponse {
@@ -293,16 +295,8 @@ pub fn derive_disposition(
         }
         SourceState::Fresh => {
             let Some(r) = receipt else {
-                reasons
-                    .push("source state is fresh but no receipt was supplied".to_string());
-                return finish(
-                    Disposition::Stop,
-                    state,
-                    None,
-                    reasons,
-                    None,
-                    observed_at,
-                );
+                reasons.push("source state is fresh but no receipt was supplied".to_string());
+                return finish(Disposition::Stop, state, None, reasons, None, observed_at);
             };
             match r.decision.as_str() {
                 "authorized_reliance" => {
@@ -422,19 +416,16 @@ fn finish(
     if let Some(r) = receipt {
         // Carried facts survive the projection, whatever the disposition.
         if !r.unresolved_residuals.is_empty() {
-            does_not_establish.push(
-                "upstream residual obligations carried here remain undischarged".to_string(),
-            );
+            does_not_establish
+                .push("upstream residual obligations carried here remain undischarged".to_string());
         }
         if !r.retained_contradictions.is_empty() {
-            does_not_establish.push(
-                "a retained contradiction is preserved here and is not resolved".to_string(),
-            );
+            does_not_establish
+                .push("a retained contradiction is preserved here and is not resolved".to_string());
         }
         if !r.premises.is_empty() {
             does_not_establish.push(
-                "source premises are carried, not discharged or independently verified"
-                    .to_string(),
+                "source premises are carried, not discharged or independently verified".to_string(),
             );
         }
         does_not_establish.push(r.caller_binding_disclosure.clone());
