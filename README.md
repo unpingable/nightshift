@@ -328,6 +328,20 @@ mutable tool handles, or unrestricted shell. Night Shift and
 Governor decide whether any proposed operation is staged, applied,
 or published.
 
+## NQ as a reliance source
+
+Night Shift consumes NQ's published machine contracts — `nq.finding_snapshot.v1` and
+`nq.reliance.receipt.v1` — and proposes a **read-only disposition**. NQ decides what a
+configured consumer may rely upon; Night Shift decides what posture to propose next.
+Neither executes anything, and Night Shift's consumer binding is locally configured, not
+authenticated.
+
+The distinction the integration exists to hold: **a fresh NQ refusal is NQ testimony; no
+fresh NQ response is Night Shift's own timeout observation.** No synthetic NQ receipt is
+ever fabricated for the second case.
+
+See [`docs/NQ_RELIANCE_SOURCE.md`](docs/NQ_RELIANCE_SOURCE.md).
+
 ## License
 
 Licensed under Apache-2.0.
