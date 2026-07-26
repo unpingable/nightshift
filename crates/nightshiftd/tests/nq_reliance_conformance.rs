@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use nightshiftd::nq_disposition::{
-    derive_disposition, Disposition, NqRelianceReceiptDto, SourceState,
+    derive_disposition, Disposition, NqRelianceReceiptDto, SourceState, EXPECTED_CONSUMER_PROFILE,
 };
 
 const NOW: &str = "2026-07-26T00:00:00Z";
@@ -64,9 +64,9 @@ fn nq_golden_vectors_addressed_to_this_consumer_map_to_the_expected_posture() {
         let bytes = fx
             .get(name)
             .unwrap_or_else(|| panic!("missing fixture {name}"));
-        let dto = NqRelianceReceiptDto::parse_checked(bytes)
+        let dto = NqRelianceReceiptDto::parse_checked(bytes, EXPECTED_CONSUMER_PROFILE)
             .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
         assert_eq!(rec.disposition, expected, "{name}");
     }
 }
@@ -87,7 +87,7 @@ fn receipts_addressed_to_another_consumer_are_refused_not_reinterpreted() {
         let bytes = fx
             .get(name)
             .unwrap_or_else(|| panic!("missing fixture {name}"));
-        let err = NqRelianceReceiptDto::parse_checked(bytes)
+        let err = NqRelianceReceiptDto::parse_checked(bytes, EXPECTED_CONSUMER_PROFILE)
             .err()
             .unwrap_or_else(|| panic!("{name} is not addressed to this consumer and must refuse"));
         assert!(
@@ -101,8 +101,8 @@ fn receipts_addressed_to_another_consumer_are_refused_not_reinterpreted() {
 fn no_accepted_vector_yields_an_action_or_capability() {
     let fx = fixtures();
     for name in expected_for_this_consumer().keys() {
-        let dto = NqRelianceReceiptDto::parse_checked(&fx[*name]).unwrap();
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+        let dto = NqRelianceReceiptDto::parse_checked(&fx[*name], EXPECTED_CONSUMER_PROFILE).unwrap();
+        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
         let text = serde_json::to_string(&rec).unwrap();
         for forbidden in ["\"capability\"", "\"lease\"", "\"execute\"", "\"retry\""] {
             assert!(
@@ -128,8 +128,8 @@ fn carried_facts_survive_every_accepted_vector() {
     ] {
         let raw: serde_json::Value = serde_json::from_slice(&fx[name]).unwrap();
         let source_len = raw[field].as_array().map_or(0, Vec::len);
-        let dto = NqRelianceReceiptDto::parse_checked(&fx[name]).unwrap();
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+        let dto = NqRelianceReceiptDto::parse_checked(&fx[name], EXPECTED_CONSUMER_PROFILE).unwrap();
+        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
         let carried = serde_json::to_value(rec.source.as_ref().unwrap()).unwrap();
         assert_eq!(
             carried[field].as_array().map_or(0, Vec::len),
@@ -156,6 +156,7 @@ fn the_no_response_case_has_no_nq_fixture_because_it_is_not_an_nq_document() {
         },
         None,
         NOW,
+        EXPECTED_CONSUMER_PROFILE,
     );
     assert_eq!(rec.disposition, Disposition::EvidenceUnavailable);
     assert!(rec.source.is_none());

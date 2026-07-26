@@ -848,6 +848,13 @@ pub struct RelianceInvocation {
     pub evidence: Option<PathBuf>,
     /// `nq.reliance.profiles.v1` catalog.
     pub profiles: PathBuf,
+    /// Sealed supporting receipts, passed through to NQ verbatim. Whether
+    /// they satisfy the profile is NQ's law; Night Shift carries paths only.
+    /// Empty for base invocations, whose argv is byte-for-byte unchanged.
+    pub supporting: Vec<PathBuf>,
+    /// The consumer profile the returned receipt must be addressed to.
+    /// The base posture is [`crate::nq_disposition::EXPECTED_CONSUMER_PROFILE`].
+    pub expected_profile: String,
     /// Night Shift's own timeout. NQ has no say in it.
     pub timeout_seconds: u64,
     /// Night Shift's own freshness policy for the returned receipt.
@@ -883,6 +890,9 @@ impl RelianceInvocation {
             .stderr(std::process::Stdio::piped());
         if let Some(e) = &self.evidence {
             cmd.arg("--evidence").arg(e);
+        }
+        for s in &self.supporting {
+            cmd.arg("--supporting").arg(s);
         }
 
         let started = std::time::Instant::now();
@@ -957,7 +967,7 @@ impl RelianceInvocation {
             };
         }
 
-        let dto = match NqRelianceReceiptDto::parse_checked(&out.stdout) {
+        let dto = match NqRelianceReceiptDto::parse_checked(&out.stdout, &self.expected_profile) {
             Ok(d) => d,
             Err(e) => {
                 return RelianceOutcome {

@@ -42,19 +42,19 @@ fn receipt_json(decision: &str, underlying: &str) -> serde_json::Value {
 }
 
 fn parse(v: &serde_json::Value) -> NqRelianceReceiptDto {
-    NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(v).unwrap()).expect("valid receipt")
+    NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(v).unwrap(), EXPECTED_CONSUMER_PROFILE).expect("valid receipt")
 }
 
 fn disposition_for(decision: &str, underlying: &str) -> Disposition {
     let dto = parse(&receipt_json(decision, underlying));
-    derive_disposition(&SourceState::Fresh, Some(&dto), NOW).disposition
+    derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE).disposition
 }
 
 // 1. fresh authorized reliance
 #[test]
 fn fresh_authorized_reliance_permits_continued_observation_only() {
     let dto = parse(&receipt_json("authorized_reliance", "verified"));
-    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::ContinueObserving);
     assert!(!rec.human_judgment_required);
     // It establishes continued *consideration*, never execution.
@@ -89,7 +89,7 @@ fn unknown_consumer_and_unauthorized_purpose_stop() {
 #[test]
 fn needs_more_evidence_requests_evidence_and_is_not_a_retry() {
     let dto = parse(&receipt_json("claim_not_verified", "needs_more_evidence"));
-    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::RequestAdditionalEvidence);
     assert!(rec.required_next_evidence.is_some());
     assert!(rec
@@ -104,7 +104,7 @@ fn needs_more_evidence_requests_evidence_and_is_not_a_retry() {
 #[test]
 fn cannot_testify_requires_human_judgment_and_never_proceeds() {
     let dto = parse(&receipt_json("cannot_testify", "verified"));
-    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::HumanJudgmentRequired);
     assert!(rec.human_judgment_required);
     assert!(rec
@@ -122,7 +122,7 @@ fn stale_receipt_waits_and_is_still_nq_testimony() {
         max_age_seconds: 900,
     };
     assert!(state.is_nq_testimony());
-    let rec = derive_disposition(&state, Some(&dto), NOW);
+    let rec = derive_disposition(&state, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::WaitForFreshEvidence);
 }
 
@@ -134,7 +134,7 @@ fn no_response_is_night_shifts_observation_and_not_an_nq_verdict() {
         timeout_seconds: 30,
     };
     assert!(!state.is_nq_testimony());
-    let rec = derive_disposition(&state, None, NOW);
+    let rec = derive_disposition(&state, None, NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::EvidenceUnavailable);
     // No fabricated NQ receipt.
     assert!(rec.source.is_none());
@@ -159,7 +159,7 @@ fn transport_unavailable_is_also_night_shifts_observation() {
         detail: "could not spawn nq-monitor".into(),
     };
     assert!(!state.is_nq_testimony());
-    let rec = derive_disposition(&state, None, NOW);
+    let rec = derive_disposition(&state, None, NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::EvidenceUnavailable);
     assert!(rec.source.is_none());
 }
@@ -167,11 +167,11 @@ fn transport_unavailable_is_also_night_shifts_observation() {
 // 9. malformed JSON refuses at the contract boundary
 #[test]
 fn malformed_and_wrong_schema_receipts_are_refused_before_disposition() {
-    assert!(NqRelianceReceiptDto::parse_checked(b"{not json").is_err());
+    assert!(NqRelianceReceiptDto::parse_checked(b"{not json", EXPECTED_CONSUMER_PROFILE).is_err());
 
     let mut wrong = receipt_json("authorized_reliance", "verified");
     wrong["schema"] = serde_json::json!("nq.reliance.receipt.v99");
-    assert!(NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    assert!(NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&wrong).unwrap(), EXPECTED_CONSUMER_PROFILE).is_err());
 }
 
 // 10. a receipt addressed to another consumer is refused
@@ -179,7 +179,7 @@ fn malformed_and_wrong_schema_receipts_are_refused_before_disposition() {
 fn receipt_for_a_different_consumer_is_refused() {
     let mut other = receipt_json("authorized_reliance", "verified");
     other["consumer_profile_id"] = serde_json::json!("operator-review");
-    let err = NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&other).unwrap())
+    let err = NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&other).unwrap(), EXPECTED_CONSUMER_PROFILE)
         .expect_err("must refuse another consumer's receipt");
     assert!(err.to_string().contains("operator-review"));
 }
@@ -206,7 +206,7 @@ fn premise_contradiction_and_residual_hold_and_survive() {
     v["unresolved_residuals"] = serde_json::json!(["upstream review not discharged"]);
     v["coverage_limits"] = serde_json::json!(["source assertions not independently verified"]);
     let dto = parse(&v);
-    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     let src = rec.source.as_ref().unwrap();
     assert_eq!(src.premises, vec!["clock_trusted".to_string()]);
     assert_eq!(src.retained_contradictions.len(), 1);
@@ -227,7 +227,7 @@ fn premise_contradiction_and_residual_hold_and_survive() {
 fn source_identities_are_preserved_verbatim() {
     let v = receipt_json("authorized_reliance", "verified");
     let dto = parse(&v);
-    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     let s = rec.source.as_ref().unwrap();
     assert_eq!(s.decision_id, "sha256:dddd");
     assert_eq!(s.receipt_content_hash, "sha256:cccc");
@@ -248,7 +248,7 @@ fn source_identities_are_preserved_verbatim() {
 fn a_receipt_without_a_binding_disclosure_is_not_consumable() {
     let mut v = receipt_json("authorized_reliance", "verified");
     v["caller_binding_disclosure"] = serde_json::json!("   ");
-    assert!(NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&v).unwrap()).is_err());
+    assert!(NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&v).unwrap(), EXPECTED_CONSUMER_PROFILE).is_err());
 }
 
 // 16/17. no action, capability, or downstream office is ever emitted
@@ -264,7 +264,7 @@ fn no_disposition_emits_action_capability_or_touches_another_office() {
         "malformed_request",
     ] {
         let dto = parse(&receipt_json(decision, "verified"));
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
         let text = serde_json::to_string(&rec).unwrap();
         for forbidden in [
             "\"capability\"",
@@ -292,8 +292,8 @@ fn no_disposition_emits_action_capability_or_touches_another_office() {
 #[test]
 fn duplicate_input_is_idempotent_and_a_changed_receipt_changes_the_record() {
     let a = parse(&receipt_json("authorized_reliance", "verified"));
-    let r1 = derive_disposition(&SourceState::Fresh, Some(&a), NOW);
-    let r2 = derive_disposition(&SourceState::Fresh, Some(&a), NOW);
+    let r1 = derive_disposition(&SourceState::Fresh, Some(&a), NOW, EXPECTED_CONSUMER_PROFILE);
+    let r2 = derive_disposition(&SourceState::Fresh, Some(&a), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(
         serde_json::to_string(&r1).unwrap(),
         serde_json::to_string(&r2).unwrap()
@@ -302,7 +302,7 @@ fn duplicate_input_is_idempotent_and_a_changed_receipt_changes_the_record() {
     let mut changed = receipt_json("authorized_reliance", "verified");
     changed["decision_id"] = serde_json::json!("sha256:9999");
     let b = parse(&changed);
-    let r3 = derive_disposition(&SourceState::Fresh, Some(&b), NOW);
+    let r3 = derive_disposition(&SourceState::Fresh, Some(&b), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_ne!(
         serde_json::to_string(&r1).unwrap(),
         serde_json::to_string(&r3).unwrap()
@@ -316,8 +316,8 @@ fn deriving_a_disposition_does_not_mutate_the_source() {
     let v = receipt_json("authorized_reliance", "verified");
     let before = serde_json::to_vec(&v).unwrap();
     let dto = parse(&v);
-    let _ = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
-    let _ = derive_disposition(&SourceState::Fresh, Some(&dto), NOW);
+    let _ = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
+    let _ = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(before, serde_json::to_vec(&v).unwrap());
 }
 
@@ -332,6 +332,8 @@ fn a_missing_transport_is_observed_not_invented() {
         receipt: dir.path().join("rec.json"),
         evidence: None,
         profiles: dir.path().join("profiles.json"),
+        supporting: vec![],
+        expected_profile: EXPECTED_CONSUMER_PROFILE.to_string(),
         timeout_seconds: 5,
         max_age_seconds: 900,
     };
@@ -341,7 +343,7 @@ fn a_missing_transport_is_observed_not_invented() {
         SourceState::TransportUnavailable { .. }
     ));
     assert!(out.receipt.is_none());
-    let rec = derive_disposition(&out.state, None, NOW);
+    let rec = derive_disposition(&out.state, None, NOW, EXPECTED_CONSUMER_PROFILE);
     assert_eq!(rec.disposition, Disposition::EvidenceUnavailable);
 }
 
@@ -363,6 +365,8 @@ fn a_hung_transport_becomes_a_timeout_observation_with_both_numbers() {
         receipt: dir.path().join("rec.json"),
         evidence: None,
         profiles: dir.path().join("profiles.json"),
+        supporting: vec![],
+        expected_profile: EXPECTED_CONSUMER_PROFILE.to_string(),
         timeout_seconds: 1,
         max_age_seconds: 900,
     };

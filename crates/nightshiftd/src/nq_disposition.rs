@@ -26,8 +26,27 @@ use crate::errors::{NightShiftError, NqContractViolationKind, Result};
 /// The reliance receipt schema this consumer speaks.
 pub const NQ_RELIANCE_RECEIPT_SCHEMA: &str = "nq.reliance.receipt.v1";
 
-/// The consumer profile Night Shift is configured to be.
+/// The consumer profile Night Shift is configured to be by default.
+///
+/// Since the supporting-evaluation extension (2026-07-26) the expected
+/// profile is an explicit parameter at every parse site; this constant is the
+/// base posture, not an ambient assumption baked into the parser.
 pub const EXPECTED_CONSUMER_PROFILE: &str = "nightshift-readonly";
+
+/// One supporting evaluation as NQ disclosed it on the receipt.
+///
+/// Mirrors NQ's `SupportingRef` — which claim was evaluated, its sealed
+/// identity, its status, its subject. Disclosure carried through, never
+/// authority: Night Shift records these verbatim and judges nothing about
+/// them. Whether the right supporting claims were present is NQ's decided
+/// law, already reflected in `decision`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupportingReceiptRefDto {
+    pub claim: String,
+    pub content_hash: String,
+    pub status: String,
+    pub subject: String,
+}
 
 /// One `nq.reliance.receipt.v1`, deserialize-only.
 ///
@@ -61,6 +80,10 @@ pub struct NqRelianceReceiptDto {
     pub establishes: Vec<String>,
     #[serde(default)]
     pub does_not_establish: Vec<String>,
+    /// Supporting evaluations the request bound, as NQ disclosed them.
+    /// Absent on pre-extension receipts; defaults keep those parsing.
+    #[serde(default)]
+    pub supporting_receipts: Vec<SupportingReceiptRefDto>,
     pub policy_version: String,
     pub generated_at: String,
 }
@@ -68,11 +91,17 @@ pub struct NqRelianceReceiptDto {
 impl NqRelianceReceiptDto {
     /// Parse and check the contract. Rejects before any disposition is derived.
     ///
+    /// `expected_profile` is explicit at every call site: a receipt addressed
+    /// to a different consumer is not ours to act on, and which consumer we
+    /// are must never be an ambient assumption. The base posture passes
+    /// [`EXPECTED_CONSUMER_PROFILE`].
+    ///
     /// # Errors
     ///
     /// [`NightShiftError::NqContractViolation`] on schema mismatch, undecodable
-    /// bytes, an unexpected consumer profile, or a missing binding disclosure.
-    pub fn parse_checked(bytes: &[u8]) -> Result<Self> {
+    /// bytes, an unexpected consumer profile, a missing binding disclosure, or
+    /// a supporting disclosure with no identity.
+    pub fn parse_checked(bytes: &[u8], expected_profile: &str) -> Result<Self> {
         let dto: Self =
             serde_json::from_slice(bytes).map_err(|e| NightShiftError::NqContractViolation {
                 kind: NqContractViolationKind::MalformedField,
@@ -88,11 +117,11 @@ impl NqRelianceReceiptDto {
             });
         }
         // A receipt addressed to a different consumer is not ours to act on.
-        if dto.consumer_profile_id != EXPECTED_CONSUMER_PROFILE {
+        if dto.consumer_profile_id != expected_profile {
             return Err(NightShiftError::NqContractViolation {
                 kind: NqContractViolationKind::MalformedField,
                 detail: format!(
-                    "receipt is for consumer {:?}, this consumer is {EXPECTED_CONSUMER_PROFILE:?}",
+                    "receipt is for consumer {:?}, this consumer is {expected_profile:?}",
                     dto.consumer_profile_id
                 ),
             });
@@ -110,6 +139,17 @@ impl NqRelianceReceiptDto {
                 kind: NqContractViolationKind::MalformedField,
                 detail: "decision_id and receipt_content_hash must be present".into(),
             });
+        }
+        // Integrity only, never sufficiency: a supporting disclosure that
+        // cannot be identified is malformed. Whether the *right* supporting
+        // claims are present is NQ's decided law, not re-checked here.
+        for s in &dto.supporting_receipts {
+            if s.claim.is_empty() || s.content_hash.is_empty() {
+                return Err(NightShiftError::NqContractViolation {
+                    kind: NqContractViolationKind::MalformedField,
+                    detail: "a supporting receipt ref lacks claim or content_hash".into(),
+                });
+            }
         }
         Ok(dto)
     }
@@ -173,6 +213,16 @@ pub enum Disposition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispositionRecord {
     pub schema: String,
+    /// Deterministic self-identity: sha256 over the JCS form of this record
+    /// with `disposition_id` set to the empty string. Defaulted so pilot-era
+    /// records (which predate the field) still deserialize.
+    #[serde(default)]
+    pub disposition_id: String,
+    /// The consumer profile this consumer was configured to expect when it
+    /// parsed the source receipt. Disclosed so a reader can tell a base
+    /// posture from a continuity-gated one without inspecting the source.
+    #[serde(default)]
+    pub expected_consumer_profile: String,
     pub observed_at: String,
     pub source_state: SourceState,
     pub disposition: Disposition,
@@ -206,6 +256,10 @@ pub struct SourceBinding {
     pub coverage_limits: Vec<String>,
     pub unresolved_residuals: Vec<String>,
     pub retained_contradictions: Vec<String>,
+    /// Supporting evaluations exactly as NQ disclosed them. Absent-when-empty
+    /// keeps pre-extension binding bytes identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supporting_receipts: Vec<SupportingReceiptRefDto>,
     pub policy_version: String,
     pub generated_at: String,
 }
@@ -229,6 +283,7 @@ impl From<&NqRelianceReceiptDto> for SourceBinding {
             coverage_limits: d.coverage_limits.clone(),
             unresolved_residuals: d.unresolved_residuals.clone(),
             retained_contradictions: d.retained_contradictions.clone(),
+            supporting_receipts: d.supporting_receipts.clone(),
             policy_version: d.policy_version.clone(),
             generated_at: d.generated_at.clone(),
         }
@@ -254,6 +309,7 @@ pub fn derive_disposition(
     state: &SourceState,
     receipt: Option<&NqRelianceReceiptDto>,
     observed_at: &str,
+    expected_profile: &str,
 ) -> DispositionRecord {
     let mut reasons = Vec::new();
     let mut required_next_evidence = None;
@@ -296,7 +352,15 @@ pub fn derive_disposition(
         SourceState::Fresh => {
             let Some(r) = receipt else {
                 reasons.push("source state is fresh but no receipt was supplied".to_string());
-                return finish(Disposition::Stop, state, None, reasons, None, observed_at);
+                return finish(
+                    Disposition::Stop,
+                    state,
+                    None,
+                    reasons,
+                    None,
+                    observed_at,
+                    expected_profile,
+                );
             };
             match r.decision.as_str() {
                 "authorized_reliance" => {
@@ -399,9 +463,11 @@ pub fn derive_disposition(
         reasons,
         required_next_evidence,
         observed_at,
+        expected_profile,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish(
     disposition: Disposition,
     state: &SourceState,
@@ -409,6 +475,7 @@ fn finish(
     reasons: Vec<String>,
     required_next_evidence: Option<String>,
     observed_at: &str,
+    expected_profile: &str,
 ) -> DispositionRecord {
     let mut does_not_establish = mandatory_does_not_establish();
     let mut establishes = Vec::new();
@@ -446,8 +513,10 @@ fn finish(
         );
     }
 
-    DispositionRecord {
+    let mut record = DispositionRecord {
         schema: DISPOSITION_SCHEMA.to_string(),
+        disposition_id: String::new(),
+        expected_consumer_profile: expected_profile.to_string(),
         observed_at: observed_at.to_string(),
         source_state: state.clone(),
         disposition,
@@ -457,5 +526,18 @@ fn finish(
         human_judgment_required: disposition == Disposition::HumanJudgmentRequired,
         establishes,
         does_not_establish,
-    }
+    };
+    record.disposition_id = disposition_id_for(&record);
+    record
+}
+
+/// sha256 over the JCS form of the record with `disposition_id` empty.
+///
+/// Deterministic in the inputs alone: the same source state, receipt,
+/// observation instant, and expected profile always name the same disposition.
+fn disposition_id_for(record: &DispositionRecord) -> String {
+    use sha2::{Digest, Sha256};
+    let canonical = serde_jcs::to_string(record)
+        .expect("DispositionRecord serializes: no non-string keys, no NaN");
+    format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
