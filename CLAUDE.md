@@ -125,7 +125,7 @@ These one-liners are the doctrine the inventory used to carry inline. They survi
 
 ## Neighboring projects
 
-- **Governor** (`~/git/agent_gov`): authority/policy/receipts — Python, JSON-RPC daemon
+- **Authority (role: "Governor")** — canonical office: **AG ng** (`~/git/ag_ng`, Rust exact-work authorization/issuance). Legacy implementation: `~/git/agent_gov` (Python, JSON-RPC daemon) — retained here only for bounded-diagnostic drill helpers and the optional, disabled-by-default RPC wire
 - **NQ** (`~/git/nq`): observatory/failure-domain classifier — Rust, HTTP API
 - **Grid Dependency Atlas** (`~/git/grid-dependency-atlas`): publication-mode target
 - **Continuity**: cross-project context via MCP (workspace: observatory-family)

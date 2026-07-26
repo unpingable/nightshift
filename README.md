@@ -4,6 +4,29 @@ Deferred agent work with receipts, reconciliation, and governed promotion.
 
 > Let agents work late without giving them the keys.
 
+## Status (2026-07-26)
+
+Night Shift is the **proposal and read-only orchestration office** of a
+four-office governed constellation (authority: AG ng; governed execution:
+Docket; testimony/claims/reliance: NQ). It owns agenda-driven review packets
+(advisory proposals that bind intent only — never file lists, content bytes,
+or authority), consumption of NQ's published machine contracts, read-only
+dispositions, and a gate-enforced no-actuation boundary with declared bounded
+diagnostics. It does **not** own authority, execution, or evidence
+evaluation.
+
+Terminology note: "Governor" in this repository names the **authority role**.
+The classic Python implementation (`agent_gov`) is the legacy office —
+retained here only as a bounded-diagnostic drill dependency and an optional,
+disabled-by-default RPC wire; the canonical authority implementation for new
+work is **AG ng** (Rust), which authorized the completed four-office pilot.
+
+Maturity: part of an **operationally reusable governed vertical** (first
+four-office pilot completed 2026-07-26 with this repository as its target);
+**not operator-ready** — there is no CLI for file-granular proposals or for
+reliance-receipt ingestion (both are library faces), and no support promise
+is made beyond what the tests and gates in this repository demonstrate.
+
 Night Shift schedules and resumes *intent*, not commands. A cron job says
 "run this command at this time." Night Shift says "resume this intention
 under this policy with this context and produce this kind of artifact."
@@ -344,7 +367,11 @@ See [`docs/NQ_RELIANCE_SOURCE.md`](docs/NQ_RELIANCE_SOURCE.md).
 
 The first governed four-office pilot (Night Shift proposal → Docket preparation →
 AG authorization → Docket execution → NQ evaluation) is declared in
-[`docs/FOUR_OFFICE_PILOT_01.md`](docs/FOUR_OFFICE_PILOT_01.md).
+[`docs/FOUR_OFFICE_PILOT_01.md`](docs/FOUR_OFFICE_PILOT_01.md) and **completed
+2026-07-26** — the commit adding that document was itself the pilot's governed
+effect, authored by Docket's broker. The honest terminal outcome was a
+read-only `stop` disposition; detailed receipts are privately retained, and
+the pilot document is deliberately left exactly as written before execution.
 
 ## License
 

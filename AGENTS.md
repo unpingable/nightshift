@@ -42,10 +42,14 @@ configuration error.
 cargo test
 ```
 
-One integration test (`tests/governor_rpc_live.rs`) is `#[ignore]`d
-by default — it requires a live `agent_gov` daemon on a Unix
-socket. Run it explicitly with `cargo test -- --ignored
-governor_rpc_live` when you have the daemon running.
+One integration test (`tests/governor_rpc_live.rs`) is opt-in — it
+requires a live `agent_gov` daemon on a Unix socket and is gated by
+the `NIGHTSHIFT_GOVERNOR_SOCKET` env var (the file uses env gating,
+not `#[ignore]`). Note this exercises the **legacy** Governor wire
+(`agent_gov`), kept optional and disabled by default; the canonical
+authority office for governed work is AG ng, whose authorization
+path reaches Night Shift's world through Docket, not through this
+socket.
 
 Always run tests before proposing commits. Never claim tests pass
 without running them.

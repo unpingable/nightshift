@@ -129,6 +129,14 @@ agreement, and none of NQ's evaluator is copied into this repository.
 
 ## Not claimed
 
-There is no four-office execution integration. Night Shift proposes read-only posture from
-NQ testimony. It cannot authorize or execute work, and nothing in this document should be
-read as saying otherwise.
+Night Shift proposes read-only posture from NQ testimony. It cannot authorize or execute
+work, and nothing in this document should be read as saying otherwise.
+
+*(Correction, 2026-07-26: this section originally opened with "There is no four-office
+execution integration." That sentence was true when written and was falsified on
+2026-07-26, when the first four-office pilot — Night Shift proposal → Docket preparation →
+AG ng authorization → Docket execution → NQ evaluation → Night Shift disposition —
+completed against this repository. The jurisdictional claim above survives unchanged:
+Night Shift held no authority and executed nothing in that pilot; Docket's broker authored
+the commit, and Night Shift's terminal artifact was a read-only `stop` disposition. See
+`docs/FOUR_OFFICE_PILOT_01.md`.)*

@@ -143,6 +143,12 @@ usually isn't. Don't conflate them in roadmaps or gap specs.
 
 ## Governor is the oddball
 
+> *Note, 2026-07-26: this section was written about the classic Python
+> Governor (`agent_gov`), whose roadmap has since been superseded by the AG ng
+> hard cut — the canonical authority office is now AG ng. The constitutional
+> point below (authority stays locally governed; coordination can be hosted,
+> authorization should not ride along) survives the implementation change.*
+
 Governor does not share this maturity curve.
 
 Governor is the authority plane. Backend choice for an authority plane

@@ -250,6 +250,7 @@ These are not "later." These are not on this ladder.
 
 - **No actuation.** NS proposes; Governor authorizes; NS does not actuate. The consolidation interrupt (Gate 3) is *recognition* now and *to-be-built only after NS gains actuation* — which is not v1. Do not build Schmitt-trigger controllers, four-stock dynamics, settlement-debt machinery, or mode-specific actuation safety bounds yet. Cosplay with equations is still cosplay.
 - **No Wicket integration.** Gate 4 is recognition-shaped for the existing NQ / Governor edges (Lean now formally proves what NS already implements) and to-be-built *only when Wicket joins NS's dependency graph*. Current NS has no Wicket dependency. No Wicket adapter until there is an actual Wicket receipt to consume.
+  *(Correction, 2026-07-26: falsified since the MVP-A slices — `Cargo.toml` now declares `wicket` and `wlp` path dependencies and the cook/Wicket/WLP tail pipeline landed in commit `a60f7e1`. Retained above as the pre-MVP-A statement it was; see `docs/working/decisions/MVP_A_SLICES_2_3_4_PACKET.md`.)*
 - **No agenda-level cross-finding reconciliation.** Per memory `feedback_agenda_reconciler_trap` — over-productizing the coping strategy is the named failure mode. Do not file or build agenda-level reconciliation without a failing case.
 - **No multi-operator / cross-operator attention coordination.** Single-operator v1; cross-operator is `GAP-parallel-ops.md` and Continuity-mediated, not a runtime-ladder slice.
 - **No web UI.** CLI + packet YAML is the operator surface for v1. Operator-facing docs land under `operator/` when MVP exit reaches the wal-bloat-review pilot.
@@ -268,7 +269,7 @@ Per `pre-positioned-doctrine-gates.md`, the gates fire in the order NS hits them
 | 1. Closure predicate | not-yet-triggered | same | trigger surface exists | **firing — predicate refuses proxy-quiet closure** | refines under proxy-shock |
 | 2. Proxy-shock workflow | not-yet-triggered | same | same | same | **firing — routes to Stale/revalidate** |
 | 3. Consolidation interrupt | not-yet-triggered (no actuation) | same | same | same | same — gate is post-actuation |
-| 4. Cross-kernel refusal propagation (Wicket) | recognition-shaped (NQ/Governor edges); not-yet-triggered (no Wicket) | same | same | same | same — gate is Wicket-dependent |
+| 4. Cross-kernel refusal propagation (Wicket) | recognition-shaped (NQ/Governor edges); not-yet-triggered (no Wicket) *(stale — Wicket dependency landed with MVP-A; see correction above)* | same | same | same | same — gate is Wicket-dependent |
 
 The ladder gets two of the four gates to "firing honestly" and leaves the two that *should not* fire yet untriggered. That is the correct shape.
 

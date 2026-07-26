@@ -1,6 +1,14 @@
 # GAP: Governor Contract
 
 > Status: identified, not specified
+>
+> *Note, 2026-07-26: the swap thesis below ("the authority implementation can
+> evolve or be replaced without Night Shift rewriting") has since been
+> confirmed in practice — the canonical authority office is now **AG ng**
+> (`~/git/ag_ng`), and the four-office pilot ran its authorization path
+> through AG ng → Docket with no Night Shift rewrite. `~/git/agent_gov`
+> below is the legacy implementation; its RPC wire remains optional and
+> disabled by default.*
 
 Night Shift is loosely coupled to Governor at the code boundary, tightly
 coupled at the protocol boundary. "Tightly coupled at protocol boundary"
