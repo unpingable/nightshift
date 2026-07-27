@@ -47,15 +47,16 @@ struct Cli {
     #[arg(long, global = true, default_value = "tests/fixtures/nq-manifest.json")]
     nq_fixture: PathBuf,
 
-    /// Path to a real NQ SQLite database. When set, Night Shift
-    /// shells out to `nq findings export --db <path>` and consumes
-    /// the canonical snapshot contract (schema nq.finding_snapshot.v1).
-    /// Overrides --nq-fixture.
+    /// Path to a real NQ SQLite database. When set, Night Shift asks the
+    /// configured NQ executable to run `findings export --db <path>` and
+    /// consumes the canonical snapshot contract
+    /// (schema nq.finding_snapshot.v1). Overrides --nq-fixture.
     #[arg(long, global = true)]
     nq_db: Option<PathBuf>,
 
-    /// Override the `nq` binary location. Otherwise resolved via
-    /// NIGHTSHIFT_NQ_BIN env var, then PATH.
+    /// Path to the `nq-monitor` executable. `nq disposition` requires this
+    /// option or NIGHTSHIFT_NQ_BIN. Finding and liveness reads additionally
+    /// fall back to an executable named `nq` on PATH when neither is set.
     #[arg(long, global = true)]
     nq_bin: Option<PathBuf>,
 
@@ -67,7 +68,7 @@ struct Cli {
 
     /// Path to NQ's liveness artifact (typically liveness.json
     /// alongside the NQ database). When set, Night Shift consults
-    /// `nq liveness export` before capturing finding evidence; a
+    /// NQ's `liveness export` before capturing finding evidence; a
     /// stale or skewed witness halts the run with a Stale-shape
     /// packet (revalidate-only proposal). Optional — when omitted,
     /// no liveness gating is performed.
@@ -250,7 +251,7 @@ enum AttentionAction {
 
 #[derive(Subcommand, Debug)]
 enum LivenessAction {
-    /// Show what `nq liveness export` returns and what Night Shift's
+    /// Show what NQ's `liveness export` returns and what Night Shift's
     /// gate would do with it. Both views appear side-by-side so the
     /// operator can see when upstream `freshness.fresh` and Night
     /// Shift's verdict diverge (the clock-skew wrinkle).

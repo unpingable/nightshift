@@ -1,6 +1,7 @@
+# HISTORICAL, NON-PORTABLE DOGFOOD SPECIMEN.
+# Do not install verbatim; see deploy/systemd/user/README.md.
 [Unit]
 Description=Night Shift watchbill — scheduled timer (user-level)
-Documentation=https://github.com/anthropics/scheduler/blob/main/docs/working/decisions/MILESTONE-2026-05-28-first-live-dogfood.md
 
 [Timer]
 # Default cadence: every 5 minutes, jittered. The agenda declares

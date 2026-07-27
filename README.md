@@ -23,9 +23,11 @@ work is **AG ng** (Rust), which authorized the completed four-office pilot.
 
 Maturity: part of an **operationally reusable governed vertical** (first
 four-office pilot completed 2026-07-26 with this repository as its target);
-**not operator-ready** — there is no CLI for file-granular proposals or for
-reliance-receipt ingestion (both are library faces), and no support promise
-is made beyond what the tests and gates in this repository demonstrate.
+**not operator-ready** — file-granular proposals remain a library face and
+the deployment files are reference scaffolding, not a packaged service. A
+supported receiver-side `nq disposition` CLI consumes externally prepared NQ
+machine artifacts and emits a read-only disposition. No support promise is
+made beyond what the tests and gates in this repository demonstrate.
 
 Night Shift schedules and resumes *intent*, not commands. A cron job says
 "run this command at this time." Night Shift says "resume this intention
@@ -35,6 +37,45 @@ It is allowed to be useful before it is trusted with force.
 
 Night Shift does not make incidents go away. It refuses to close the loop
 until the witnesses needed for closure exist.
+
+## Build from source
+
+Night Shift is currently a source workspace, not an installed package. A
+build requires:
+
+- Git, to obtain this repository and its source dependencies;
+- a stable Rust toolchain with Cargo, Rust 1.82 or newer;
+- a native C compiler and linker for the bundled SQLite build; and
+- network access to crates.io on the first build, unless the Cargo cache is
+  already populated or dependencies are supplied by another approved means.
+
+The current Cargo contract uses sibling path dependencies. Keep compatible
+`wicket` and `wlp` source trees beside the Night Shift checkout:
+
+```text
+<source-parent>/
+├── nightshift/
+├── wicket/
+└── wlp/
+```
+
+The directory names and relative placement are load-bearing today:
+`nightshift/Cargo.toml` resolves `../wicket` and `../wlp`. Night Shift does
+not fetch, discover, or install those repositories. From `nightshift/`:
+
+```bash
+cargo build --locked --release
+./target/release/nightshift --help
+```
+
+NQ is also an external runtime dependency for live finding, liveness, and
+reliance reads; it is not built by this workspace. For operational runs,
+inject the installed `nq-monitor` executable with the global
+`--nq-bin /absolute/path/to/nq-monitor` option or the
+`NIGHTSHIFT_NQ_BIN` environment variable. `nq disposition` requires one of
+those two forms. Finding/liveness reads retain a legacy fallback to an
+executable named `nq` on PATH, but explicit injection is the reproducible
+deployment contract.
 
 ## 30-second specimen: the refusal
 
@@ -48,10 +89,10 @@ is the checked-in fixture manifest; the stale witness is replayed through
 the documented `--nq-bin` override:
 
 ```bash
-cargo build --release
+cargo build --locked --release
 
 # A stale liveness witness: age_seconds 600 vs the 90s default threshold,
-# replayed by a stub standing in for the real `nq` binary.
+# replayed by a stub standing in for the real `nq-monitor` executable.
 mkdir -p /tmp/ns-specimen
 cat > /tmp/ns-specimen/stale-liveness.json <<'EOF'
 {
@@ -118,10 +159,17 @@ admissible for diagnosis, proposal, and authorization. `run_id`,
 
 ## Starting point: governed ops review packets from real NQ findings
 
-The MVP is narrow and real:
+The MVP is narrow and real. Replace every placeholder with an operator-owned
+path or key:
 
 ```bash
-nightshift watchbill run wal-bloat-review
+NIGHTSHIFT_NQ_BIN=/absolute/path/to/nq-monitor \
+./target/release/nightshift \
+  --store /absolute/path/to/nightshift.sqlite \
+  --nq-db /absolute/path/to/nq.db \
+  watchbill run \
+  /absolute/path/to/agenda.yaml \
+  --finding '<finding-key>'
 ```
 
 1. Read current NQ findings
@@ -359,11 +407,32 @@ configured consumer may rely upon; Night Shift decides what posture to propose n
 Neither executes anything, and Night Shift's consumer binding is locally configured, not
 authenticated.
 
+The supported receiver CLI is:
+
+```bash
+NIGHTSHIFT_NQ_BIN=/absolute/path/to/nq-monitor \
+./target/release/nightshift nq disposition \
+  --request /absolute/path/to/request.json \
+  --receipt /absolute/path/to/receipt.json \
+  --profiles /absolute/path/to/profiles.json \
+  --format json
+```
+
+`--evidence` is optional and `--supporting` is repeatable. The request,
+sealed primary receipt, profile catalog, evidence context, and supporting
+receipts are prepared outside Night Shift. Night Shift passes their paths to
+NQ; it does not create, complete, or reinterpret them. Exit zero means a
+disposition record was derived and can include `stop`—the JSON record, not
+the shell status, carries the result.
+
 The distinction the integration exists to hold: **a fresh NQ refusal is NQ testimony; no
 fresh NQ response is Night Shift's own timeout observation.** No synthetic NQ receipt is
-ever fabricated for the second case.
+ever fabricated for the second case. A typed refusal for missing supporting
+testimony is likewise NQ speaking; it remains distinct from Night Shift
+observing no response.
 
-See [`docs/NQ_RELIANCE_SOURCE.md`](docs/NQ_RELIANCE_SOURCE.md).
+See the [operator quick start](docs/operator/README.md) and
+[`docs/NQ_RELIANCE_SOURCE.md`](docs/NQ_RELIANCE_SOURCE.md).
 
 The first governed four-office pilot (Night Shift proposal → Docket preparation →
 AG authorization → Docket execution → NQ evaluation) is declared in

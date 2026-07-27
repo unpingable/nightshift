@@ -4,11 +4,11 @@ Where to start, by what you're trying to do.
 
 ## I want to use Night Shift
 
-Night Shift does not yet have a stable operator surface. Operator-facing docs
-will land under [`operator/`](operator/) when MVP exit is reached
-(`nightshift watchbill run wal-bloat-review` against real NQ ops data,
-governed by Governor for the action-authorized path). Until then,
-[`operator/README.md`](operator/README.md) is a stub placeholder.
+Start with the [operator quick start](operator/README.md) for the current
+source-build contract, a live read-only watchbill, and the supported
+receiver-side `nq disposition` CLI. Night Shift is not yet a packaged,
+general-purpose service; the documented operator promise is limited to
+those read-only surfaces.
 
 ## I want to understand Night Shift
 
@@ -76,7 +76,7 @@ The detailed Shipped State narrative subsections that already exist in some gap 
 
 ## Subdirectory readmes
 
-- [`operator/README.md`](operator/README.md) — stub; reminder that operator-facing docs are still owed.
+- [`operator/README.md`](operator/README.md) — current source-build and read-only CLI quick start.
 
 ## Status vocabulary (gap docs)
 

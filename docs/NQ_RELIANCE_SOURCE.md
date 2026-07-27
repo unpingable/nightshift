@@ -15,6 +15,45 @@ Night Shift reads NQ's **published machine contracts only**. It does not parse h
 prose, open NQ's SQLite, read Docket storage, or share Rust types across the repository
 boundary.
 
+## Supported receiver CLI
+
+Install NQ separately, then identify its `nq-monitor` executable explicitly.
+For `nq disposition`, Night Shift accepts that executable only through the
+global `--nq-bin` option or `NIGHTSHIFT_NQ_BIN`; this surface does not silently
+select a binary from PATH.
+
+```sh
+NIGHTSHIFT_NQ_BIN=/absolute/path/to/nq-monitor \
+nightshift nq disposition \
+  --request /absolute/path/to/request.json \
+  --receipt /absolute/path/to/receipt.json \
+  --profiles /absolute/path/to/profiles.json \
+  --format json
+```
+
+The complete input surface is:
+
+| option | machine artifact | requirement |
+|---|---|---|
+| `--request` | `nq.reliance.request.v1` | required |
+| `--receipt` | sealed `nq.receipt.v1` under evaluation | required |
+| `--profiles` | `nq.reliance.profiles.v1` catalog | required |
+| `--evidence` | evidence-context document | optional |
+| `--supporting` | sealed supporting receipt | optional and repeatable |
+| `--expected-profile` | locally configured expected consumer profile | defaults to `nightshift-readonly` |
+
+These artifacts are prepared and sealed outside Night Shift. Night Shift
+passes their paths to `nq-monitor reliance evaluate`; it does not synthesize
+a missing artifact, evaluate whether support is sufficient, or repair an NQ
+refusal. `--expected-profile` validates whom the returned receipt addresses;
+it neither selects an NQ policy nor authenticates the caller.
+
+The output is a `nightshift.readonly_disposition.v1` record. Exit zero means
+the record was derived and **does not** mean that its disposition is
+`continue_observing`; `stop` is also a successfully derived disposition.
+Use `--format text` only for a human view. JSON is the machine-facing
+contract.
+
 ## Configured consumer, not authenticated
 
 Night Shift is the `nightshift-readonly` consumer profile. That profile is **selected from
@@ -58,6 +97,16 @@ NQ *speaking*, and arrives as `Fresh`. No answer at all is Night Shift *observin
 has no `source` block at all, and says that absence of a response is not evidence of health
 or of failure.
 
+Missing supporting testimony is also not silence. If NQ returns a typed
+`coverage_insufficient` refusal because required support was not bound, that
+receipt is fresh NQ testimony. Night Shift retains the NQ source binding and
+derives `human_judgment_required`; it does not add a
+`supporting_receipts` disclosure when NQ bound none. By contrast, an NQ
+timeout derives `evidence_unavailable`, carries no NQ source block, and says
+only that Night Shift observed no response. Omitting `--supporting` is never
+interpreted locally as evidence either way—support sufficiency remains NQ's
+law.
+
 ## Read-only disposition vocabulary
 
 | disposition | meaning |
@@ -84,6 +133,7 @@ the outcome:
 | `authorized_reliance` | `continue_observing` |
 | `claim_not_verified` (incl. underlying `needs_more_evidence`) | `request_additional_evidence` — **never a retry** |
 | `cannot_testify` | `human_judgment_required` — **never proceed** |
+| `coverage_insufficient` (including missing required support) | `human_judgment_required` |
 | `contradiction_retained`, `premise_not_accepted`, `residual_obligation_blocks` | `human_judgment_required` |
 | `stale_evidence` | `wait_for_fresh_evidence` |
 | `consumer_unknown`, `claim_not_authorized_for_consumer`, `purpose_not_authorized` | `stop` — configuration/policy error |
@@ -119,8 +169,9 @@ judgment, not an inference Night Shift is entitled to make.
 ## Running the isolated specimen
 
 ```sh
-cargo test --test nq_reliance_disposition     # 17 behavioural tests
-cargo test --test nq_reliance_conformance     # 5 tests over NQ's golden vectors
+cargo test --locked --test nq_reliance_disposition
+cargo test --locked --test nq_reliance_conformance
+cargo test --locked --test nq_supporting_consumption
 ```
 
 The conformance fixtures under `crates/nightshiftd/tests/fixtures/nq_reliance/` were

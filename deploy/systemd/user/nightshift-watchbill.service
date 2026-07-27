@@ -1,6 +1,8 @@
+# HISTORICAL, NON-PORTABLE DOGFOOD SPECIMEN.
+# Do not install verbatim. Every /home/jbeck, scheduler, and notquery path
+# records the original workstation and is not a supported default.
 [Unit]
 Description=Night Shift watchbill — local sushi-k dogfood pilot (user-level)
-Documentation=https://github.com/anthropics/scheduler/blob/main/docs/working/decisions/MILESTONE-2026-05-28-first-live-dogfood.md
 After=nq-serve.service network.target
 Wants=nq-serve.service
 

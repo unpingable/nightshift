@@ -28,11 +28,18 @@ Three files:
   assume `/usr/local/bin/nightshift` and `/var/lib/nightshift/`;
   adapt to your distribution.
 
+Before installing the unit, satisfy the source-build prerequisites and
+sibling `nightshift` / `wicket` / `wlp` layout in the
+[operator quick start](../../docs/operator/README.md). Install
+`nq-monitor` separately at an absolute path executable by the `nightshift`
+service user. Because the unit sets `ProtectHome=true`, neither binary nor
+live input artifacts may be hidden under a protected home directory.
+
 ## Install (manual)
 
 ```bash
-# 1. Build and install the binary
-cargo build --release
+# 1. From the Night Shift source tree, build and install the binary
+cargo build --locked --release
 sudo install -m 0755 target/release/nightshift /usr/local/bin/nightshift
 
 # 2. Create the service user + state directory
@@ -44,7 +51,9 @@ sudo install -d -m 0750 -o root -g nightshift /etc/nightshift
 sudo install -d -m 0755 -o root -g nightshift /etc/nightshift/agendas
 sudo install -m 0640 -o root -g nightshift \
     deploy/systemd/watchbill.env.example /etc/nightshift/watchbill.env
-sudo editor /etc/nightshift/watchbill.env  # fill in real values
+sudo editor /etc/nightshift/watchbill.env
+# Set NIGHTSHIFT_NQ_BIN to the separately installed nq-monitor executable
+# and fill in every other required site-owned path.
 
 # 4. Drop the agenda
 sudo cp tests/fixtures/wal-bloat-review.yaml /etc/nightshift/agendas/
@@ -65,8 +74,8 @@ sudo systemctl enable --now nightshift-watchbill.timer
 | Timer firings + skip lines | `journalctl -u nightshift-watchbill -n 50` |
 | Persisted runs | `nightshift --store /var/lib/nightshift/nightshift.sqlite runs list` |
 | One run in detail | `nightshift --store /var/lib/nightshift/nightshift.sqlite runs show <run_id>` |
-| NQ peek (cross-check what NS would consume) | `nightshift --nq-db /opt/notquery/nq.db nq peek` |
-| Liveness peek (if `--nq-liveness` configured) | `nightshift --nq-liveness <path> liveness peek` |
+| NQ peek (cross-check what NS would consume) | `nightshift --nq-bin /absolute/path/to/nq-monitor --nq-db /absolute/path/to/nq.db nq peek` |
+| Liveness peek (if configured) | `nightshift --nq-bin /absolute/path/to/nq-monitor --nq-liveness /absolute/path/to/liveness.json liveness peek` |
 
 ## Idempotency
 
