@@ -161,3 +161,93 @@ fn the_no_response_case_has_no_nq_fixture_because_it_is_not_an_nq_document() {
     assert_eq!(rec.disposition, Disposition::EvidenceUnavailable);
     assert!(rec.source.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Continuity-gated consumer vectors (2026-07-26).
+//
+// NQ's supporting-evaluation vectors, mirrored byte-wise as always. The same
+// consumer machinery reads them under the `nightshift-readonly-continuity`
+// expectation — a *configured* expectation, never an ambient one; under the
+// base expectation these receipts refuse unparsed.
+// ---------------------------------------------------------------------------
+
+const CONTINUITY_CONSUMER: &str = "nightshift-readonly-continuity";
+
+/// Receipts addressed to the continuity-gated consumer, and the posture each
+/// must yield. No new mapping law: these arrive through NQ's closed decision
+/// vocabulary exactly as the base vectors do.
+fn expected_for_continuity_consumer() -> BTreeMap<&'static str, Disposition> {
+    BTreeMap::from([
+        ("continuity_gated_authorized", Disposition::ContinueObserving),
+        (
+            "continuity_support_missing",
+            Disposition::HumanJudgmentRequired,
+        ),
+        ("continuity_support_lost", Disposition::HumanJudgmentRequired),
+        (
+            "continuity_support_stale",
+            Disposition::WaitForFreshEvidence,
+        ),
+    ])
+}
+
+#[test]
+fn continuity_vectors_map_to_the_expected_posture_under_the_continuity_expectation() {
+    let fx = fixtures();
+    for (name, expected) in expected_for_continuity_consumer() {
+        let bytes = fx
+            .get(name)
+            .unwrap_or_else(|| panic!("missing fixture {name}"));
+        let dto = NqRelianceReceiptDto::parse_checked(bytes, CONTINUITY_CONSUMER)
+            .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
+        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, CONTINUITY_CONSUMER);
+        assert_eq!(rec.disposition, expected, "{name}");
+        assert_eq!(rec.expected_consumer_profile, CONTINUITY_CONSUMER, "{name}");
+    }
+}
+
+#[test]
+fn continuity_vectors_refuse_under_the_base_expectation() {
+    let fx = fixtures();
+    for name in expected_for_continuity_consumer().keys() {
+        let err = NqRelianceReceiptDto::parse_checked(&fx[*name], EXPECTED_CONSUMER_PROFILE)
+            .err()
+            .unwrap_or_else(|| panic!("{name} is not addressed to the base consumer"));
+        assert!(
+            err.to_string().contains("consumer"),
+            "{name}: refusal must name the consumer mismatch, got {err}"
+        );
+    }
+}
+
+#[test]
+fn the_authorized_continuity_vector_disclosure_survives_the_projection() {
+    let fx = fixtures();
+    let raw: serde_json::Value =
+        serde_json::from_slice(&fx["continuity_gated_authorized"]).unwrap();
+    let source_refs = raw["supporting_receipts"].as_array().unwrap();
+    assert_eq!(source_refs.len(), 1, "the vector binds one supporting eval");
+
+    let dto =
+        NqRelianceReceiptDto::parse_checked(&fx["continuity_gated_authorized"], CONTINUITY_CONSUMER)
+            .unwrap();
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, CONTINUITY_CONSUMER);
+    let carried = &rec.source.as_ref().unwrap().supporting_receipts;
+    assert_eq!(carried.len(), 1);
+    assert_eq!(carried[0].claim, source_refs[0]["claim"]);
+    assert_eq!(carried[0].content_hash, source_refs[0]["content_hash"]);
+    assert_eq!(carried[0].subject, source_refs[0]["subject"]);
+}
+
+#[test]
+fn refusal_vectors_without_disclosure_stay_disclosure_free() {
+    // The missing-support refusal binds nothing; its source binding must not
+    // grow a supporting_receipts key (absent-when-empty, byte-compatible).
+    let fx = fixtures();
+    let dto =
+        NqRelianceReceiptDto::parse_checked(&fx["continuity_support_missing"], CONTINUITY_CONSUMER)
+            .unwrap();
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, CONTINUITY_CONSUMER);
+    let json = serde_json::to_value(&rec).unwrap();
+    assert!(json["source"].get("supporting_receipts").is_none());
+}
