@@ -172,6 +172,9 @@ fn the_no_response_case_has_no_nq_fixture_because_it_is_not_an_nq_document() {
 // ---------------------------------------------------------------------------
 
 const CONTINUITY_CONSUMER: &str = "nightshift-readonly-continuity";
+const DOCKET_PRIMARY_SUBJECT: &str =
+    "gwr:ref-continuity:v0:repo-0123456789abcdef0123456789abcdef\
+     #refs/gwr/target@2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
 
 /// Receipts addressed to the continuity-gated consumer, and the posture each
 /// must yield. No new mapping law: these arrive through NQ's closed decision
@@ -187,6 +190,10 @@ fn expected_for_continuity_consumer() -> BTreeMap<&'static str, Disposition> {
         (
             "continuity_support_stale",
             Disposition::WaitForFreshEvidence,
+        ),
+        (
+            "docket_primary_continuity_gated_authorized",
+            Disposition::ContinueObserving,
         ),
     ])
 }
@@ -240,7 +247,49 @@ fn the_authorized_continuity_vector_disclosure_survives_the_projection() {
 }
 
 #[test]
-fn refusal_vectors_without_disclosure_stay_disclosure_free() {
+fn docket_primary_logical_subject_disclosure_survives_the_projection_unchanged() {
+    let fx = fixtures();
+    let raw: serde_json::Value = serde_json::from_slice(
+        &fx["docket_primary_continuity_gated_authorized"],
+    )
+    .unwrap();
+    assert_eq!(raw["claim"], "docket_attempt_settled");
+    assert_eq!(raw["decision"], "authorized_reliance");
+    let raw_support = raw["supporting_receipts"]
+        .as_array()
+        .expect("NQ supporting disclosure");
+    assert_eq!(raw_support.len(), 1);
+    assert_eq!(raw_support[0]["claim"], "continuity_rely_eligible");
+    assert_eq!(raw_support[0]["subject"], DOCKET_PRIMARY_SUBJECT);
+
+    let dto = NqRelianceReceiptDto::parse_checked(
+        &fx["docket_primary_continuity_gated_authorized"],
+        CONTINUITY_CONSUMER,
+    )
+    .unwrap();
+    assert_eq!(dto.supporting_receipts[0].subject, DOCKET_PRIMARY_SUBJECT);
+
+    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, CONTINUITY_CONSUMER);
+    assert_eq!(rec.disposition, Disposition::ContinueObserving);
+    let carried = rec.source.as_ref().expect("fresh NQ source binding");
+    assert_eq!(carried.claim, "docket_attempt_settled");
+    assert_eq!(
+        carried.receipt_content_hash,
+        raw["receipt_content_hash"].as_str().unwrap()
+    );
+    assert_eq!(carried.supporting_receipts.len(), 1);
+    assert_eq!(
+        carried.supporting_receipts[0].subject,
+        DOCKET_PRIMARY_SUBJECT
+    );
+    assert_eq!(
+        carried.supporting_receipts[0].subject,
+        raw_support[0]["subject"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn missing_support_refusal_stays_disclosure_free_and_distinct_from_no_response() {
     // The missing-support refusal binds nothing; its source binding must not
     // grow a supporting_receipts key (absent-when-empty, byte-compatible).
     let fx = fixtures();
@@ -250,4 +299,20 @@ fn refusal_vectors_without_disclosure_stay_disclosure_free() {
     let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, CONTINUITY_CONSUMER);
     let json = serde_json::to_value(&rec).unwrap();
     assert!(json["source"].get("supporting_receipts").is_none());
+    assert!(rec.source_state.is_nq_testimony());
+    assert_eq!(rec.disposition, Disposition::HumanJudgmentRequired);
+    assert!(rec.source.is_some());
+
+    let silent = derive_disposition(
+        &SourceState::NoResponse {
+            elapsed_seconds: 30,
+            timeout_seconds: 30,
+        },
+        None,
+        NOW,
+        CONTINUITY_CONSUMER,
+    );
+    assert!(!silent.source_state.is_nq_testimony());
+    assert_eq!(silent.disposition, Disposition::EvidenceUnavailable);
+    assert!(silent.source.is_none());
 }
