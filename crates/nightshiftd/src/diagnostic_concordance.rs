@@ -1,10 +1,9 @@
 //! Read-only, explicit cross-vantage concordance over an immutable
 //! [`OperationalPosture`](crate::diagnostic_posture::OperationalPosture).
 //!
-//! Concordance is deliberately a companion artifact.  It does not change the
-//! `nightshift.operational_posture.v1` wire contract, choose a winning
-//! vantage, infer comparison groups, or carry authorization or actuation
-//! semantics.
+//! Concordance is deliberately a companion artifact. It does not rewrite its
+//! versioned source posture, choose a winning vantage, infer comparison
+//! groups, or carry authorization or actuation semantics.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,16 +11,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::diagnostic_execution_v2::{DiagnosticExecution, NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA};
 use crate::diagnostic_posture::{
-    ClaimStatusV1, CoherenceV1, ConditionV1, CoverageV1, DerivationV1, DiagnosticExecutionV1,
-    DiagnosticInput, DiagnosticInputStatus, DiagnosticKey, InventoryEntry, OperationalPosture,
-    ProjectionV1, RecurrenceAssessment, RecurrenceStanding, Requirement, SemanticIdentityV1,
-    Standing, StateBindingV1, SubjectV1,
+    ClaimStatusV1, CoherenceV1, ConditionV1, CoverageV1, DerivationV1, DiagnosticInput,
+    DiagnosticInputStatus, DiagnosticKey, InventoryEntry, OperationalPosture, ProjectionV1,
+    RecurrenceAssessment, RecurrenceStanding, Requirement, SemanticIdentityV1, Standing,
+    StateBindingV1, SubjectV1,
 };
 use crate::diagnostic_source::{NqSourceImportReceipt, NqSourceStatus};
 
-pub const CONCORDANCE_POLICY_SCHEMA: &str = "nightshift.concordance_policy.v1";
-pub const CONCORDANCE_SCHEMA: &str = "nightshift.operational_posture_concordance.v1";
+pub const CONCORDANCE_POLICY_SCHEMA_V1: &str = "nightshift.concordance_policy.v1";
+pub const CONCORDANCE_POLICY_SCHEMA_V2: &str = "nightshift.concordance_policy.v2";
+pub const CONCORDANCE_POLICY_SCHEMA: &str = CONCORDANCE_POLICY_SCHEMA_V2;
+pub const CONCORDANCE_SCHEMA: &str = "nightshift.operational_posture_concordance.v2";
 pub const NQ_DIAGNOSTIC_EXECUTION_SCHEMA: &str = "nq.diagnostic_execution.v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -47,6 +49,8 @@ pub struct ComparisonSet {
     pub subject: SubjectV1,
     pub question: SemanticIdentityV1,
     pub profile: SemanticIdentityV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_semantic_id: Option<String>,
     pub state_model: SemanticIdentityV1,
     pub evaluator: SemanticIdentityV1,
     pub threshold_policy: SemanticIdentityV1,
@@ -73,9 +77,12 @@ impl ConcordancePolicy {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != CONCORDANCE_POLICY_SCHEMA {
+        if !matches!(
+            self.schema.as_str(),
+            CONCORDANCE_POLICY_SCHEMA_V1 | CONCORDANCE_POLICY_SCHEMA_V2
+        ) {
             return Err(format!(
-                "concordance policy schema must be {CONCORDANCE_POLICY_SCHEMA}, got {}",
+                "concordance policy schema must be {CONCORDANCE_POLICY_SCHEMA_V1} or {CONCORDANCE_POLICY_SCHEMA_V2}, got {}",
                 self.schema
             ));
         }
@@ -84,6 +91,11 @@ impl ConcordancePolicy {
         require_token("posture_generation", &self.posture_generation)?;
         if let Some(set) = &self.comparison_set {
             set.validate()?;
+            if self.schema == CONCORDANCE_POLICY_SCHEMA_V1
+                && set.contract_schema != NQ_DIAGNOSTIC_EXECUTION_SCHEMA
+            {
+                return Err("concordance_policy.v1 cannot compare diagnostic_execution.v2".into());
+            }
         }
         if self.policy_id != self.computed_policy_id()? {
             return Err("policy_id does not match the canonical policy preimage".into());
@@ -96,10 +108,31 @@ impl ComparisonSet {
     fn validate(&self) -> Result<(), String> {
         require_token("comparison_set_id", &self.comparison_set_id)?;
         require_token("comparison_set.generation", &self.generation)?;
-        if self.contract_schema != NQ_DIAGNOSTIC_EXECUTION_SCHEMA {
+        if !matches!(
+            self.contract_schema.as_str(),
+            NQ_DIAGNOSTIC_EXECUTION_SCHEMA | NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA
+        ) {
             return Err(format!(
-                "comparison set contract_schema must be {NQ_DIAGNOSTIC_EXECUTION_SCHEMA}"
+                "comparison set contract_schema must be {NQ_DIAGNOSTIC_EXECUTION_SCHEMA} or {NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA}"
             ));
+        }
+        match (
+            self.contract_schema.as_str(),
+            self.profile_semantic_id.as_deref(),
+        ) {
+            (NQ_DIAGNOSTIC_EXECUTION_SCHEMA, None) => {}
+            (NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA, Some(value)) => {
+                validate_digest(value, "comparison_set.profile_semantic_id")?;
+            }
+            (NQ_DIAGNOSTIC_EXECUTION_SCHEMA, Some(_)) => {
+                return Err("v1 comparison set cannot bind a v2 profile semantic identity".into());
+            }
+            (NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA, None) => {
+                return Err(
+                    "v2 comparison set requires the exact profile semantic identity".into(),
+                );
+            }
+            _ => unreachable!("comparison-set schema was validated above"),
         }
         require_token("comparison_set.subject.id", &self.subject.id)?;
         validate_semantic_identity(&self.subject.scope, "comparison_set.subject.scope")?;
@@ -219,20 +252,18 @@ pub struct ComparableOutcome {
 }
 
 impl ComparableOutcome {
-    fn from_artifact(artifact: &DiagnosticExecutionV1, claim_id: &str) -> Result<Self, String> {
+    fn from_artifact(artifact: &DiagnosticExecution, claim_id: &str) -> Result<Self, String> {
         let claim = artifact
-            .claims
-            .iter()
-            .find(|claim| claim.claim_id == claim_id)
+            .claim(claim_id)
             .ok_or_else(|| "comparison claim is not present in the NQ artifact".to_string())?;
         let mut outcome = Self {
             outcome_id: String::new(),
-            claim_status: claim.status,
-            condition_effect: claim.condition_effect,
-            derivation: artifact.outcome.derivation,
-            condition: artifact.outcome.condition,
-            coherence: artifact.outcome.coherence,
-            coverage: artifact.outcome.coverage,
+            claim_status: claim.status(),
+            condition_effect: claim.condition_effect(),
+            derivation: artifact.outcome_derivation(),
+            condition: artifact.outcome_condition(),
+            coherence: artifact.outcome_coherence(),
+            coverage: artifact.outcome_coverage(),
         };
         outcome.outcome_id = computed_object_id(&outcome, "outcome_id")?;
         Ok(outcome)
@@ -324,7 +355,8 @@ impl OperationalPostureConcordance {
         )?;
         if reopened_posture != self.source_posture {
             return Err(
-                "embedded operational posture is not the exact deterministic v1 evaluation".into(),
+                "embedded operational posture is not the exact deterministic versioned evaluation"
+                    .into(),
             );
         }
         if let Some(receipt) = &self.source_import {
@@ -370,9 +402,9 @@ impl OperationalPostureConcordance {
 pub fn concordance_evaluator_identity() -> SemanticIdentityV1 {
     SemanticIdentityV1 {
         id: "nightshift.cross_vantage_concordance_evaluator".into(),
-        version: "1".into(),
-        // sha256("nightshift.cross_vantage_concordance_evaluator.v1")
-        digest: "sha256:e376d8f8cda9f1dfd906555a59d1c3a81e5643124beaa2959984c79848873af8".into(),
+        version: "2".into(),
+        // sha256("nightshift.cross_vantage_concordance_evaluator.v2")
+        digest: "sha256:67177f80b5557b3844f774e4cc01d54fc72cbe197db4240a4059b0e2552cf702".into(),
     }
 }
 
@@ -479,6 +511,7 @@ fn evaluate_set(
         if binding.subject != set.subject
             || binding.question != set.question
             || binding.profile != set.profile
+            || binding.profile_semantic_id != set.profile_semantic_id
             || binding.vantage != expected.vantage
             || binding.state_model != set.state_model
             || binding.evaluator != set.evaluator
@@ -590,12 +623,12 @@ fn duplicate_execution_keys(
             continue;
         };
         *counts
-            .entry(DuplicateKey::Artifact(artifact.artifact_id.clone()))
+            .entry(DuplicateKey::Artifact(artifact.artifact_id().to_owned()))
             .or_default() += 1;
         *counts
             .entry(DuplicateKey::Execution(
-                artifact.producer.node_id.clone(),
-                artifact.run_id.clone(),
+                artifact.producer().node_id.clone(),
+                artifact.run_id().to_owned(),
             ))
             .or_default() += 1;
     }
@@ -628,13 +661,13 @@ fn evaluate_member(
         .find(|assessment| assessment.key == expected.key);
     let source_standing = assessment.map(|value| value.standing);
     let recurrence_standing = recurrence.map(|value| value.standing);
-    let base = |artifact: Option<&DiagnosticExecutionV1>, contribution| ConcordanceMember {
+    let base = |artifact: Option<&DiagnosticExecution>, contribution| ConcordanceMember {
         expected: expected.clone(),
         source_standing,
         recurrence_standing,
-        artifact_id: artifact.map(|value| value.artifact_id.clone()),
-        request_id: artifact.map(|value| value.request_id.clone()),
-        run_id: artifact.map(|value| value.run_id.clone()),
+        artifact_id: artifact.map(|value| value.artifact_id().to_owned()),
+        request_id: artifact.map(|value| value.request_id().to_owned()),
+        run_id: artifact.map(|value| value.run_id().to_owned()),
         contribution,
     };
 
@@ -687,10 +720,10 @@ fn evaluate_member(
         DiagnosticInputStatus::Delivered { artifact } => artifact.as_ref(),
     };
 
-    if duplicates.contains(&DuplicateKey::Artifact(artifact.artifact_id.clone()))
+    if duplicates.contains(&DuplicateKey::Artifact(artifact.artifact_id().to_owned()))
         || duplicates.contains(&DuplicateKey::Execution(
-            artifact.producer.node_id.clone(),
-            artifact.run_id.clone(),
+            artifact.producer().node_id.clone(),
+            artifact.run_id().to_owned(),
         ))
     {
         return Ok(base(
@@ -730,7 +763,7 @@ fn evaluate_member(
         ));
     }
 
-    if artifact.outcome.derivation == DerivationV1::Refused {
+    if artifact.outcome_derivation() == DerivationV1::Refused {
         return Ok(base(
             Some(artifact),
             not_contributing(
@@ -739,7 +772,7 @@ fn evaluate_member(
             ),
         ));
     }
-    if artifact.outcome.derivation == DerivationV1::Unsupported {
+    if artifact.outcome_derivation() == DerivationV1::Unsupported {
         return Ok(base(
             Some(artifact),
             not_contributing(
@@ -748,12 +781,7 @@ fn evaluate_member(
             ),
         ));
     }
-    if artifact.outcome.derivation == DerivationV1::Partial
-        && artifact
-            .inputs
-            .failed
-            .iter()
-            .any(|input| input.kind == crate::diagnostic_posture::FailedInputKindV1::NoResponse)
+    if artifact.outcome_derivation() == DerivationV1::Partial && artifact.has_provider_no_response()
     {
         return Ok(base(
             Some(artifact),
@@ -763,7 +791,7 @@ fn evaluate_member(
             ),
         ));
     }
-    if artifact.outcome.derivation == DerivationV1::Partial {
+    if artifact.outcome_derivation() == DerivationV1::Partial {
         return Ok(base(
             Some(artifact),
             not_contributing(
@@ -815,43 +843,41 @@ fn recurrence_can_contribute(recurrence: Option<&RecurrenceAssessment>) -> bool 
 }
 
 fn artifact_envelope_compatible(
-    artifact: &DiagnosticExecutionV1,
+    artifact: &DiagnosticExecution,
     set: &ComparisonSet,
     expected: &ExpectedVantage,
     inventory_entry: &InventoryEntry,
 ) -> bool {
     let binding = &inventory_entry.binding;
-    artifact.producer.node_id == binding.producer_node_id
-        && artifact.producer.build == binding.producer_build
-        && artifact.producer.cohort == binding.producer_cohort
-        && artifact.subject == set.subject
-        && artifact.question == set.question
-        && artifact.profile == set.profile
-        && artifact.vantage == expected.vantage
-        && artifact.state_model == set.state_model
-        && artifact.evaluator == set.evaluator
-        && artifact.threshold_policy == set.threshold_policy
-        && artifact.projection == set.projection
+    artifact.schema_name() == set.contract_schema
+        && artifact.producer().node_id == binding.producer_node_id
+        && artifact.producer().build == binding.producer_build
+        && artifact.producer().cohort == binding.producer_cohort
+        && *artifact.subject() == set.subject
+        && *artifact.question() == set.question
+        && *artifact.profile() == set.profile
+        && artifact.profile_semantic_id() == set.profile_semantic_id.as_deref()
+        && *artifact.vantage() == expected.vantage
+        && *artifact.state_model() == set.state_model
+        && *artifact.evaluator() == set.evaluator
+        && *artifact.threshold_policy() == set.threshold_policy
+        && *artifact.projection() == set.projection
 }
 
-fn artifact_comparable(artifact: &DiagnosticExecutionV1, set: &ComparisonSet) -> bool {
-    if artifact.primary_claim_id.as_deref() != Some(set.primary_claim_id.as_str()) {
+fn artifact_comparable(artifact: &DiagnosticExecution, set: &ComparisonSet) -> bool {
+    if artifact.primary_claim_id() != Some(set.primary_claim_id.as_str()) {
         return false;
     }
-    let Some(claim) = artifact
-        .claims
-        .iter()
-        .find(|claim| claim.claim_id == set.primary_claim_id)
-    else {
+    let Some(claim) = artifact.claim(&set.primary_claim_id) else {
         return false;
     };
     let bindings_by_id: BTreeMap<&str, &StateBindingV1> = artifact
-        .state_bindings
+        .state_bindings()
         .iter()
         .map(|binding| (binding.binding_id.as_str(), binding))
         .collect();
     let mut bindings: Vec<ComparableStateBinding> = claim
-        .state_binding_ids
+        .state_binding_ids()
         .iter()
         .filter_map(|binding_id| bindings_by_id.get(binding_id.as_str()))
         .map(|binding| ComparableStateBinding {
@@ -893,10 +919,13 @@ pub fn render_text(value: &OperationalPostureConcordance) -> String {
             quoted(&import.receipt_id)
         ));
         output.push_str(&format!(
-            "nq_package: repository={} commit={} release={} contract={} asset_manifest={} payload_manifest={}\n",
+            "nq_source_declaration: repository={} commit={} release={} attestation=unverified\n",
             quoted(&package.repository_identity),
             quoted(&package.commit),
-            quoted(&package.release_identity),
+            quoted(&package.release_identity)
+        ));
+        output.push_str(&format!(
+            "nq_package_bytes: contract={} asset_manifest={} payload_manifest={}\n",
             quoted(&package.contract_schema),
             quoted(&package.asset_manifest_sha256),
             quoted(&package.payload_manifest_sha256)
@@ -930,6 +959,12 @@ pub fn render_text(value: &OperationalPostureConcordance) -> String {
         value.source_posture.recurrence_axis,
         value.source_posture.current
     ));
+    output.push_str("source_posture_detail:\n");
+    for line in crate::diagnostic_posture::render_text(&value.source_posture).lines() {
+        output.push_str("  ");
+        output.push_str(line);
+        output.push('\n');
+    }
     for member in &result.members {
         output.push_str(&format!(
             "vantage: {} key={}/{}/{}/{} source={:?} recurrence={:?}\n",

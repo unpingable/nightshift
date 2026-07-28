@@ -1,9 +1,11 @@
-# Diagnostic posture v1 operator specimen
+# Diagnostic posture v1-input operator specimen
 
 This checked-in specimen exercises the read-only NQ-NG → Nightshift
 foundation from a clean Nightshift checkout. It uses one exact canonical
 `nq.diagnostic_execution.v1` positive vector, a closed one-row host
-inventory, and the exact recurrence slot that produced it.
+inventory, and the exact recurrence slot that produced it. The current
+Nightshift evaluator accepts those frozen v1 inputs and emits the explicitly
+versioned v2 posture contract; it does not relabel the NQ artifact.
 
 From the repository root:
 
@@ -31,7 +33,9 @@ diagnostic: ... status=ExplicitlyAbsent requirement=Mandatory visibility=Shown
 ```
 
 Use `--format json` to obtain the canonical
-`nightshift.operational_posture.v1` artifact.
+`nightshift.operational_posture.v2` artifact. See the
+[v2 consumer transition](../../../working/decisions/NQ-DIAGNOSTIC-CONSUMER-V2.md)
+for the compatibility boundary.
 
 The same immutable NQ input remains source-current under this specimen's
 300-second source-age policy at the next schedule slot, while the absence of

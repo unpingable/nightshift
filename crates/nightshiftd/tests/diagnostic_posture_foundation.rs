@@ -4,6 +4,9 @@
 use std::{collections::BTreeSet, path::PathBuf, process::Command};
 
 use chrono::{DateTime, Utc};
+use nightshiftd::diagnostic_execution_v2::{
+    AcquisitionInterval, DiagnosticClaim, DiagnosticExecution, DiagnosticInputFailureKind,
+};
 use nightshiftd::diagnostic_posture::*;
 
 const POSITIVE: &[u8] = include_bytes!("fixtures/nq_diagnostic_execution/positive.json");
@@ -56,6 +59,7 @@ fn policy(artifact: &DiagnosticExecutionV1) -> PosturePolicy {
                 producer_cohort: artifact.producer.cohort.clone(),
                 question: artifact.question.clone(),
                 profile: artifact.profile.clone(),
+                profile_semantic_id: None,
                 vantage: artifact.vantage.clone(),
                 state_model: artifact.state_model.clone(),
                 evaluator: artifact.evaluator.clone(),
@@ -83,7 +87,7 @@ fn delivered(artifact: DiagnosticExecutionV1) -> DiagnosticInputs {
         inputs: vec![DiagnosticInput {
             key: key(&artifact),
             status: DiagnosticInputStatus::Delivered {
-                artifact: Box::new(artifact),
+                artifact: Box::new(DiagnosticExecution::V1(artifact)),
             },
         }],
     };
@@ -109,18 +113,21 @@ fn artifact_ref(artifact: &DiagnosticExecutionV1) -> ArtifactRef {
                     .unwrap()
                     .acquisition
                     .clone()
+                    .into()
             })
             .collect(),
         None => vec![],
     };
     ArtifactRef {
+        contract_schema: Some(NQ_DIAGNOSTIC_EXECUTION_SCHEMA.into()),
+        profile_semantic_id: None,
         artifact_id: artifact.artifact_id.clone(),
         request_id: artifact.request_id.clone(),
         run_id: artifact.run_id.clone(),
-        attempt_interval: artifact.attempt_interval.clone(),
+        attempt_interval: AcquisitionInterval::V1(artifact.attempt_interval.clone()),
         key: key(artifact),
         claim_id: claim.map(|claim| claim.claim_id.clone()),
-        claim: claim.cloned(),
+        claim: claim.cloned().map(DiagnosticClaim::V1),
         dependency_acquisitions: acquisitions,
     }
 }
@@ -198,6 +205,15 @@ fn exact_nq_vectors_round_trip_and_keep_refusal_distinct_from_no_response() {
     assert_eq!(
         provider_posture.assessments[0].status,
         OperatorStatus::PartialEvidence
+    );
+    assert_eq!(
+        provider_posture.assessments[0]
+            .nq_trace
+            .as_ref()
+            .unwrap()
+            .input_failures[0]
+            .kind,
+        DiagnosticInputFailureKind::ProviderNoResponse
     );
     let mut nq_receiver_no_response = DiagnosticInputs {
         schema: INPUTS_SCHEMA.into(),

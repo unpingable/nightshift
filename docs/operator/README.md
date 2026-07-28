@@ -120,9 +120,10 @@ and recurrence evidence. It does not open the Nightshift store or invoke NQ:
 ```
 
 The checked-in
-[diagnostic-posture v1 specimen](examples/diagnostic-posture-v1/README.md)
+[diagnostic-posture v1-input specimen](examples/diagnostic-posture-v1/README.md)
 runs both a current positive posture and a later recurrence-loss posture from
-the same immutable NQ bytes.
+the same immutable NQ bytes. The current evaluator emits
+`nightshift.operational_posture.v2`.
 
 ## Inspect local records
 

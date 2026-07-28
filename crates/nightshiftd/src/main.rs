@@ -231,17 +231,17 @@ enum Command {
 #[derive(Subcommand, Debug)]
 enum DiagnosticsAction {
     /// Evaluate a closed operational inventory over exact
-    /// `nq.diagnostic_execution.v1` artifacts and recurrence evidence.
+    /// `nq.diagnostic_execution.v1` or v2 artifacts and recurrence evidence.
     Posture {
-        /// `nightshift.diagnostic_posture_policy.v1` closed inventory.
+        /// `nightshift.diagnostic_posture_policy.v1` or v2 closed inventory.
         #[arg(long)]
         policy: PathBuf,
 
-        /// `nightshift.diagnostic_inputs.v1` receiver-side input records.
+        /// `nightshift.diagnostic_inputs.v1` or v2 receiver-side input records.
         #[arg(long)]
         inputs: PathBuf,
 
-        /// `nightshift.recurrence_evidence.v1` scheduling and delivery record.
+        /// `nightshift.recurrence_evidence.v1` or v2 scheduling and delivery record.
         #[arg(long)]
         recurrence: PathBuf,
 
@@ -257,11 +257,11 @@ enum DiagnosticsAction {
     /// Evaluate the unchanged operational posture plus one explicit,
     /// package-pinned cross-vantage concordance dimension.
     PostureConcordance {
-        /// `nightshift.diagnostic_posture_policy.v1` closed inventory.
+        /// `nightshift.diagnostic_posture_policy.v1` or v2 closed inventory.
         #[arg(long)]
         policy: PathBuf,
 
-        /// `nightshift.nq_diagnostic_sources.v1` exact source manifest.
+        /// `nightshift.nq_diagnostic_sources.v1` or v2 exact source manifest.
         #[arg(long)]
         sources: PathBuf,
 
@@ -269,11 +269,11 @@ enum DiagnosticsAction {
         #[arg(long)]
         nq_package_root: PathBuf,
 
-        /// `nightshift.recurrence_evidence.v1` scheduling and delivery record.
+        /// `nightshift.recurrence_evidence.v1` or v2 scheduling and delivery record.
         #[arg(long)]
         recurrence: PathBuf,
 
-        /// `nightshift.concordance_policy.v1` explicit comparison set.
+        /// `nightshift.concordance_policy.v1` or v2 explicit comparison set.
         #[arg(long)]
         concordance_policy: PathBuf,
 

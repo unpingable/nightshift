@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use nightshiftd::diagnostic_concordance::*;
+use nightshiftd::diagnostic_execution_v2::{
+    AcquisitionInterval, DiagnosticClaim, DiagnosticExecution,
+};
 use nightshiftd::diagnostic_posture::*;
 use nightshiftd::diagnostic_source::{
     NqPackagePin, NqSourceEntry, NqSourceImportReceipt, NqSourceManifest, NqSourceStatus,
@@ -127,6 +130,7 @@ fn binding_for(
         producer_cohort: artifact.producer.cohort.clone(),
         question: artifact.question.clone(),
         profile: expected_profile.unwrap_or(&artifact.profile).clone(),
+        profile_semantic_id: None,
         vantage: artifact.vantage.clone(),
         state_model: artifact.state_model.clone(),
         evaluator: artifact.evaluator.clone(),
@@ -181,20 +185,24 @@ fn artifact_ref(artifact: &DiagnosticExecutionV1, key: DiagnosticKey) -> Artifac
         .map(|input| (input.input_id.as_str(), &input.acquisition))
         .collect();
     ArtifactRef {
+        contract_schema: Some(
+            nightshiftd::diagnostic_posture::NQ_DIAGNOSTIC_EXECUTION_SCHEMA.into(),
+        ),
+        profile_semantic_id: None,
         artifact_id: artifact.artifact_id.clone(),
         request_id: artifact.request_id.clone(),
         run_id: artifact.run_id.clone(),
-        attempt_interval: artifact.attempt_interval.clone(),
+        attempt_interval: AcquisitionInterval::V1(artifact.attempt_interval.clone()),
         key,
         claim_id: claim.map(|claim| claim.claim_id.clone()),
-        claim: claim.cloned(),
+        claim: claim.cloned().map(DiagnosticClaim::V1),
         dependency_acquisitions: claim
             .map(|claim| {
                 claim
                     .dependency_input_ids
                     .iter()
                     .filter_map(|id| received.get(id.as_str()))
-                    .map(|value| (*value).clone())
+                    .map(|value| AcquisitionInterval::V1((*value).clone()))
                     .collect()
             })
             .unwrap_or_default(),
@@ -245,7 +253,7 @@ fn build_posture(specs: &[InputSpec]) -> OperationalPosture {
                 key: key.clone(),
                 status: spec.input_status.clone().unwrap_or_else(|| {
                     DiagnosticInputStatus::Delivered {
-                        artifact: Box::new(spec.artifact.clone()),
+                        artifact: Box::new(DiagnosticExecution::V1(spec.artifact.clone())),
                     }
                 }),
             });
@@ -386,6 +394,7 @@ fn concordance_policy(
             subject: first.subject.clone(),
             question: first.question.clone(),
             profile: first.profile.clone(),
+            profile_semantic_id: None,
             state_model: first.state_model.clone(),
             evaluator: first.evaluator.clone(),
             threshold_policy: first.threshold_policy.clone(),
@@ -425,7 +434,7 @@ fn import_receipt(posture: &OperationalPosture) -> NqSourceImportReceipt {
                         "sha256:{:x}",
                         Sha256::digest(serde_jcs::to_vec(artifact).unwrap())
                     ),
-                    artifact_id: artifact.artifact_id.clone(),
+                    artifact_id: artifact.artifact_id().to_owned(),
                 },
                 DiagnosticInputStatus::NoResponse => NqSourceStatus::NoResponse,
                 DiagnosticInputStatus::AcquisitionFailed { reason } => {
@@ -773,7 +782,7 @@ fn v9_duplicate_execution_under_two_labels_counts_neither_copy() {
     // Preserve the same artifact and producer/run identity deliberately:
     // only the receiver key/binding label changes.
     duplicate_spec.input_status = Some(DiagnosticInputStatus::Delivered {
-        artifact: Box::new(local.clone()),
+        artifact: Box::new(DiagnosticExecution::V1(local.clone())),
     });
     let value = evaluate(
         &[InputSpec::delivered(local.clone()), duplicate_spec],
@@ -852,6 +861,48 @@ fn v12_hostile_unknown_contract_input_is_rejected_before_comparison() {
         Sha256::digest(&bytes),
         Sha256::digest(&bytes),
         "rejection does not mutate the supplied bytes"
+    );
+
+    let a = at_vantage(parse(POSITIVE), "vantage:a", 'a', 1);
+    let b = at_vantage(parse(POSITIVE), "vantage:b", 'b', 2);
+    let posture = build_posture(&[
+        InputSpec::delivered(a.clone()),
+        InputSpec::delivered(b.clone()),
+    ]);
+    let mut unknown_policy = concordance_policy(&posture, &[a.clone(), b.clone()]);
+    unknown_policy.schema = "nightshift.concordance_policy.v99".into();
+    unknown_policy.policy_id.clear();
+    unknown_policy.policy_id = unknown_policy.computed_policy_id().unwrap();
+    assert!(unknown_policy.validate().is_err());
+
+    let mut legacy_policy = concordance_policy(&posture, &[a, b]);
+    legacy_policy.schema = CONCORDANCE_POLICY_SCHEMA_V1.into();
+    legacy_policy
+        .comparison_set
+        .as_mut()
+        .unwrap()
+        .contract_schema = "nq.diagnostic_execution.v2".into();
+    legacy_policy.policy_id.clear();
+    legacy_policy.policy_id = legacy_policy.computed_policy_id().unwrap();
+    assert!(legacy_policy.validate().is_err());
+
+    let mut missing_profile_semantic = concordance_policy(
+        &posture,
+        &[
+            at_vantage(parse(POSITIVE), "vantage:a", 'a', 1),
+            at_vantage(parse(POSITIVE), "vantage:b", 'b', 2),
+        ],
+    );
+    missing_profile_semantic
+        .comparison_set
+        .as_mut()
+        .unwrap()
+        .contract_schema = "nq.diagnostic_execution.v2".into();
+    missing_profile_semantic.policy_id.clear();
+    missing_profile_semantic.policy_id = missing_profile_semantic.computed_policy_id().unwrap();
+    assert!(
+        missing_profile_semantic.validate().is_err(),
+        "v2 comparison cannot infer the compiled profile semantic identity"
     );
 }
 
@@ -1022,5 +1073,10 @@ fn human_projection_quotes_untrusted_strings_instead_of_forging_lines() {
     let rendered = nightshiftd::diagnostic_concordance::render_text(&value);
     assert!(!rendered.contains("repository=nq-ng\nstate: forged-by-input"));
     assert!(rendered.contains("repository=\"nq-ng\\nstate: forged-by-input\""));
+    assert!(rendered.contains("nq_source_declaration:"));
+    assert!(rendered.contains("attestation=unverified"));
+    assert!(rendered.contains("nq_package_bytes:"));
+    assert!(rendered.contains("source_posture_detail:"));
+    assert!(rendered.contains("diagnostic:"));
     assert!(rendered.contains("comparison_generation:"));
 }

@@ -1,10 +1,10 @@
 //! Reproducible, read-only import of exact NQ diagnostic artifacts from an
 //! extracted NQ release payload.
 //!
-//! The source manifest binds repository/commit provenance, the immutable NQ
-//! contract package manifests, and each exact diagnostic artifact.  The NQ
-//! package remains authoritative for its contract assets; Nightshift's Rust
-//! DTO is only a strict consumer and evaluator input.
+//! The source manifest binds an unattested repository/commit declaration, the
+//! immutable NQ contract package manifests, and each exact diagnostic
+//! artifact. The NQ package remains authoritative for its contract assets;
+//! Nightshift's Rust DTO is only a strict consumer and evaluator input.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -13,21 +13,34 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::diagnostic_execution_v2::{DiagnosticExecution, NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA};
 use crate::diagnostic_posture::{
-    DiagnosticExecutionV1, DiagnosticInput, DiagnosticInputStatus, DiagnosticInputs, DiagnosticKey,
-    INPUTS_SCHEMA, NQ_DIAGNOSTIC_EXECUTION_SCHEMA,
+    DiagnosticInput, DiagnosticInputStatus, DiagnosticInputs, DiagnosticKey, INPUTS_SCHEMA,
+    INPUTS_SCHEMA_V1, NQ_DIAGNOSTIC_EXECUTION_SCHEMA,
 };
 
-pub const NQ_SOURCE_MANIFEST_SCHEMA: &str = "nightshift.nq_diagnostic_sources.v1";
-pub const NQ_SOURCE_IMPORT_RECEIPT_SCHEMA: &str = "nightshift.nq_source_import_receipt.v1";
-pub const NQ_CONTRACT_ASSET_SCHEMA: &str = "nq.diagnostic_contract_assets.v1";
+pub const NQ_SOURCE_MANIFEST_SCHEMA_V1: &str = "nightshift.nq_diagnostic_sources.v1";
+pub const NQ_SOURCE_MANIFEST_SCHEMA_V2: &str = "nightshift.nq_diagnostic_sources.v2";
+pub const NQ_SOURCE_MANIFEST_SCHEMA: &str = NQ_SOURCE_MANIFEST_SCHEMA_V2;
+pub const NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V1: &str = "nightshift.nq_source_import_receipt.v1";
+pub const NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V2: &str = "nightshift.nq_source_import_receipt.v2";
+pub const NQ_SOURCE_IMPORT_RECEIPT_SCHEMA: &str = NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V2;
+pub const NQ_CONTRACT_ASSET_SCHEMA_V1: &str = "nq.diagnostic_contract_assets.v1";
+pub const NQ_CONTRACT_ASSET_SCHEMA_V2: &str = "nq.diagnostic_contract_assets.v2";
 const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NqPackagePin {
+    /// Consumer-declared source identity. The current package format does not
+    /// attest this field; the declared payload-manifest and exact contract
+    /// assets are bound by the digests below.
     pub repository_identity: String,
+    /// Consumer-declared source revision, syntax-checked but not attested by
+    /// the current NQ package.
     pub commit: String,
+    /// Consumer-declared release name, syntax-checked but not attested by the
+    /// current NQ package.
     pub release_identity: String,
     pub contract_schema: String,
     pub asset_root: String,
@@ -132,10 +145,18 @@ pub struct ImportedDiagnosticSources {
 
 impl NqSourceImportReceipt {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != NQ_SOURCE_IMPORT_RECEIPT_SCHEMA {
+        if !matches!(
+            self.schema.as_str(),
+            NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V1 | NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V2
+        ) {
             return Err(format!(
-                "NQ source import receipt schema must be {NQ_SOURCE_IMPORT_RECEIPT_SCHEMA}"
+                "NQ source import receipt schema must be {NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V1} or {NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V2}"
             ));
+        }
+        if self.schema == NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V1
+            && self.source_manifest.schema != NQ_SOURCE_MANIFEST_SCHEMA_V1
+        {
+            return Err("source import receipt v1 cannot wrap a v2 source manifest".into());
         }
         self.source_manifest.validate()?;
         validate_digest(&self.imported_inputs_id, "imported_inputs_id")?;
@@ -149,6 +170,11 @@ impl NqSourceImportReceipt {
     pub fn validate_inputs(&self, inputs: &DiagnosticInputs) -> Result<(), String> {
         self.validate()?;
         inputs.validate()?;
+        if self.schema == NQ_SOURCE_IMPORT_RECEIPT_SCHEMA_V1 && inputs.schema != INPUTS_SCHEMA_V1 {
+            return Err(
+                "source import receipt v1 cannot bind a v2 diagnostic-input carrier".into(),
+            );
+        }
         if self.imported_inputs_id != inputs.inputs_id {
             return Err("source import receipt does not bind the diagnostic inputs id".into());
         }
@@ -170,7 +196,7 @@ impl NqSourceImportReceipt {
                     },
                     DiagnosticInputStatus::Delivered { artifact },
                 ) => {
-                    if &artifact.artifact_id != artifact_id {
+                    if artifact.artifact_id() != artifact_id {
                         return Err("source import receipt substitutes an NQ artifact id".into());
                     }
                     let canonical =
@@ -206,13 +232,21 @@ impl NqSourceManifest {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != NQ_SOURCE_MANIFEST_SCHEMA {
+        if !matches!(
+            self.schema.as_str(),
+            NQ_SOURCE_MANIFEST_SCHEMA_V1 | NQ_SOURCE_MANIFEST_SCHEMA_V2
+        ) {
             return Err(format!(
-                "NQ source manifest schema must be {NQ_SOURCE_MANIFEST_SCHEMA}, got {}",
+                "NQ source manifest schema must be {NQ_SOURCE_MANIFEST_SCHEMA_V1} or {NQ_SOURCE_MANIFEST_SCHEMA_V2}, got {}",
                 self.schema
             ));
         }
         validate_package_pin(&self.package)?;
+        if self.schema == NQ_SOURCE_MANIFEST_SCHEMA_V1
+            && self.package.contract_schema != NQ_DIAGNOSTIC_EXECUTION_SCHEMA
+        {
+            return Err("NQ source manifest v1 cannot pin diagnostic_execution.v2".into());
+        }
         validate_digest(&self.source_manifest_id, "source_manifest_id")?;
         let mut previous: Option<&DiagnosticKey> = None;
         for input in &self.inputs {
@@ -281,7 +315,7 @@ pub fn load_diagnostic_sources(
             } => {
                 let bytes = read_bounded_relative(source_root, &artifact_path, "NQ artifact")?;
                 verify_exact_digest(&bytes, &artifact_sha256, "NQ artifact")?;
-                let artifact: DiagnosticExecutionV1 = serde_json::from_slice(&bytes)
+                let artifact: DiagnosticExecution = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("parse exact NQ artifact {artifact_path}: {error}"))?;
                 artifact.validate().map_err(|error| {
                     format!("NQ artifact {artifact_path} is inadmissible: {error}")
@@ -291,17 +325,17 @@ pub fn load_diagnostic_sources(
                         "NQ artifact {artifact_path} is not its exact canonical byte representation"
                     ));
                 }
-                if artifact.artifact_id != artifact_id {
+                if artifact.schema_name() != manifest.package.contract_schema {
+                    return Err(format!(
+                        "NQ artifact {artifact_path} schema does not match its package pin"
+                    ));
+                }
+                if artifact.artifact_id() != artifact_id {
                     return Err(format!(
                         "NQ artifact {artifact_path} does not match its source-manifest identity"
                     ));
                 }
-                let artifact_key = DiagnosticKey {
-                    question_id: artifact.question.id.clone(),
-                    subject_id: artifact.subject.id.clone(),
-                    profile_id: artifact.profile.id.clone(),
-                    vantage_id: artifact.vantage.id.clone(),
-                };
+                let artifact_key = artifact.key();
                 if artifact_key != source.key {
                     return Err(format!(
                         "NQ artifact {artifact_path} does not bind its declared source key"
@@ -353,9 +387,12 @@ fn validate_package_pin(pin: &NqPackagePin) -> Result<(), String> {
         return Err("package.commit must be an exact 40-character lowercase Git commit".into());
     }
     require_token("package.release_identity", &pin.release_identity)?;
-    if pin.contract_schema != NQ_DIAGNOSTIC_EXECUTION_SCHEMA {
+    if !matches!(
+        pin.contract_schema.as_str(),
+        NQ_DIAGNOSTIC_EXECUTION_SCHEMA | NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA
+    ) {
         return Err(format!(
-            "package contract_schema must be {NQ_DIAGNOSTIC_EXECUTION_SCHEMA}"
+            "package contract_schema must be {NQ_DIAGNOSTIC_EXECUTION_SCHEMA} or {NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA}"
         ));
     }
     for (field, path) in [
@@ -365,8 +402,19 @@ fn validate_package_pin(pin: &NqPackagePin) -> Result<(), String> {
     ] {
         validate_relative_path(path, field)?;
     }
-    if pin.asset_root != "share/nq/diagnostic-contract"
-        || pin.asset_manifest_path != "share/nq/diagnostic-contract/manifest.json"
+    let (expected_asset_root, expected_asset_manifest) = match pin.contract_schema.as_str() {
+        NQ_DIAGNOSTIC_EXECUTION_SCHEMA => (
+            "share/nq/diagnostic-contract",
+            "share/nq/diagnostic-contract/manifest.json",
+        ),
+        NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA => (
+            "share/nq/diagnostic-contract-v2",
+            "share/nq/diagnostic-contract-v2/manifest.json",
+        ),
+        _ => unreachable!("contract schema was validated above"),
+    };
+    if pin.asset_root != expected_asset_root
+        || pin.asset_manifest_path != expected_asset_manifest
         || pin.payload_manifest_path != "share/nq/MANIFEST.sha256"
     {
         return Err("package pin does not use the qualified NQ diagnostic-contract layout".into());
@@ -402,14 +450,21 @@ fn verify_package(root: &Path, pin: &NqPackagePin) -> Result<(), String> {
     )?;
     let asset_value: ContractAssetManifest = serde_json::from_slice(&asset_manifest)
         .map_err(|error| format!("parse NQ contract asset manifest: {error}"))?;
-    if asset_value.schema != NQ_CONTRACT_ASSET_SCHEMA {
+    let expected_asset_schema = match pin.contract_schema.as_str() {
+        NQ_DIAGNOSTIC_EXECUTION_SCHEMA => NQ_CONTRACT_ASSET_SCHEMA_V1,
+        NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA => NQ_CONTRACT_ASSET_SCHEMA_V2,
+        _ => unreachable!("contract schema was validated above"),
+    };
+    if asset_value.schema != expected_asset_schema {
         return Err(format!(
-            "NQ contract asset manifest schema must be {NQ_CONTRACT_ASSET_SCHEMA}"
+            "NQ contract asset manifest schema must be {expected_asset_schema}"
         ));
     }
     require_token("asset manifest digest_basis", &asset_value.digest_basis)?;
-    if asset_value.contract.schema != NQ_DIAGNOSTIC_EXECUTION_SCHEMA {
-        return Err("NQ contract asset manifest does not bind diagnostic_execution.v1".into());
+    if asset_value.contract.schema != pin.contract_schema {
+        return Err(
+            "NQ contract asset manifest does not bind the pinned diagnostic contract".into(),
+        );
     }
     if asset_value.contract.canonicalization.id != "rfc8785-jcs"
         || asset_value.contract.canonicalization.version != "1"
@@ -441,6 +496,7 @@ fn verify_package(root: &Path, pin: &NqPackagePin) -> Result<(), String> {
         asset_value.contract.schema_sha256,
     );
     let mut fixture_ids = BTreeSet::new();
+    let mut qualified_fixtures = Vec::new();
     for fixture in asset_value.fixtures {
         require_token("contract fixture id", &fixture.id)?;
         if !fixture_ids.insert(fixture.id.clone()) {
@@ -466,11 +522,12 @@ fn verify_package(root: &Path, pin: &NqPackagePin) -> Result<(), String> {
         }
         let path = format!("{}/{}", pin.asset_root, fixture.path);
         if declared_assets
-            .insert(path.clone(), fixture.sha256)
+            .insert(path.clone(), fixture.sha256.clone())
             .is_some()
         {
             return Err(format!("NQ contract asset manifest repeats {path}"));
         }
+        qualified_fixtures.push(fixture);
     }
 
     let asset_files = regular_files_below(root, &pin.asset_root)?;
@@ -509,7 +566,67 @@ fn verify_package(root: &Path, pin: &NqPackagePin) -> Result<(), String> {
                 .join(", ")
         ));
     }
+    for fixture in &qualified_fixtures {
+        verify_contract_fixture(root, pin, fixture)?;
+    }
     Ok(())
+}
+
+fn verify_contract_fixture(
+    root: &Path,
+    pin: &NqPackagePin,
+    fixture: &ContractAssetFixture,
+) -> Result<(), String> {
+    let path = format!("{}/{}", pin.asset_root, fixture.path);
+    let bytes = read_bounded_relative(root, &path, "NQ contract fixture")?;
+    let evaluation: Result<(), String> = (|| {
+        let artifact: DiagnosticExecution =
+            serde_json::from_slice(&bytes).map_err(|error| format!("decode fixture: {error}"))?;
+        artifact.validate()?;
+        if serde_jcs::to_vec(&artifact).map_err(|error| error.to_string())? != bytes {
+            return Err("fixture is not exact RFC 8785 canonical JSON".into());
+        }
+        if artifact.schema_name() != pin.contract_schema {
+            return Err("fixture schema does not match its package contract".into());
+        }
+        if artifact.artifact_id() != fixture.artifact_id {
+            return Err("fixture artifact_id differs from its asset manifest".into());
+        }
+        Ok(())
+    })();
+
+    match fixture.class.as_str() {
+        "valid" => {
+            if fixture.expected_disposition != "accepted" {
+                return Err(format!(
+                    "valid NQ contract fixture {} has a non-accepted expected disposition",
+                    fixture.id
+                ));
+            }
+            evaluation.map_err(|error| {
+                format!(
+                    "Nightshift rejected valid NQ contract fixture {}: {error}",
+                    fixture.id
+                )
+            })
+        }
+        "hostile" => {
+            if !fixture.expected_disposition.starts_with("rejected_") {
+                return Err(format!(
+                    "hostile NQ contract fixture {} lacks a rejected expected disposition",
+                    fixture.id
+                ));
+            }
+            match evaluation {
+                Ok(()) => Err(format!(
+                    "Nightshift accepted hostile NQ contract fixture {}",
+                    fixture.id
+                )),
+                Err(_) => Ok(()),
+            }
+        }
+        _ => unreachable!("fixture class was validated above"),
+    }
 }
 
 fn parse_payload_manifest(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
@@ -698,6 +815,9 @@ mod tests {
 
     const POSITIVE: &[u8] =
         include_bytes!("../tests/fixtures/nq_diagnostic_execution/positive.json");
+    const HOSTILE: &[u8] = include_bytes!(
+        "../tests/fixtures/nq_diagnostic_execution/hostile_projection_collision_match.json"
+    );
 
     fn sha(bytes: &[u8]) -> String {
         format!("sha256:{:x}", Sha256::digest(bytes))
@@ -723,7 +843,7 @@ mod tests {
         write(&asset_root.join("fixtures/valid/positive.json"), POSITIVE);
         let artifact: DiagnosticExecutionV1 = serde_json::from_slice(POSITIVE).unwrap();
         let static_manifest = serde_json::to_vec_pretty(&serde_json::json!({
-            "schema": NQ_CONTRACT_ASSET_SCHEMA,
+            "schema": NQ_CONTRACT_ASSET_SCHEMA_V1,
             "digest_basis": "SHA-256 of exact file bytes",
             "documentation": {
                 "path": "README.md",
@@ -851,5 +971,85 @@ mod tests {
             serde_json::from_slice(&fs::read(source).unwrap()).unwrap();
         value["inputs"][0]["invented_authority"] = serde_json::json!(true);
         assert!(serde_json::from_value::<NqSourceManifest>(value).is_err());
+    }
+
+    #[test]
+    fn contract_version_selects_its_exact_qualified_asset_namespace() {
+        let digest = sha(b"manifest");
+        let mut pin = NqPackagePin {
+            repository_identity: "nq-ng".into(),
+            commit: "a".repeat(40),
+            release_identity: "nq-ng:test-package".into(),
+            contract_schema: NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA.into(),
+            asset_root: "share/nq/diagnostic-contract-v2".into(),
+            asset_manifest_path: "share/nq/diagnostic-contract-v2/manifest.json".into(),
+            asset_manifest_sha256: digest.clone(),
+            payload_manifest_path: "share/nq/MANIFEST.sha256".into(),
+            payload_manifest_sha256: digest,
+        };
+        validate_package_pin(&pin).unwrap();
+
+        pin.asset_root = "share/nq/diagnostic-contract".into();
+        pin.asset_manifest_path = "share/nq/diagnostic-contract/manifest.json".into();
+        assert!(validate_package_pin(&pin)
+            .unwrap_err()
+            .contains("qualified NQ diagnostic-contract layout"));
+    }
+
+    #[test]
+    fn package_fixture_gate_requires_valid_acceptance_and_hostile_rejection() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("package");
+        write(
+            &root.join("share/nq/diagnostic-contract/fixtures/positive.json"),
+            POSITIVE,
+        );
+        write(
+            &root.join("share/nq/diagnostic-contract/fixtures/hostile.json"),
+            HOSTILE,
+        );
+        let positive: DiagnosticExecutionV1 = serde_json::from_slice(POSITIVE).unwrap();
+        let hostile: DiagnosticExecutionV1 = serde_json::from_slice(HOSTILE).unwrap();
+        let pin = NqPackagePin {
+            repository_identity: "nq-ng".into(),
+            commit: "a".repeat(40),
+            release_identity: "nq-ng:test-package".into(),
+            contract_schema: NQ_DIAGNOSTIC_EXECUTION_SCHEMA.into(),
+            asset_root: "share/nq/diagnostic-contract".into(),
+            asset_manifest_path: "share/nq/diagnostic-contract/manifest.json".into(),
+            asset_manifest_sha256: sha(b"manifest"),
+            payload_manifest_path: "share/nq/MANIFEST.sha256".into(),
+            payload_manifest_sha256: sha(b"payload"),
+        };
+        let mut fixture = ContractAssetFixture {
+            id: "positive".into(),
+            class: "valid".into(),
+            path: "fixtures/positive.json".into(),
+            sha256: sha(POSITIVE),
+            artifact_id: positive.artifact_id,
+            expected_disposition: "accepted".into(),
+            expected_error: None,
+        };
+        verify_contract_fixture(&root, &pin, &fixture).unwrap();
+
+        fixture.class = "hostile".into();
+        fixture.expected_disposition = "rejected_semantic_invariant".into();
+        fixture.expected_error = Some("must reject".into());
+        assert!(verify_contract_fixture(&root, &pin, &fixture)
+            .unwrap_err()
+            .contains("accepted hostile"));
+
+        fixture.id = "hostile".into();
+        fixture.path = "fixtures/hostile.json".into();
+        fixture.sha256 = sha(HOSTILE);
+        fixture.artifact_id = hostile.artifact_id;
+        verify_contract_fixture(&root, &pin, &fixture).unwrap();
+
+        fixture.class = "valid".into();
+        fixture.expected_disposition = "accepted".into();
+        fixture.expected_error = None;
+        assert!(verify_contract_fixture(&root, &pin, &fixture)
+            .unwrap_err()
+            .contains("rejected valid"));
     }
 }

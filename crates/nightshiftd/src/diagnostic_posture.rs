@@ -12,12 +12,23 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::diagnostic_execution_v2::{
+    AcquisitionInterval, DiagnosticClaim, DiagnosticExecution, DiagnosticInputFailureTrace,
+    DiagnosticOutcome,
+};
+
 pub const NQ_DIAGNOSTIC_EXECUTION_SCHEMA: &str = "nq.diagnostic_execution.v1";
-pub const POSTURE_POLICY_SCHEMA: &str = "nightshift.diagnostic_posture_policy.v1";
-pub const INPUTS_SCHEMA: &str = "nightshift.diagnostic_inputs.v1";
-pub const RECURRENCE_SCHEMA: &str = "nightshift.recurrence_evidence.v1";
-pub const POSTURE_SCHEMA: &str = "nightshift.operational_posture.v1";
-pub const OPERATOR_PROJECTION_SCHEMA: &str = "nightshift.operator_projection.v1";
+pub const POSTURE_POLICY_SCHEMA_V1: &str = "nightshift.diagnostic_posture_policy.v1";
+pub const POSTURE_POLICY_SCHEMA_V2: &str = "nightshift.diagnostic_posture_policy.v2";
+pub const POSTURE_POLICY_SCHEMA: &str = POSTURE_POLICY_SCHEMA_V2;
+pub const INPUTS_SCHEMA_V1: &str = "nightshift.diagnostic_inputs.v1";
+pub const INPUTS_SCHEMA_V2: &str = "nightshift.diagnostic_inputs.v2";
+pub const INPUTS_SCHEMA: &str = INPUTS_SCHEMA_V2;
+pub const RECURRENCE_SCHEMA_V1: &str = "nightshift.recurrence_evidence.v1";
+pub const RECURRENCE_SCHEMA_V2: &str = "nightshift.recurrence_evidence.v2";
+pub const RECURRENCE_SCHEMA: &str = RECURRENCE_SCHEMA_V2;
+pub const POSTURE_SCHEMA: &str = "nightshift.operational_posture.v2";
+pub const OPERATOR_PROJECTION_SCHEMA: &str = "nightshift.operator_projection.v2";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DiagnosticExecutionSchema {
@@ -947,6 +958,39 @@ fn validate_interval(interval: &AcquisitionIntervalV1, name: &str) -> Result<(),
     Ok(())
 }
 
+fn validate_projection_interval(interval: &AcquisitionInterval, name: &str) -> Result<(), String> {
+    match interval {
+        AcquisitionInterval::V1(value) => validate_interval(value, name),
+        AcquisitionInterval::V2(value) => {
+            validate_semantic_identity(&value.clock, &format!("{name}.clock"))?;
+            let start = parse_nq_time(&value.started_at, &format!("{name}.started_at"))?;
+            let end = parse_nq_time(&value.ended_at, &format!("{name}.ended_at"))?;
+            if start > end {
+                return Err(format!("{name} ends before it starts"));
+            }
+            match &value.qualification {
+                crate::diagnostic_execution_v2::ClockQualificationV2::Bounded {
+                    maximum_error_ms,
+                    basis,
+                } => {
+                    checked_milliseconds(
+                        *maximum_error_ms,
+                        &format!("{name}.qualification.maximum_error_ms"),
+                    )?;
+                    validate_semantic_identity(basis, &format!("{name}.qualification.basis"))
+                }
+                crate::diagnostic_execution_v2::ClockQualificationV2::Unqualified {
+                    code,
+                    detail,
+                } => {
+                    require_token(&format!("{name}.qualification.code"), code)?;
+                    require_token(&format!("{name}.qualification.detail"), detail)
+                }
+            }
+        }
+    }
+}
+
 fn require_token(field: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         Err(format!("{field} is empty"))
@@ -1076,6 +1120,8 @@ pub struct ContractBinding {
     pub producer_cohort: SemanticIdentityV1,
     pub question: SemanticIdentityV1,
     pub profile: SemanticIdentityV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_semantic_id: Option<String>,
     pub vantage: SemanticIdentityV1,
     pub state_model: SemanticIdentityV1,
     pub evaluator: SemanticIdentityV1,
@@ -1095,18 +1141,19 @@ impl ContractBinding {
         }
     }
 
-    fn matches(&self, artifact: &DiagnosticExecutionV1) -> bool {
-        self.producer_node_id == artifact.producer.node_id
-            && self.producer_build == artifact.producer.build
-            && self.producer_cohort == artifact.producer.cohort
-            && self.question == artifact.question
-            && self.profile == artifact.profile
-            && self.vantage == artifact.vantage
-            && self.state_model == artifact.state_model
-            && self.evaluator == artifact.evaluator
-            && self.threshold_policy == artifact.threshold_policy
-            && self.projection == artifact.projection
-            && self.subject == artifact.subject
+    fn matches(&self, artifact: &DiagnosticExecution) -> bool {
+        self.producer_node_id == artifact.producer().node_id
+            && self.producer_build == artifact.producer().build
+            && self.producer_cohort == artifact.producer().cohort
+            && self.question == *artifact.question()
+            && self.profile == *artifact.profile()
+            && self.profile_semantic_id.as_deref() == artifact.profile_semantic_id()
+            && self.vantage == *artifact.vantage()
+            && self.state_model == *artifact.state_model()
+            && self.evaluator == *artifact.evaluator()
+            && self.threshold_policy == *artifact.threshold_policy()
+            && self.projection == *artifact.projection()
+            && self.subject == *artifact.subject()
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -1123,6 +1170,9 @@ impl ContractBinding {
             ("binding.subject.scope", &self.subject.scope),
         ] {
             validate_semantic_identity(identity, name)?;
+        }
+        if let Some(profile_semantic_id) = &self.profile_semantic_id {
+            validate_digest(profile_semantic_id, "binding.profile_semantic_id")?;
         }
         validate_projection(&self.projection)?;
         require_token("binding.subject.id", &self.subject.id)?;
@@ -1167,9 +1217,12 @@ impl PosturePolicy {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != POSTURE_POLICY_SCHEMA {
+        if !matches!(
+            self.schema.as_str(),
+            POSTURE_POLICY_SCHEMA_V1 | POSTURE_POLICY_SCHEMA_V2
+        ) {
             return Err(format!(
-                "policy schema must be {POSTURE_POLICY_SCHEMA}, got {}",
+                "policy schema must be {POSTURE_POLICY_SCHEMA_V1} or {POSTURE_POLICY_SCHEMA_V2}, got {}",
                 self.schema
             ));
         }
@@ -1191,6 +1244,14 @@ impl PosturePolicy {
         let mut previous_key: Option<DiagnosticKey> = None;
         for entry in &self.inventory {
             entry.binding.validate()?;
+            if self.schema == POSTURE_POLICY_SCHEMA_V1
+                && entry.binding.profile_semantic_id.is_some()
+            {
+                return Err(
+                    "diagnostic_posture_policy.v1 cannot bind a v2 profile semantic identity"
+                        .into(),
+                );
+            }
             if entry.binding.subject != self.subject {
                 return Err(format!(
                     "inventory entry {:?} does not bind the policy subject",
@@ -1243,13 +1304,9 @@ impl PosturePolicy {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DiagnosticInputStatus {
-    Delivered {
-        artifact: Box<DiagnosticExecutionV1>,
-    },
+    Delivered { artifact: Box<DiagnosticExecution> },
     NoResponse,
-    AcquisitionFailed {
-        reason: String,
-    },
+    AcquisitionFailed { reason: String },
     NotConfigured,
 }
 
@@ -1274,16 +1331,24 @@ impl DiagnosticInputs {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != INPUTS_SCHEMA {
+        if !matches!(self.schema.as_str(), INPUTS_SCHEMA_V1 | INPUTS_SCHEMA_V2) {
             return Err(format!(
-                "inputs schema must be {INPUTS_SCHEMA}, got {}",
+                "inputs schema must be {INPUTS_SCHEMA_V1} or {INPUTS_SCHEMA_V2}, got {}",
                 self.schema
             ));
         }
         for input in &self.inputs {
             input.key.validate("input.key")?;
             match &input.status {
-                DiagnosticInputStatus::Delivered { artifact } => artifact.validate()?,
+                DiagnosticInputStatus::Delivered { artifact } => {
+                    artifact.validate()?;
+                    if self.schema == INPUTS_SCHEMA_V1
+                        && artifact.schema_name()
+                            != crate::diagnostic_posture::NQ_DIAGNOSTIC_EXECUTION_SCHEMA
+                    {
+                        return Err("diagnostic_inputs.v1 cannot carry an NQ v2 artifact".into());
+                    }
+                }
                 DiagnosticInputStatus::AcquisitionFailed { reason } => {
                     require_token("input.acquisition_failed.reason", reason)?;
                 }
@@ -1302,6 +1367,7 @@ impl DiagnosticInputs {
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
     Current,
+    ClockUnqualified,
     FutureDated,
     Stale,
     StateMismatch,
@@ -1331,6 +1397,7 @@ pub enum OperatorStatus {
     CoverageMissing,
     Unknown,
     NotApplicable,
+    ClockUnqualified,
     Stale,
     FutureDated,
     StateMismatch,
@@ -1346,18 +1413,78 @@ pub enum OperatorStatus {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_semantic_id: Option<String>,
     pub artifact_id: String,
     pub request_id: String,
     pub run_id: String,
-    pub attempt_interval: AcquisitionIntervalV1,
+    pub attempt_interval: AcquisitionInterval,
     pub key: DiagnosticKey,
     pub claim_id: Option<String>,
-    pub claim: Option<ClaimV1>,
-    pub dependency_acquisitions: Vec<AcquisitionIntervalV1>,
+    pub claim: Option<DiagnosticClaim>,
+    pub dependency_acquisitions: Vec<AcquisitionInterval>,
 }
 
 impl ArtifactRef {
+    fn effective_contract_schema(&self) -> Result<&'static str, String> {
+        let inferred = self.attempt_interval.schema_name();
+        if self
+            .dependency_acquisitions
+            .iter()
+            .any(|interval| interval.schema_name() != inferred)
+            || self
+                .claim
+                .as_ref()
+                .is_some_and(|claim| claim.schema_name() != inferred)
+        {
+            return Err(
+                "artifact reference mixes fields from incompatible NQ contract schemas".into(),
+            );
+        }
+        if let Some(declared) = &self.contract_schema {
+            if declared != inferred {
+                return Err(
+                    "artifact reference contract_schema does not match its typed fields".into(),
+                );
+            }
+        } else if inferred != NQ_DIAGNOSTIC_EXECUTION_SCHEMA {
+            return Err(
+                "v2 artifact reference requires an explicit contract_schema binding".into(),
+            );
+        }
+        match (inferred, self.profile_semantic_id.as_deref()) {
+            (NQ_DIAGNOSTIC_EXECUTION_SCHEMA, None) => {}
+            (crate::diagnostic_execution_v2::NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA, Some(value)) => {
+                validate_digest(value, "artifact.profile_semantic_id")?;
+            }
+            (NQ_DIAGNOSTIC_EXECUTION_SCHEMA, Some(_)) => {
+                return Err(
+                    "v1 artifact reference cannot carry a v2 profile semantic identity".into(),
+                );
+            }
+            (crate::diagnostic_execution_v2::NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA, None) => {
+                return Err(
+                    "v2 artifact reference requires the exact profile semantic identity".into(),
+                );
+            }
+            _ => unreachable!("artifact reference schema is closed"),
+        }
+        Ok(inferred)
+    }
+
     fn validate(&self) -> Result<(), String> {
+        if let Some(schema) = &self.contract_schema {
+            if !matches!(
+                schema.as_str(),
+                NQ_DIAGNOSTIC_EXECUTION_SCHEMA
+                    | crate::diagnostic_execution_v2::NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA
+            ) {
+                return Err("artifact reference carries an unknown NQ contract schema".into());
+            }
+        }
+        self.effective_contract_schema()?;
         validate_digest(&self.artifact_id, "artifact.artifact_id")?;
         require_token("artifact.request_id", &self.request_id)?;
         require_token("artifact.run_id", &self.run_id)?;
@@ -1369,15 +1496,35 @@ impl ArtifactRef {
         {
             return Err("artifact.claim_id is empty".into());
         }
-        if self.claim.as_ref().map(|claim| &claim.claim_id) != self.claim_id.as_ref() {
+        if self.claim.as_ref().map(DiagnosticClaim::claim_id) != self.claim_id.as_deref() {
             return Err("artifact claim and claim_id differ".into());
         }
-        validate_interval(&self.attempt_interval, "artifact.attempt_interval")?;
+        validate_projection_interval(&self.attempt_interval, "artifact.attempt_interval")?;
         for interval in &self.dependency_acquisitions {
-            validate_interval(interval, "artifact.dependency_acquisition")?;
+            validate_projection_interval(interval, "artifact.dependency_acquisition")?;
         }
         Ok(())
     }
+}
+
+fn artifact_refs_match(expected: &ArtifactRef, actual: &ArtifactRef) -> bool {
+    if expected == actual {
+        return true;
+    }
+    let (Ok(expected_schema), Ok(actual_schema)) = (
+        expected.effective_contract_schema(),
+        actual.effective_contract_schema(),
+    ) else {
+        return false;
+    };
+    if expected_schema != actual_schema {
+        return false;
+    }
+    let mut expected = expected.clone();
+    let mut actual = actual.clone();
+    expected.contract_schema = Some(expected_schema.to_owned());
+    actual.contract_schema = Some(actual_schema.to_owned());
+    expected == actual
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1387,9 +1534,11 @@ pub struct NqClaimTrace {
     pub evaluator: SemanticIdentityV1,
     pub threshold_policy: SemanticIdentityV1,
     pub projection: ProjectionV1,
-    pub primary_claim: Option<ClaimV1>,
+    pub primary_claim: Option<DiagnosticClaim>,
     pub primary_state_bindings: Vec<StateBindingV1>,
-    pub outcome: OutcomeV1,
+    pub outcome: DiagnosticOutcome,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_failures: Vec<DiagnosticInputFailureTrace>,
     pub limitations: Vec<LimitationV1>,
     pub nonclaims: Vec<String>,
 }
@@ -1406,49 +1555,39 @@ pub struct EntryAssessment {
     pub reason: String,
 }
 
-fn artifact_ref(artifact: &DiagnosticExecutionV1) -> ArtifactRef {
-    let claim = artifact.primary_claim_id.as_deref().and_then(|claim_id| {
-        artifact
-            .claims
-            .iter()
-            .find(|claim| claim.claim_id == claim_id)
-    });
+fn artifact_ref(artifact: &DiagnosticExecution) -> ArtifactRef {
+    let claim = artifact
+        .primary_claim_id()
+        .and_then(|claim_id| artifact.claim(claim_id));
     let dependency_acquisitions =
-        dependency_acquisitions(artifact, claim).unwrap_or_else(|_| Vec::new());
+        dependency_acquisitions(artifact, claim.as_ref()).unwrap_or_else(|_| Vec::new());
     ArtifactRef {
-        artifact_id: artifact.artifact_id.clone(),
-        request_id: artifact.request_id.clone(),
-        run_id: artifact.run_id.clone(),
-        attempt_interval: artifact.attempt_interval.clone(),
-        key: DiagnosticKey {
-            question_id: artifact.question.id.clone(),
-            subject_id: artifact.subject.id.clone(),
-            profile_id: artifact.profile.id.clone(),
-            vantage_id: artifact.vantage.id.clone(),
-        },
-        claim_id: claim.map(|claim| claim.claim_id.clone()),
-        claim: claim.cloned(),
+        contract_schema: Some(artifact.schema_name().into()),
+        profile_semantic_id: artifact.profile_semantic_id().map(ToOwned::to_owned),
+        artifact_id: artifact.artifact_id().to_owned(),
+        request_id: artifact.request_id().to_owned(),
+        run_id: artifact.run_id().to_owned(),
+        attempt_interval: artifact.attempt_interval(),
+        key: artifact.key(),
+        claim_id: claim.as_ref().map(|claim| claim.claim_id().to_owned()),
+        claim,
         dependency_acquisitions,
     }
 }
 
-fn nq_claim_trace(artifact: &DiagnosticExecutionV1) -> NqClaimTrace {
-    let primary_claim = artifact.primary_claim_id.as_deref().and_then(|claim_id| {
-        artifact
-            .claims
-            .iter()
-            .find(|claim| claim.claim_id == claim_id)
-            .cloned()
-    });
+fn nq_claim_trace(artifact: &DiagnosticExecution) -> NqClaimTrace {
+    let primary_claim = artifact
+        .primary_claim_id()
+        .and_then(|claim_id| artifact.claim(claim_id));
     let primary_state_bindings = primary_claim
         .as_ref()
         .map(|claim| {
             claim
-                .state_binding_ids
+                .state_binding_ids()
                 .iter()
                 .filter_map(|binding_id| {
                     artifact
-                        .state_bindings
+                        .state_bindings()
                         .iter()
                         .find(|binding| binding.binding_id == *binding_id)
                         .cloned()
@@ -1457,34 +1596,35 @@ fn nq_claim_trace(artifact: &DiagnosticExecutionV1) -> NqClaimTrace {
         })
         .unwrap_or_default();
     NqClaimTrace {
-        artifact_id: artifact.artifact_id.clone(),
-        evaluator: artifact.evaluator.clone(),
-        threshold_policy: artifact.threshold_policy.clone(),
-        projection: artifact.projection.clone(),
+        artifact_id: artifact.artifact_id().to_owned(),
+        evaluator: artifact.evaluator().clone(),
+        threshold_policy: artifact.threshold_policy().clone(),
+        projection: artifact.projection().clone(),
         primary_claim,
         primary_state_bindings,
-        outcome: artifact.outcome.clone(),
-        limitations: artifact.limitations.clone(),
-        nonclaims: artifact.nonclaims.clone(),
+        outcome: artifact.outcome(),
+        input_failures: artifact.input_failure_traces(),
+        limitations: artifact.limitations().to_vec(),
+        nonclaims: artifact.nonclaims().to_vec(),
     }
 }
 
-fn status_from_artifact(artifact: &DiagnosticExecutionV1) -> OperatorStatus {
-    match artifact.outcome.derivation {
+fn status_from_artifact(artifact: &DiagnosticExecution) -> OperatorStatus {
+    match artifact.outcome_derivation() {
         DerivationV1::Partial => OperatorStatus::PartialEvidence,
         DerivationV1::Refused => OperatorStatus::Refused,
         DerivationV1::Unsupported => OperatorStatus::Unsupported,
-        DerivationV1::Completed => match artifact.outcome.coherence {
+        DerivationV1::Completed => match artifact.outcome_coherence() {
             CoherenceV1::Contradictory => OperatorStatus::Contradictory,
             CoherenceV1::PairwiseOnly => OperatorStatus::PairwiseOnly,
             CoherenceV1::StateIncompatible => OperatorStatus::StateIncompatible,
             CoherenceV1::Insufficient | CoherenceV1::NotEvaluated => {
                 OperatorStatus::InsufficientCoherence
             }
-            CoherenceV1::JointlyEstablished => match artifact.outcome.coverage {
+            CoherenceV1::JointlyEstablished => match artifact.outcome_coverage() {
                 CoverageV1::Partial => OperatorStatus::CoverageNarrowed,
                 CoverageV1::Missing => OperatorStatus::CoverageMissing,
-                CoverageV1::Complete => match artifact.outcome.condition {
+                CoverageV1::Complete => match artifact.outcome_condition() {
                     ConditionV1::Present => OperatorStatus::ConditionPresent,
                     ConditionV1::Clean => OperatorStatus::Clean,
                     ConditionV1::ExplicitlyAbsent => OperatorStatus::ExplicitlyAbsent,
@@ -1496,13 +1636,13 @@ fn status_from_artifact(artifact: &DiagnosticExecutionV1) -> OperatorStatus {
     }
 }
 
-fn primary_claim_for<'a>(
+fn primary_claim_for(
     entry: &InventoryEntry,
-    artifact: &'a DiagnosticExecutionV1,
-) -> Result<Option<&'a ClaimV1>, String> {
-    let Some(primary_claim_id) = artifact.primary_claim_id.as_deref() else {
+    artifact: &DiagnosticExecution,
+) -> Result<Option<DiagnosticClaim>, String> {
+    let Some(primary_claim_id) = artifact.primary_claim_id() else {
         return if matches!(
-            artifact.outcome.derivation,
+            artifact.outcome_derivation(),
             DerivationV1::Refused | DerivationV1::Unsupported
         ) {
             Ok(None)
@@ -1516,14 +1656,10 @@ fn primary_claim_for<'a>(
             entry.binding.claim_id
         ));
     }
-    let mut claims = artifact
-        .claims
-        .iter()
-        .filter(|claim| claim.claim_id == primary_claim_id);
-    let claim = claims
-        .next()
+    let claim = artifact
+        .claim(primary_claim_id)
         .ok_or_else(|| "primary claim is absent from the exported claim surface".to_string())?;
-    if claims.next().is_some() {
+    if artifact.claim_count(primary_claim_id) > 1 {
         Err("primary claim is duplicated".into())
     } else {
         Ok(Some(claim))
@@ -1531,39 +1667,48 @@ fn primary_claim_for<'a>(
 }
 
 fn dependency_acquisitions(
-    artifact: &DiagnosticExecutionV1,
-    claim: Option<&ClaimV1>,
-) -> Result<Vec<AcquisitionIntervalV1>, String> {
+    artifact: &DiagnosticExecution,
+    claim: Option<&DiagnosticClaim>,
+) -> Result<Vec<AcquisitionInterval>, String> {
     let Some(claim) = claim else {
         return Ok(Vec::new());
     };
-    let received: BTreeMap<_, _> = artifact
-        .inputs
-        .received
-        .iter()
-        .map(|input| (input.input_id.as_str(), input))
-        .collect();
-    let mut intervals = Vec::with_capacity(claim.dependency_input_ids.len());
-    for input_id in &claim.dependency_input_ids {
-        let input = received
-            .get(input_id.as_str())
+    let mut intervals = Vec::with_capacity(claim.dependency_input_ids().len());
+    for input_id in claim.dependency_input_ids() {
+        let interval = artifact
+            .received_acquisition(input_id)
             .ok_or_else(|| format!("primary claim dependency {input_id} has no received input"))?;
-        intervals.push(input.acquisition.clone());
+        intervals.push(interval);
+    }
+    for refusal_id in claim.dependency_refusal_ids() {
+        let interval = artifact.refusal_acquisition(refusal_id).ok_or_else(|| {
+            format!("primary claim dependency {refusal_id} has no refused-input acquisition")
+        })?;
+        intervals.push(interval);
+    }
+    for failure_id in claim.dependency_failure_ids() {
+        if let Some(interval) = artifact.failure_acquisition(failure_id) {
+            intervals.push(interval);
+        } else if !artifact.has_failure_id(failure_id) {
+            return Err(format!(
+                "primary claim dependency {failure_id} has no failed input"
+            ));
+        }
     }
     Ok(intervals)
 }
 
 fn claim_state_bindings(
-    artifact: &DiagnosticExecutionV1,
-    claim: &ClaimV1,
+    artifact: &DiagnosticExecution,
+    claim: &DiagnosticClaim,
 ) -> Option<BTreeSet<(String, String)>> {
     let by_id: BTreeMap<_, _> = artifact
-        .state_bindings
+        .state_bindings()
         .iter()
         .map(|binding| (binding.binding_id.as_str(), binding))
         .collect();
     claim
-        .state_binding_ids
+        .state_binding_ids()
         .iter()
         .map(|id| {
             by_id
@@ -1584,7 +1729,7 @@ fn expected_state_bindings(entry: &InventoryEntry) -> BTreeSet<(String, String)>
 fn assess_delivered(
     entry: &InventoryEntry,
     evaluated_at: DateTime<Utc>,
-    artifact: &DiagnosticExecutionV1,
+    artifact: &DiagnosticExecution,
 ) -> EntryAssessment {
     let key = entry.binding.key();
     let reference = Some(artifact_ref(artifact));
@@ -1603,7 +1748,7 @@ fn assess_delivered(
             }
         }
     };
-    let intervals = match dependency_acquisitions(artifact, claim) {
+    let intervals = match dependency_acquisitions(artifact, claim.as_ref()) {
         Ok(intervals) => intervals,
         Err(reason) => {
             return EntryAssessment {
@@ -1630,7 +1775,7 @@ fn assess_delivered(
                     .into(),
         };
     }
-    if let Some(claim) = claim {
+    if let Some(claim) = &claim {
         let Some(actual_states) = claim_state_bindings(artifact, claim) else {
             return EntryAssessment {
                 key,
@@ -1655,11 +1800,11 @@ fn assess_delivered(
         }
     }
     let attempt_fallback;
-    let freshness_intervals: &[AcquisitionIntervalV1] = if intervals.is_empty() {
+    let freshness_intervals: &[AcquisitionInterval] = if intervals.is_empty() {
         // Missing/refused/unsupported/unknown testimony has no source interval
         // that Nightshift may invent. Its attributable NQ attempt may still
         // age as an operational result, while the row remains non-clean.
-        attempt_fallback = vec![artifact.attempt_interval.clone()];
+        attempt_fallback = vec![artifact.attempt_interval()];
         &attempt_fallback
     } else {
         &intervals
@@ -1677,20 +1822,61 @@ fn assess_delivered(
         Ok(value) => value,
         Err(reason) => return invalid_time(reason),
     };
-    for interval in freshness_intervals {
-        let start = match parse_nq_time(&interval.started_at, "dependency.acquisition.started_at") {
-            Ok(value) => value,
-            Err(reason) => return invalid_time(reason),
+    if artifact.v1_has_unqualified_clock_limitation() {
+        return EntryAssessment {
+            key,
+            requirement: entry.requirement,
+            standing: Standing::ClockUnqualified,
+            status: clock_unqualified_status(artifact),
+            artifact: reference,
+            nq_trace: trace,
+            reason: "NQ v1 explicitly reports absolute clock quality as unqualified".into(),
         };
-        let end = match parse_nq_time(&interval.ended_at, "dependency.acquisition.ended_at") {
-            Ok(value) => value,
-            Err(reason) => return invalid_time(reason),
-        };
-        let uncertainty =
-            match checked_milliseconds(interval.clock_uncertainty_ms, "clock uncertainty") {
-                Ok(value) => value,
-                Err(reason) => return invalid_time(reason),
+    }
+    for interval in std::iter::once(artifact.attempt_interval()).chain(intervals.iter().cloned()) {
+        if let Some((code, detail)) = interval.unqualified_reason() {
+            return EntryAssessment {
+                key,
+                requirement: entry.requirement,
+                standing: Standing::ClockUnqualified,
+                status: clock_unqualified_status(artifact),
+                artifact: reference,
+                nq_trace: trace,
+                reason: format!(
+                    "a verdict-relevant NQ or dependency clock is unqualified ({code}): {detail}"
+                ),
             };
+        }
+    }
+    if artifact.schema_name() == crate::diagnostic_execution_v2::NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA {
+        return EntryAssessment {
+            key,
+            requirement: entry.requirement,
+            standing: Standing::ClockUnqualified,
+            status: clock_unqualified_status(artifact),
+            artifact: reference,
+            nq_trace: trace,
+            reason: "the Nightshift evaluation instant has no identified, qualified clock or admitted comparison relation; v2 source freshness is not established"
+                .into(),
+        };
+    }
+    for interval in freshness_intervals {
+        let start = match parse_nq_time(interval.started_at(), "dependency.acquisition.started_at")
+        {
+            Ok(value) => value,
+            Err(reason) => return invalid_time(reason),
+        };
+        let end = match parse_nq_time(interval.ended_at(), "dependency.acquisition.ended_at") {
+            Ok(value) => value,
+            Err(reason) => return invalid_time(reason),
+        };
+        let maximum_error_ms = interval
+            .maximum_error_ms()
+            .expect("unqualified verdict-relevant intervals were rejected above");
+        let uncertainty = match checked_milliseconds(maximum_error_ms, "clock maximum error") {
+            Ok(value) => value,
+            Err(reason) => return invalid_time(reason),
+        };
         let latest = match end.checked_add_signed(uncertainty) {
             Some(value) => value,
             None => return invalid_time("clock-uncertainty addition overflow".into()),
@@ -1735,6 +1921,18 @@ fn assess_delivered(
         artifact: reference,
         nq_trace: trace,
         reason: "exact binding and current-applicability checks passed".into(),
+    }
+}
+
+fn clock_unqualified_status(artifact: &DiagnosticExecution) -> OperatorStatus {
+    match status_from_artifact(artifact) {
+        status @ (OperatorStatus::Refused
+        | OperatorStatus::Unsupported
+        | OperatorStatus::PartialEvidence
+        | OperatorStatus::Contradictory
+        | OperatorStatus::StateIncompatible
+        | OperatorStatus::InsufficientCoherence) => status,
+        _ => OperatorStatus::ClockUnqualified,
     }
 }
 
@@ -1921,9 +2119,12 @@ impl RecurrenceEvidence {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != RECURRENCE_SCHEMA {
+        if !matches!(
+            self.schema.as_str(),
+            RECURRENCE_SCHEMA_V1 | RECURRENCE_SCHEMA_V2
+        ) {
             return Err(format!(
-                "recurrence schema must be {RECURRENCE_SCHEMA}, got {}",
+                "recurrence schema must be {RECURRENCE_SCHEMA_V1} or {RECURRENCE_SCHEMA_V2}, got {}",
                 self.schema
             ));
         }
@@ -1956,6 +2157,27 @@ impl RecurrenceEvidence {
                     let started = parse_time(&attempt.started_at, "attempt.started_at")?;
                     let completed = parse_time(completed_at, "completed_at")?;
                     artifact.validate()?;
+                    if self.schema == RECURRENCE_SCHEMA_V1 {
+                        if artifact.contract_schema.is_some()
+                            || artifact.profile_semantic_id.is_some()
+                        {
+                            return Err(
+                                "recurrence_evidence.v1 cannot carry v2 artifact-reference fields"
+                                    .into(),
+                            );
+                        }
+                        if !matches!(&artifact.attempt_interval, AcquisitionInterval::V1(_))
+                            || artifact
+                                .dependency_acquisitions
+                                .iter()
+                                .any(|interval| !matches!(interval, AcquisitionInterval::V1(_)))
+                        {
+                            return Err(
+                                "recurrence_evidence.v1 cannot carry v2 acquisition intervals"
+                                    .into(),
+                            );
+                        }
+                    }
                     let budget_end = started.checked_add_signed(budget).ok_or_else(|| {
                         "recurrence attempt budget arithmetic overflow".to_string()
                     })?;
@@ -1971,19 +2193,26 @@ impl RecurrenceEvidence {
                                 .into(),
                         );
                     }
-                    let nq_attempt_start = parse_nq_time(
-                        &artifact.attempt_interval.started_at,
-                        "artifact.attempt_interval.started_at",
-                    )?;
-                    let nq_attempt_end = parse_nq_time(
-                        &artifact.attempt_interval.ended_at,
-                        "artifact.attempt_interval.ended_at",
-                    )?;
-                    if nq_attempt_start < started || nq_attempt_end > completed {
-                        return Err(
-                            "NQ attempt interval falls outside the bound Nightshift invocation"
-                                .into(),
-                        );
+                    if matches!(&artifact.attempt_interval, AcquisitionInterval::V1(_)) {
+                        // Preserve the frozen v1 recurrence rule. V2 makes the
+                        // NQ clock and its qualification explicit, while this
+                        // Nightshift v2 carrier does not yet qualify its own
+                        // invocation clock. Comparing those wall-clock values
+                        // would silently invent a cross-clock relation.
+                        let nq_attempt_start = parse_nq_time(
+                            artifact.attempt_interval.started_at(),
+                            "artifact.attempt_interval.started_at",
+                        )?;
+                        let nq_attempt_end = parse_nq_time(
+                            artifact.attempt_interval.ended_at(),
+                            "artifact.attempt_interval.ended_at",
+                        )?;
+                        if nq_attempt_start < started || nq_attempt_end > completed {
+                            return Err(
+                                "NQ attempt interval falls outside the bound Nightshift invocation"
+                                    .into(),
+                            );
+                        }
                     }
                 }
                 RunSlotEvidence::Active { attempt } => {
@@ -2201,7 +2430,8 @@ fn assess_recurrence_record(
                 || completed > evaluated_at
                 || completed > budget_end
                 || artifact.key != record.key
-                || expected_artifact != Some(artifact)
+                || !expected_artifact
+                    .is_some_and(|expected| artifact_refs_match(expected, artifact))
             {
                 return (
                     RecurrenceStanding::Invalid,
@@ -2427,7 +2657,7 @@ fn input_trace(input: &DiagnosticInput) -> InputTrace {
         DiagnosticInputStatus::Delivered { artifact } => InputTrace {
             key: input.key.clone(),
             receiver_status: "delivered".into(),
-            artifact_id: Some(artifact.artifact_id.clone()),
+            artifact_id: Some(artifact.artifact_id().to_owned()),
         },
         DiagnosticInputStatus::NoResponse => InputTrace {
             key: input.key.clone(),
@@ -2475,9 +2705,9 @@ pub struct OperationalPosture {
 pub fn posture_evaluator_identity() -> SemanticIdentityV1 {
     SemanticIdentityV1 {
         id: "nightshift.operational_posture_evaluator".into(),
-        version: "1".into(),
-        // sha256("nightshift.operational_posture_evaluator.v1")
-        digest: "sha256:ec4f3699dd0f5b04e6f1fb5d2b2c4cf66b3ce495625f710f4ad38b28f74bcf33".into(),
+        version: "2".into(),
+        // sha256("nightshift.operational_posture_evaluator.v2")
+        digest: "sha256:493c4bd1e728e139f3e6a34732dc1728e6c868947cc55d7277aedefe23e99e4c".into(),
     }
 }
 
@@ -2646,8 +2876,8 @@ pub fn evaluate_posture(
     let condition = if assessments.iter().any(|assessment| {
         assessment.standing == Standing::Current
             && assessment.nq_trace.as_ref().is_some_and(|trace| {
-                trace.outcome.derivation == DerivationV1::Completed
-                    && trace.outcome.condition == ConditionV1::Present
+                trace.outcome.derivation() == DerivationV1::Completed
+                    && trace.outcome.condition() == ConditionV1::Present
             })
     }) {
         ConditionAxis::ConditionPresent
@@ -2670,7 +2900,7 @@ pub fn evaluate_posture(
             assessment
                 .nq_trace
                 .as_ref()
-                .map(|trace| trace.outcome.coverage)
+                .map(|trace| trace.outcome.coverage())
         })
         .collect();
     let coverage = if current_mandatory_coverage.len() == mandatory.len()
@@ -2755,7 +2985,7 @@ pub fn render_text(posture: &OperationalPosture) -> String {
     ));
     output.push_str(&format!(
         "source_generation: {}\n",
-        projection.source_generation
+        escaped_inline(&projection.source_generation)
     ));
     output.push_str(&format!(
         "evaluated_at: {}\n",
@@ -2770,43 +3000,63 @@ pub fn render_text(posture: &OperationalPosture) -> String {
     for slot in &projection.slots {
         let item = &slot.item;
         output.push_str(&format!(
-            "diagnostic: {}/{}/{}/{} status={:?} requirement={:?} visibility={:?}\n",
-            item.key.question_id,
-            item.key.subject_id,
-            item.key.profile_id,
-            item.key.vantage_id,
+            "diagnostic: {}/{}/{}/{} standing={:?} status={:?} requirement={:?} visibility={:?}\n",
+            escaped_inline(&item.key.question_id),
+            escaped_inline(&item.key.subject_id),
+            escaped_inline(&item.key.profile_id),
+            escaped_inline(&item.key.vantage_id),
+            item.standing,
             item.status,
             item.requirement,
             slot.visibility
         ));
-        output.push_str(&format!("  reason: {}\n", item.reason));
+        output.push_str(&format!("  reason: {}\n", escaped_inline(&item.reason)));
         if let Some(artifact) = &item.artifact {
             output.push_str(&format!(
-                "  source: artifact={} request={} run={} claim={}\n",
+                "  source: contract={} profile_semantic={} artifact={} request={} run={} claim={}\n",
+                escaped_inline(
+                    artifact
+                        .contract_schema
+                        .as_deref()
+                        .unwrap_or(NQ_DIAGNOSTIC_EXECUTION_SCHEMA)
+                ),
+                escaped_inline(artifact.profile_semantic_id.as_deref().unwrap_or("n/a")),
                 artifact.artifact_id,
-                artifact.request_id,
-                artifact.run_id,
-                artifact.claim_id.as_deref().unwrap_or("none")
+                escaped_inline(&artifact.request_id),
+                escaped_inline(&artifact.run_id),
+                escaped_inline(artifact.claim_id.as_deref().unwrap_or("none"))
             ));
         }
         if let Some(trace) = &item.nq_trace {
             output.push_str(&format!(
                 "  nq_outcome: derivation={:?} condition={:?} coherence={:?} coverage={:?}\n",
-                trace.outcome.derivation,
-                trace.outcome.condition,
-                trace.outcome.coherence,
-                trace.outcome.coverage
+                trace.outcome.derivation(),
+                trace.outcome.condition(),
+                trace.outcome.coherence(),
+                trace.outcome.coverage()
             ));
-            if let Some(refusal) = &trace.outcome.refusal {
+            if let Some((code, reason)) = trace.outcome.refusal_display() {
                 output.push_str(&format!(
                     "  nq_refusal: code={} reason={}\n",
-                    refusal.code, refusal.reason
+                    escaped_inline(&code),
+                    escaped_inline(&reason)
+                ));
+            }
+            for failure in &trace.input_failures {
+                output.push_str(&format!(
+                    "  nq_input_failure: id={} expectation={} kind={:?} detail={}\n",
+                    escaped_inline(&failure.failure_id),
+                    escaped_inline(&failure.expectation_id),
+                    failure.kind,
+                    escaped_inline(&failure.detail)
                 ));
             }
             for binding in &trace.primary_state_bindings {
                 output.push_str(&format!(
                     "  state_binding: {} {}={}\n",
-                    binding.binding_id, binding.kind, binding.value
+                    escaped_inline(&binding.binding_id),
+                    escaped_inline(&binding.kind),
+                    escaped_inline(&binding.value)
                 ));
             }
         }
@@ -2814,15 +3064,18 @@ pub fn render_text(posture: &OperationalPosture) -> String {
     for recurrence in &projection.recurrence {
         output.push_str(&format!(
             "recurrence_slot: {}/{}/{}/{} standing={:?} requirement={:?} slot={}\n",
-            recurrence.key.question_id,
-            recurrence.key.subject_id,
-            recurrence.key.profile_id,
-            recurrence.key.vantage_id,
+            escaped_inline(&recurrence.key.question_id),
+            escaped_inline(&recurrence.key.subject_id),
+            escaped_inline(&recurrence.key.profile_id),
+            escaped_inline(&recurrence.key.vantage_id),
             recurrence.standing,
             recurrence.requirement,
-            recurrence.slot_id.as_deref().unwrap_or("none")
+            escaped_inline(recurrence.slot_id.as_deref().unwrap_or("none"))
         ));
-        output.push_str(&format!("  reason: {}\n", recurrence.reason));
+        output.push_str(&format!(
+            "  reason: {}\n",
+            escaped_inline(&recurrence.reason)
+        ));
     }
     if !posture.unexpected_inputs.is_empty() {
         output.push_str("unexpected_inputs:\n");
@@ -2834,6 +3087,11 @@ pub fn render_text(posture: &OperationalPosture) -> String {
         }
     }
     output
+}
+
+fn escaped_inline(value: &str) -> String {
+    let encoded = serde_json::to_string(value).expect("operator text value is serializable");
+    encoded[1..encoded.len() - 1].to_owned()
 }
 
 #[cfg(test)]
@@ -2964,6 +3222,173 @@ mod tests {
         artifact
     }
 
+    fn v2_artifact(
+        qualification: crate::diagnostic_execution_v2::ClockQualificationV2,
+    ) -> crate::diagnostic_execution_v2::DiagnosticExecutionV2 {
+        use crate::diagnostic_execution_v2::{
+            AcquisitionIntervalV2, ClaimV2, DiagnosticExecutionSchemaV2, InputAccountingV2,
+            OutcomeV2, ReceivedInputV2,
+        };
+
+        let v1 = base_artifact();
+        let attempt_interval = AcquisitionIntervalV2 {
+            started_at: v1.attempt_interval.started_at.clone(),
+            ended_at: v1.attempt_interval.ended_at.clone(),
+            clock: v1.execution_clock.clone(),
+            qualification: qualification.clone(),
+        };
+        let received = v1.inputs.received[0].clone();
+        let claim = v1.claims[0].clone();
+        let mut artifact = crate::diagnostic_execution_v2::DiagnosticExecutionV2 {
+            schema: DiagnosticExecutionSchemaV2::V2,
+            artifact_id: String::new(),
+            canonicalization: v1.canonicalization,
+            producer: v1.producer,
+            request_id: v1.request_id,
+            run_id: v1.run_id,
+            question: v1.question,
+            subject: v1.subject,
+            profile: v1.profile,
+            profile_semantic_id: digest('a'),
+            vantage: v1.vantage,
+            state_model: v1.state_model,
+            evaluator: v1.evaluator,
+            threshold_policy: v1.threshold_policy,
+            projection: v1.projection,
+            execution_clock: v1.execution_clock.clone(),
+            started_at: v1.started_at,
+            completed_at: v1.completed_at,
+            attempt_interval,
+            inputs: InputAccountingV2 {
+                selection_rule: v1.inputs.selection_rule,
+                expected: v1.inputs.expected,
+                received: vec![ReceivedInputV2 {
+                    input_id: received.input_id,
+                    expectation_id: received.expectation_id,
+                    provider_intake_id: "provider-intake:1".into(),
+                    raw_artifact_id: received.raw_artifact_id,
+                    capture_mode: received.capture_mode,
+                    capture_policy: received.capture_policy,
+                    availability_at_derivation: received.availability_at_derivation,
+                    acquisition: AcquisitionIntervalV2 {
+                        started_at: received.acquisition.started_at,
+                        ended_at: received.acquisition.ended_at,
+                        clock: v1.execution_clock.clone(),
+                        qualification,
+                    },
+                    received_at: received.received_at,
+                }],
+                admitted: v1.inputs.admitted,
+                refused: vec![],
+                failed: vec![],
+                excluded: v1.inputs.excluded,
+                selected: v1.inputs.selected,
+            },
+            state_bindings: v1.state_bindings,
+            claims: vec![ClaimV2 {
+                claim_id: claim.claim_id,
+                proposition: claim.proposition,
+                status: claim.status,
+                condition_effect: claim.condition_effect,
+                dependency_input_ids: claim.dependency_input_ids,
+                dependency_refusal_ids: vec![],
+                dependency_failure_ids: vec![],
+                state_binding_ids: claim.state_binding_ids,
+                required_distinctions: claim.required_distinctions,
+                limitations: claim.limitations,
+                nonclaims: claim.nonclaims,
+            }],
+            primary_claim_id: v1.primary_claim_id,
+            outcome: OutcomeV2 {
+                derivation: v1.outcome.derivation,
+                condition: v1.outcome.condition,
+                coherence: v1.outcome.coherence,
+                coverage: v1.outcome.coverage,
+                summary: v1.outcome.summary,
+                refusals: vec![],
+                unsupported: vec![],
+            },
+            limitations: v1.limitations,
+            nonclaims: v1.nonclaims,
+        };
+        artifact.artifact_id = computed_object_id(&artifact, "artifact_id").unwrap();
+        artifact.validate().unwrap();
+        artifact
+    }
+
+    fn v2_policy(
+        artifact: &crate::diagnostic_execution_v2::DiagnosticExecutionV2,
+    ) -> PosturePolicy {
+        let mut policy = PosturePolicy {
+            schema: POSTURE_POLICY_SCHEMA.into(),
+            policy_id: String::new(),
+            generation: "generation:v2".into(),
+            subject: artifact.subject.clone(),
+            role: semantic("nightshift-role:host", 'b'),
+            delivery_required: false,
+            inventory: vec![InventoryEntry {
+                binding: ContractBinding {
+                    producer_node_id: artifact.producer.node_id.clone(),
+                    producer_build: artifact.producer.build.clone(),
+                    producer_cohort: artifact.producer.cohort.clone(),
+                    question: artifact.question.clone(),
+                    profile: artifact.profile.clone(),
+                    profile_semantic_id: Some(artifact.profile_semantic_id.clone()),
+                    vantage: artifact.vantage.clone(),
+                    state_model: artifact.state_model.clone(),
+                    evaluator: artifact.evaluator.clone(),
+                    threshold_policy: artifact.threshold_policy.clone(),
+                    projection: artifact.projection.clone(),
+                    subject: artifact.subject.clone(),
+                    claim_id: "claim:storage".into(),
+                },
+                requirement: Requirement::Mandatory,
+                required_state_bindings: vec![RequiredStateBinding {
+                    kind: "boot_epoch".into(),
+                    value: "boot:1".into(),
+                }],
+                max_age_seconds: 120,
+            }],
+        };
+        policy.policy_id = policy.computed_policy_id().unwrap();
+        policy
+    }
+
+    fn delivered_v2(
+        artifact: crate::diagnostic_execution_v2::DiagnosticExecutionV2,
+    ) -> DiagnosticInputs {
+        let key = DiagnosticKey {
+            question_id: artifact.question.id.clone(),
+            subject_id: artifact.subject.id.clone(),
+            profile_id: artifact.profile.id.clone(),
+            vantage_id: artifact.vantage.id.clone(),
+        };
+        let mut inputs = DiagnosticInputs {
+            schema: INPUTS_SCHEMA.into(),
+            inputs_id: String::new(),
+            inputs: vec![DiagnosticInput {
+                key,
+                status: DiagnosticInputStatus::Delivered {
+                    artifact: Box::new(DiagnosticExecution::V2(artifact)),
+                },
+            }],
+        };
+        reseal_inputs(&mut inputs);
+        inputs
+    }
+
+    fn empty_recurrence() -> RecurrenceEvidence {
+        let mut recurrence = RecurrenceEvidence {
+            schema: RECURRENCE_SCHEMA.into(),
+            recurrence_id: String::new(),
+            obligations: vec![],
+            records: vec![],
+            delivery: DeliveryStanding::NotRequired,
+        };
+        reseal_recurrence(&mut recurrence);
+        recurrence
+    }
+
     fn seal_artifact(artifact: &mut DiagnosticExecutionV1) {
         artifact.artifact_id.clear();
         let mut value = serde_json::to_value(&*artifact).unwrap();
@@ -2995,6 +3420,7 @@ mod tests {
                     producer_cohort: artifact.producer.cohort.clone(),
                     question: artifact.question.clone(),
                     profile: artifact.profile.clone(),
+                    profile_semantic_id: None,
                     vantage: artifact.vantage.clone(),
                     state_model: artifact.state_model.clone(),
                     evaluator: artifact.evaluator.clone(),
@@ -3037,7 +3463,7 @@ mod tests {
             inputs: vec![DiagnosticInput {
                 key: key(&artifact),
                 status: DiagnosticInputStatus::Delivered {
-                    artifact: Box::new(artifact),
+                    artifact: Box::new(artifact.into()),
                 },
             }],
         };
@@ -3059,7 +3485,7 @@ mod tests {
             standing_window_seconds: 130,
         };
         let slot = make_run_slot(&policy, &key, 0).unwrap();
-        let artifact_ref = artifact_ref(artifact);
+        let artifact_ref = artifact_ref(&DiagnosticExecution::V1(artifact.clone()));
         let evidence = evidence.unwrap_or_else(|| RunSlotEvidence::Completed {
             attempt: InvocationAttempt {
                 attempt_id: "attempt:1".into(),
@@ -3249,6 +3675,158 @@ mod tests {
     }
 
     #[test]
+    fn explicit_v1_unqualified_clock_limitation_never_becomes_current() {
+        let mut artifact = base_artifact();
+        artifact.limitations = vec![LimitationV1 {
+            kind: LimitationKindV1::Other,
+            code: "absolute_clock_quality_unqualified".into(),
+            detail: "no finite UTC-error bound was established".into(),
+        }];
+        seal_artifact(&mut artifact);
+
+        let result = evaluate_posture(
+            &policy(&artifact),
+            &delivered(artifact.clone()),
+            &recurrence(&artifact, None),
+            at("2026-07-27T12:00:30Z"),
+        )
+        .unwrap();
+
+        assert_eq!(result.assessments[0].standing, Standing::ClockUnqualified);
+        assert_eq!(
+            result.assessments[0].status,
+            OperatorStatus::ClockUnqualified
+        );
+        assert!(!result.current);
+        assert_eq!(result.headline, Headline::Incomplete);
+    }
+
+    #[test]
+    fn bounded_v2_source_clock_cannot_earn_current_against_bare_evaluation_time() {
+        let artifact = v2_artifact(
+            crate::diagnostic_execution_v2::ClockQualificationV2::Bounded {
+                maximum_error_ms: 1,
+                basis: semantic("clock-basis:test", 'c'),
+            },
+        );
+        let result = evaluate_posture(
+            &v2_policy(&artifact),
+            &delivered_v2(artifact),
+            &empty_recurrence(),
+            at("2026-07-27T12:00:30Z"),
+        )
+        .unwrap();
+
+        assert_eq!(result.assessments[0].standing, Standing::ClockUnqualified);
+        assert_eq!(
+            result.assessments[0].status,
+            OperatorStatus::ClockUnqualified
+        );
+        assert!(result.assessments[0]
+            .reason
+            .contains("Nightshift evaluation instant"));
+        assert!(!result.current);
+        assert_eq!(result.headline, Headline::Incomplete);
+    }
+
+    #[test]
+    fn unqualified_v2_source_clock_preserves_the_producer_reason() {
+        let artifact = v2_artifact(
+            crate::diagnostic_execution_v2::ClockQualificationV2::Unqualified {
+                code: "clock_not_qualified".into(),
+                detail: "no bounded source clock error was established".into(),
+            },
+        );
+        let result = evaluate_posture(
+            &v2_policy(&artifact),
+            &delivered_v2(artifact),
+            &empty_recurrence(),
+            at("2026-07-27T12:00:30Z"),
+        )
+        .unwrap();
+
+        assert_eq!(result.assessments[0].standing, Standing::ClockUnqualified);
+        assert!(result.assessments[0].reason.contains("clock_not_qualified"));
+        assert!(result.assessments[0]
+            .reason
+            .contains("no bounded source clock error was established"));
+        assert!(!result.assessments[0]
+            .reason
+            .contains("Nightshift evaluation instant"));
+        assert!(!result.current);
+    }
+
+    #[test]
+    fn v1_receiver_contract_remains_decodable_and_unknown_versions_refuse() {
+        let artifact = base_artifact();
+        let mut legacy_policy = policy(&artifact);
+        legacy_policy.schema = POSTURE_POLICY_SCHEMA_V1.into();
+        reseal_policy(&mut legacy_policy);
+        legacy_policy.validate().unwrap();
+
+        legacy_policy.inventory[0].binding.profile_semantic_id =
+            Some(format!("sha256:{}", "a".repeat(64)));
+        reseal_policy(&mut legacy_policy);
+        assert!(
+            legacy_policy.validate().is_err(),
+            "the v1 policy schema must not acquire a v2-only identity field"
+        );
+
+        let mut legacy_inputs = delivered(artifact.clone());
+        legacy_inputs.schema = INPUTS_SCHEMA_V1.into();
+        reseal_inputs(&mut legacy_inputs);
+        legacy_inputs.validate().unwrap();
+
+        let mut legacy_recurrence = recurrence(&artifact, None);
+        legacy_recurrence.schema = RECURRENCE_SCHEMA_V1.into();
+        {
+            let RunSlotEvidence::Completed {
+                artifact: legacy_ref,
+                ..
+            } = &mut legacy_recurrence.records[0].evidence
+            else {
+                panic!("fixture must contain one completed recurrence");
+            };
+            legacy_ref.contract_schema = None;
+            legacy_ref.profile_semantic_id = None;
+        }
+        reseal_recurrence(&mut legacy_recurrence);
+        legacy_recurrence.validate().unwrap();
+
+        let RunSlotEvidence::Completed {
+            artifact: legacy_ref,
+            ..
+        } = &mut legacy_recurrence.records[0].evidence
+        else {
+            panic!("fixture must contain one completed recurrence");
+        };
+        legacy_ref.contract_schema = Some(NQ_DIAGNOSTIC_EXECUTION_SCHEMA.into());
+        reseal_recurrence(&mut legacy_recurrence);
+        assert!(
+            legacy_recurrence.validate().is_err(),
+            "the v1 recurrence schema must not acquire v2 artifact-reference fields"
+        );
+
+        let result = evaluate_posture(
+            &policy(&artifact),
+            &legacy_inputs,
+            &recurrence(&artifact, None),
+            at("2026-07-27T12:00:30Z"),
+        )
+        .unwrap();
+        assert_eq!(result.assessments[0].standing, Standing::Current);
+
+        let mut unknown_inputs = delivered(artifact.clone());
+        unknown_inputs.schema = "nightshift.diagnostic_inputs.v99".into();
+        reseal_inputs(&mut unknown_inputs);
+        assert!(unknown_inputs.validate().is_err());
+
+        let mut unknown_artifact = serde_json::to_value(&artifact).unwrap();
+        unknown_artifact["schema"] = serde_json::json!("nq.diagnostic_execution.v99");
+        assert!(serde_json::from_value::<DiagnosticExecution>(unknown_artifact).is_err());
+    }
+
+    #[test]
     fn stale_future_and_state_mismatch_remain_distinct() {
         let artifact = base_artifact();
         let stale = evaluate_posture(
@@ -3405,7 +3983,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .outcome
-                .condition,
+                .condition(),
             ConditionV1::Present
         );
         assert_eq!(result.condition, ConditionAxis::ConditionPresent);
@@ -3473,7 +4051,7 @@ mod tests {
                     started_at: "2026-07-27T12:00:00Z".into(),
                 },
                 completed_at: artifact.completed_at.clone(),
-                artifact: Box::new(artifact_ref(&artifact)),
+                artifact: Box::new(artifact_ref(&DiagnosticExecution::V1(artifact.clone()))),
             },
         };
         let historical_slot = make_run_slot(&schedule, &key, 0).unwrap();
@@ -3526,7 +4104,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .attempt_interval,
-            artifact.attempt_interval
+            AcquisitionInterval::V1(artifact.attempt_interval)
         );
     }
 
@@ -3698,5 +4276,13 @@ mod tests {
         let mut receiver = serde_json::to_value(delivered(artifact)).unwrap();
         receiver["inputs"][0]["authority"] = serde_json::json!(true);
         assert!(serde_json::from_value::<DiagnosticInputs>(receiver).is_err());
+    }
+
+    #[test]
+    fn operator_text_escapes_line_breaks_from_bounded_source_strings() {
+        assert_eq!(
+            escaped_inline("unqualified\nheadline: Clean"),
+            "unqualified\\nheadline: Clean"
+        );
     }
 }

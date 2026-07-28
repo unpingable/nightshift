@@ -10,6 +10,7 @@ pub mod bundle;
 pub mod closure;
 pub mod coordination;
 pub mod diagnostic_concordance;
+pub mod diagnostic_execution_v2;
 pub mod diagnostic_operations;
 pub mod diagnostic_posture;
 pub mod diagnostic_source;
