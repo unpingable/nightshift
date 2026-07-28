@@ -518,7 +518,8 @@ fn evaluate_set(
         matches!(
             member.contribution,
             Contribution::NotContributing {
-                reason: NonContributionReason::IncompatibleRecord,
+                reason: NonContributionReason::IncompatibleRecord
+                    | NonContributionReason::WrongGeneration,
                 ..
             }
         )
@@ -738,26 +739,27 @@ fn evaluate_member(
             ),
         ));
     }
-    if artifact
-        .inputs
-        .failed
-        .iter()
-        .any(|input| input.kind == crate::diagnostic_posture::FailedInputKindV1::NoResponse)
-    {
-        return Ok(base(
-            Some(artifact),
-            not_contributing(
-                NonContributionReason::ProviderNoResponse,
-                "the NQ artifact preserves provider no-response",
-            ),
-        ));
-    }
     if artifact.outcome.derivation == DerivationV1::Unsupported {
         return Ok(base(
             Some(artifact),
             not_contributing(
                 NonContributionReason::Unsupported,
                 "NQ reports the bounded diagnostic as unsupported",
+            ),
+        ));
+    }
+    if artifact.outcome.derivation == DerivationV1::Partial
+        && artifact
+            .inputs
+            .failed
+            .iter()
+            .any(|input| input.kind == crate::diagnostic_posture::FailedInputKindV1::NoResponse)
+    {
+        return Ok(base(
+            Some(artifact),
+            not_contributing(
+                NonContributionReason::ProviderNoResponse,
+                "the partial NQ artifact preserves provider no-response",
             ),
         ));
     }

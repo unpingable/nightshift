@@ -86,6 +86,25 @@ fn wrong_profile(mut artifact: DiagnosticExecutionV1) -> DiagnosticExecutionV1 {
     artifact
 }
 
+fn with_optional_provider_no_response(
+    mut artifact: DiagnosticExecutionV1,
+) -> DiagnosticExecutionV1 {
+    artifact.inputs.expected.push(ExpectedInputV1 {
+        expectation_id: "expected:optional-provider".into(),
+        role: "optional_provider".into(),
+        required: false,
+    });
+    artifact.inputs.failed.push(FailedInputV1 {
+        expectation_id: "expected:optional-provider".into(),
+        failure_id: "failure:optional-provider".into(),
+        kind: FailedInputKindV1::NoResponse,
+        reason: "optional provider did not respond".into(),
+    });
+    artifact.artifact_id = reseal(&artifact, "artifact_id");
+    artifact.validate().unwrap();
+    artifact
+}
+
 fn key_for(
     artifact: &DiagnosticExecutionV1,
     expected_profile: Option<&SemanticIdentityV1>,
@@ -568,6 +587,29 @@ fn v5_provider_no_response_remains_distinct() {
 }
 
 #[test]
+fn completed_result_with_optional_provider_no_response_still_contributes() {
+    let local = at_vantage(parse(POSITIVE), "vantage:a", 'a', 1);
+    let remote =
+        with_optional_provider_no_response(at_vantage(parse(POSITIVE), "vantage:b", 'b', 2));
+    let value = evaluate(
+        &[
+            InputSpec::delivered(local.clone()),
+            InputSpec::delivered(remote.clone()),
+        ],
+        &[local, remote],
+    );
+    assert_eq!(
+        value.cross_vantage_concordance.state,
+        ConcordanceState::Concordant
+    );
+    assert!(value
+        .cross_vantage_concordance
+        .members
+        .iter()
+        .all(|member| matches!(member.contribution, Contribution::Contributing { .. })));
+}
+
+#[test]
 fn v6_nightshift_receiver_silence_remains_distinct() {
     let local = at_vantage(parse(POSITIVE), "vantage:a", 'a', 1);
     let remote = at_vantage(parse(POSITIVE), "vantage:b", 'b', 2);
@@ -713,7 +755,7 @@ fn v8_different_recurrence_generation_is_not_concordance() {
     );
     assert_eq!(
         value.cross_vantage_concordance.state,
-        ConcordanceState::Insufficient
+        ConcordanceState::Uncomparable
     );
     assert_eq!(
         reason_for(&value, "vantage:b"),
