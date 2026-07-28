@@ -1380,7 +1380,7 @@ impl ArtifactRef {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NqClaimTrace {
     pub artifact_id: String,
@@ -1394,7 +1394,7 @@ pub struct NqClaimTrace {
     pub nonclaims: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntryAssessment {
     pub key: DiagnosticKey,
@@ -2106,7 +2106,7 @@ fn expected_occurrence_at(
     Ok(Some(elapsed / policy.cadence_seconds))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecurrenceStanding {
     Current,
@@ -2121,7 +2121,7 @@ pub enum RecurrenceStanding {
     RecordDuplicate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecurrenceAssessment {
     pub key: DiagnosticKey,
@@ -2376,14 +2376,14 @@ fn assess_recurrence_entry(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletenessAxis {
     Complete,
     Incomplete,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConditionAxis {
     Clean,
@@ -2391,7 +2391,7 @@ pub enum ConditionAxis {
     Unresolved,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageAxis {
     Complete,
@@ -2399,14 +2399,14 @@ pub enum CoverageAxis {
     Absent,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecurrenceAxis {
     Current,
     Incomplete,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Headline {
     Clean,
@@ -2414,7 +2414,7 @@ pub enum Headline {
     Incomplete,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputTrace {
     pub key: DiagnosticKey,
@@ -2447,7 +2447,7 @@ fn input_trace(input: &DiagnosticInput) -> InputTrace {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationalPosture {
     pub schema: String,

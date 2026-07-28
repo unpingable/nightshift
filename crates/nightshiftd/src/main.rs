@@ -7,10 +7,14 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use nightshiftd::agenda::Agenda;
 use nightshiftd::attention::{AttentionRow, ReAckDisposition};
+use nightshiftd::diagnostic_concordance::{
+    evaluate_concordance_with_source, render_text as render_concordance_text, ConcordancePolicy,
+};
 use nightshiftd::diagnostic_posture::{
     evaluate_posture, render_text as render_diagnostic_posture_text, DiagnosticInputs,
     PosturePolicy, RecurrenceEvidence,
 };
+use nightshiftd::diagnostic_source::load_diagnostic_sources;
 use nightshiftd::finding::FindingKey;
 use nightshiftd::governor_client::{GovernorClient, JsonRpcGovernorClient};
 use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonPolicySource};
@@ -243,6 +247,37 @@ enum DiagnosticsAction {
 
         /// Immutable RFC3339 evaluation instant. Nightshift never substitutes
         /// wall-clock now for this machine-facing operation.
+        #[arg(long)]
+        evaluated_at: String,
+
+        /// Output format: canonical JSON or operator-oriented text.
+        #[arg(long, value_enum, default_value_t = DiagnosticFormat::Json)]
+        format: DiagnosticFormat,
+    },
+    /// Evaluate the unchanged operational posture plus one explicit,
+    /// package-pinned cross-vantage concordance dimension.
+    PostureConcordance {
+        /// `nightshift.diagnostic_posture_policy.v1` closed inventory.
+        #[arg(long)]
+        policy: PathBuf,
+
+        /// `nightshift.nq_diagnostic_sources.v1` exact source manifest.
+        #[arg(long)]
+        sources: PathBuf,
+
+        /// Extracted NQ release root containing `share/nq/MANIFEST.sha256`.
+        #[arg(long)]
+        nq_package_root: PathBuf,
+
+        /// `nightshift.recurrence_evidence.v1` scheduling and delivery record.
+        #[arg(long)]
+        recurrence: PathBuf,
+
+        /// `nightshift.concordance_policy.v1` explicit comparison set.
+        #[arg(long)]
+        concordance_policy: PathBuf,
+
+        /// Immutable RFC3339 evaluation instant.
         #[arg(long)]
         evaluated_at: String,
 
@@ -534,6 +569,23 @@ fn main() -> anyhow::Result<()> {
                 evaluated_at,
                 format,
             } => diagnostics_posture_cmd(policy, inputs, recurrence, evaluated_at, *format),
+            DiagnosticsAction::PostureConcordance {
+                policy,
+                sources,
+                nq_package_root,
+                recurrence,
+                concordance_policy,
+                evaluated_at,
+                format,
+            } => diagnostics_posture_concordance_cmd(
+                policy,
+                sources,
+                nq_package_root,
+                recurrence,
+                concordance_policy,
+                evaluated_at,
+                *format,
+            ),
         },
         Command::Watchbill { action } => match action {
             WatchbillAction::Run {
@@ -695,6 +747,38 @@ fn diagnostics_posture_cmd(
             std::io::stdout().write_all(&serde_jcs::to_vec(&posture)?)?;
         }
         DiagnosticFormat::Text => print!("{}", render_diagnostic_posture_text(&posture)),
+    }
+    Ok(())
+}
+
+fn diagnostics_posture_concordance_cmd(
+    policy_path: &Path,
+    sources_path: &Path,
+    nq_package_root: &Path,
+    recurrence_path: &Path,
+    concordance_policy_path: &Path,
+    evaluated_at: &str,
+    format: DiagnosticFormat,
+) -> anyhow::Result<()> {
+    let policy: PosturePolicy = read_strict_json(policy_path, "posture policy")?;
+    let imported = load_diagnostic_sources(sources_path, nq_package_root)
+        .map_err(|error| anyhow::anyhow!("NQ source import refused: {error}"))?;
+    let recurrence: RecurrenceEvidence = read_strict_json(recurrence_path, "recurrence evidence")?;
+    let concordance_policy: ConcordancePolicy =
+        read_strict_json(concordance_policy_path, "concordance policy")?;
+    let evaluated_at = chrono::DateTime::parse_from_rfc3339(evaluated_at)
+        .map_err(|error| anyhow::anyhow!("--evaluated-at must be RFC3339: {error}"))?
+        .with_timezone(&chrono::Utc);
+    let posture = evaluate_posture(&policy, &imported.inputs, &recurrence, evaluated_at)
+        .map_err(|error| anyhow::anyhow!("diagnostic posture refused: {error}"))?;
+    let value =
+        evaluate_concordance_with_source(&posture, &concordance_policy, Some(imported.receipt))
+            .map_err(|error| anyhow::anyhow!("diagnostic concordance refused: {error}"))?;
+    match format {
+        DiagnosticFormat::Json => {
+            std::io::stdout().write_all(&serde_jcs::to_vec(&value)?)?;
+        }
+        DiagnosticFormat::Text => print!("{}", render_concordance_text(&value)),
     }
     Ok(())
 }
