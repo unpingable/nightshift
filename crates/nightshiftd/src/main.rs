@@ -1,10 +1,16 @@
 //! Night Shift daemon — `nightshift` CLI entry.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
 use nightshiftd::agenda::Agenda;
+use nightshiftd::attention::{AttentionRow, ReAckDisposition};
+use nightshiftd::diagnostic_posture::{
+    evaluate_posture, render_text as render_diagnostic_posture_text, DiagnosticInputs,
+    PosturePolicy, RecurrenceEvidence,
+};
 use nightshiftd::finding::FindingKey;
 use nightshiftd::governor_client::{GovernorClient, JsonRpcGovernorClient};
 use nightshiftd::horizon_policy::{FixtureHorizonPolicySource, HorizonPolicySource};
@@ -23,7 +29,6 @@ use nightshiftd::pipeline::{
 use nightshiftd::posture::{
     list_postures, load_posture, render_list_row, render_show, PostureFilter,
 };
-use nightshiftd::attention::{AttentionRow, ReAckDisposition};
 use nightshiftd::scheduled::{check_scheduled_idempotency, ScheduledOutcome};
 use nightshiftd::store::{sqlite::SqliteStore, RunTrigger, Store};
 
@@ -169,6 +174,12 @@ impl From<TriggerArg> for RunTrigger {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Read-only NQ-NG diagnostic operations. This surface computes an
+    /// immutable posture; it does not persist, propose, authorize, or execute.
+    Diagnostics {
+        #[command(subcommand)]
+        action: DiagnosticsAction,
+    },
     /// Ops-mode agendas (Watchbill).
     Watchbill {
         #[command(subcommand)]
@@ -211,6 +222,41 @@ enum Command {
         #[command(subcommand)]
         action: AttentionAction,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum DiagnosticsAction {
+    /// Evaluate a closed operational inventory over exact
+    /// `nq.diagnostic_execution.v1` artifacts and recurrence evidence.
+    Posture {
+        /// `nightshift.diagnostic_posture_policy.v1` closed inventory.
+        #[arg(long)]
+        policy: PathBuf,
+
+        /// `nightshift.diagnostic_inputs.v1` receiver-side input records.
+        #[arg(long)]
+        inputs: PathBuf,
+
+        /// `nightshift.recurrence_evidence.v1` scheduling and delivery record.
+        #[arg(long)]
+        recurrence: PathBuf,
+
+        /// Immutable RFC3339 evaluation instant. Nightshift never substitutes
+        /// wall-clock now for this machine-facing operation.
+        #[arg(long)]
+        evaluated_at: String,
+
+        /// Output format: canonical JSON or operator-oriented text.
+        #[arg(long, value_enum, default_value_t = DiagnosticFormat::Json)]
+        format: DiagnosticFormat,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+enum DiagnosticFormat {
+    Json,
+    Text,
 }
 
 #[derive(Subcommand, Debug)]
@@ -480,6 +526,15 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
+        Command::Diagnostics { action } => match action {
+            DiagnosticsAction::Posture {
+                policy,
+                inputs,
+                recurrence,
+                evaluated_at,
+                format,
+            } => diagnostics_posture_cmd(policy, inputs, recurrence, evaluated_at, *format),
+        },
         Command::Watchbill { action } => match action {
             WatchbillAction::Run {
                 agenda_path,
@@ -609,6 +664,39 @@ fn main() -> anyhow::Result<()> {
             action,
         } => attention_cmd(&cli, agenda, finding, operator, action),
     }
+}
+
+fn read_strict_json<T: serde::de::DeserializeOwned>(path: &Path, kind: &str) -> anyhow::Result<T> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| anyhow::anyhow!("read {kind} {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("parse {kind} {}: {error}", path.display()))
+}
+
+fn diagnostics_posture_cmd(
+    policy_path: &Path,
+    inputs_path: &Path,
+    recurrence_path: &Path,
+    evaluated_at: &str,
+    format: DiagnosticFormat,
+) -> anyhow::Result<()> {
+    let policy: PosturePolicy = read_strict_json(policy_path, "posture policy")?;
+    let inputs: DiagnosticInputs = read_strict_json(inputs_path, "diagnostic inputs")?;
+    let recurrence: RecurrenceEvidence = read_strict_json(recurrence_path, "recurrence evidence")?;
+    let evaluated_at = chrono::DateTime::parse_from_rfc3339(evaluated_at)
+        .map_err(|error| anyhow::anyhow!("--evaluated-at must be RFC3339: {error}"))?
+        .with_timezone(&chrono::Utc);
+    let posture = evaluate_posture(&policy, &inputs, &recurrence, evaluated_at)
+        .map_err(|error| anyhow::anyhow!("diagnostic posture refused: {error}"))?;
+    match format {
+        DiagnosticFormat::Json => {
+            // JCS is the machine contract; the posture id commits the same
+            // object with `posture_id` omitted.
+            std::io::stdout().write_all(&serde_jcs::to_vec(&posture)?)?;
+        }
+        DiagnosticFormat::Text => print!("{}", render_diagnostic_posture_text(&posture)),
+    }
+    Ok(())
 }
 
 fn attention_cmd(

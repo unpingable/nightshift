@@ -109,6 +109,21 @@ Three cases must remain separate:
 See [NQ as a reliance source](../NQ_RELIANCE_SOURCE.md) for the complete
 mapping and ownership boundary.
 
+## Derive a bounded diagnostic posture
+
+The Stage 6 foundation exposes a separate pure, read-only posture operation
+over exact canonical NQ diagnostic artifacts, a closed Nightshift inventory,
+and recurrence evidence. It does not open the Nightshift store or invoke NQ:
+
+```sh
+./target/release/nightshift diagnostics posture --help
+```
+
+The checked-in
+[diagnostic-posture v1 specimen](examples/diagnostic-posture-v1/README.md)
+runs both a current positive posture and a later recurrence-loss posture from
+the same immutable NQ bytes.
+
 ## Inspect local records
 
 ```sh

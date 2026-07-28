@@ -10,6 +10,7 @@ pub mod bundle;
 pub mod closure;
 pub mod coordination;
 pub mod diagnostic_operations;
+pub mod diagnostic_posture;
 pub mod drill;
 pub mod errors;
 pub mod finding;
