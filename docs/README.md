@@ -2,24 +2,30 @@
 
 Where to start, by what you're trying to do.
 
+The current runtime correspondence record is
+[`CANONICAL_RUNTIME_C1.md`](CANONICAL_RUNTIME_C1.md). It defines the sole
+non-authorizing observation-cycle path and records the closed legacy cutover.
+Documents that describe Watchbill, Wicket/WLP, MVP-A, classic Governor,
+authority levels, or prose actions are historical.
+
 ## I want to use Night Shift
 
-Start with the [operator quick start](operator/README.md) for the current
-source-build contract, a live read-only watchbill, and the supported
-receiver-side `nq disposition` CLI. Night Shift is not yet a packaged,
-general-purpose service; the documented operator promise is limited to
-those read-only surfaces.
+Start with the [operator quick start](operator/README.md) for the canonical
+`nightshift cycle` build, observation, inspection, and restart surface.
+Nightshift is not yet a packaged or operationally qualified service.
 
 ## I want to understand Night Shift
 
-Start at `architecture/` for current design, then `theory/` for why-it's-this-shape.
+Start with the canonical runtime record, then use `architecture/` and
+`working/` as explicitly historical design context.
 
-- [`architecture/DESIGN.md`](architecture/DESIGN.md) — canonical architecture, three ladders, MVP scope
-- [`architecture/FLOW-tolerability-horizon.md`](architecture/FLOW-tolerability-horizon.md) — A5 verdict flow, NS↔Governor pipe-through
-- [`architecture/SCHEMA-agenda.md`](architecture/SCHEMA-agenda.md) — agenda declaration schema (v0 draft)
-- [`architecture/SCHEMA-bundle.md`](architecture/SCHEMA-bundle.md) — context bundle schema (v0 draft)
-- [`architecture/SCHEMA-packet.md`](architecture/SCHEMA-packet.md) — review packet schema (v0 draft)
-- [`architecture/GAP-reack-doctrine.md`](architecture/GAP-reack-doctrine.md) — re-ack as mini re-triage; six-value disposition enum; nine invariants
+- [`CANONICAL_RUNTIME_C1.md`](CANONICAL_RUNTIME_C1.md) — current runtime contract and production topology
+- [`architecture/DESIGN.md`](architecture/DESIGN.md) — historical pre-C1 architecture and MVP scope
+- [`architecture/FLOW-tolerability-horizon.md`](architecture/FLOW-tolerability-horizon.md) — historical Governor-shaped horizon flow; temporal hold policy survives in the canonical store
+- [`architecture/SCHEMA-agenda.md`](architecture/SCHEMA-agenda.md) — historical agenda draft
+- [`architecture/SCHEMA-bundle.md`](architecture/SCHEMA-bundle.md) — historical context-bundle draft
+- [`architecture/SCHEMA-packet.md`](architecture/SCHEMA-packet.md) — historical review-packet draft
+- [`architecture/GAP-reack-doctrine.md`](architecture/GAP-reack-doctrine.md) — historical re-ack doctrine
 
 Then theory:
 
@@ -27,7 +33,7 @@ Then theory:
 
 ## I'm contributing
 
-Read the architecture set above first. Then:
+Read the canonical runtime record first. Then:
 
 - [`working/gaps/`](working/gaps/) — open design questions and spec-shaped gap records (14 entries)
 - [`working/decisions/`](working/decisions/) — candidate doctrine, working notes, cross-cutting design records, shipped-state ledger
@@ -76,7 +82,7 @@ The detailed Shipped State narrative subsections that already exist in some gap 
 
 ## Subdirectory readmes
 
-- [`operator/README.md`](operator/README.md) — current source-build and read-only CLI quick start.
+- [`operator/README.md`](operator/README.md) — current canonical cycle and inspection quick start.
 
 ## Status vocabulary (gap docs)
 

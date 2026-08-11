@@ -1,5 +1,11 @@
 # Night Shift — Design Document
 
+> **Historical pre-C1 design.** This document does not define the canonical
+> authority or execution path. See
+> [`../CANONICAL_RUNTIME_C1.md`](../CANONICAL_RUNTIME_C1.md). In particular,
+> Wicket/WLP, the classic Governor ladder, and direct run/verify semantics
+> below are not canonical Nightshift responsibilities.
+
 > Deferred agent work with receipts, reconciliation, and governed promotion.
 
 ## Thesis
