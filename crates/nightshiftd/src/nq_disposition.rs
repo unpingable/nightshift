@@ -192,6 +192,13 @@ impl SourceState {
 }
 
 /// A read-only posture proposal. **None of these is an instruction to act.**
+///
+/// This enum states the bounded read-only disposition; it does not diagnose
+/// why that disposition was reached. In particular, distinct integrity,
+/// configuration, and policy failures may all produce `Stop`. Consumers that
+/// explain or classify the cause must use the containing [`DispositionRecord`]
+/// and retain its `source_state`, `source`, and `reasons` rather than treating
+/// this enum as a causal summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
@@ -225,6 +232,8 @@ pub struct DispositionRecord {
     pub expected_consumer_profile: String,
     pub observed_at: String,
     pub source_state: SourceState,
+    /// Bounded read-only directive, not a diagnosis. Consumers explaining the
+    /// cause must retain this record's source and reasons.
     pub disposition: Disposition,
     pub reasons: Vec<String>,
     /// Present only when NQ testimony was available.

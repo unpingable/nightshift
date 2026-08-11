@@ -1,7 +1,7 @@
 //! Cross-repository conformance for the NQ-NG diagnostic execution contract
 //! and Nightshift's read-only operational-posture foundation.
 
-use std::{collections::BTreeSet, path::PathBuf, process::Command};
+use std::{collections::BTreeSet, process::Command};
 
 use chrono::{DateTime, Utc};
 use nightshiftd::diagnostic_execution_v2::{
@@ -366,30 +366,10 @@ fn recurrence_loss_changes_current_posture_without_mutating_exact_nq_bytes() {
 }
 
 #[test]
-fn machine_cli_consumes_the_same_strict_contract_without_persistence() {
+fn production_cli_exposes_only_the_canonical_cycle_surface() {
     assert_eq!(SPECIMEN_POSITIVE, POSITIVE);
-    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let specimen = repository_root.join("docs/operator/examples/diagnostic-posture-v1");
-    let temp = tempfile::tempdir().unwrap();
-    let store_path = temp.path().join("nightshift.sqlite");
-
     let output = Command::new(env!("CARGO_BIN_EXE_nightshift"))
-        .arg("--store")
-        .arg(&store_path)
-        .args([
-            "diagnostics",
-            "posture",
-            "--policy",
-            specimen.join("policy.json").to_str().unwrap(),
-            "--inputs",
-            specimen.join("inputs.json").to_str().unwrap(),
-            "--recurrence",
-            specimen.join("recurrence.json").to_str().unwrap(),
-            "--evaluated-at",
-            "2026-07-27T20:00:10Z",
-            "--format",
-            "json",
-        ])
+        .arg("--help")
         .output()
         .unwrap();
     assert!(
@@ -397,10 +377,9 @@ fn machine_cli_consumes_the_same_strict_contract_without_persistence() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema"], POSTURE_SCHEMA);
-    assert_eq!(value["headline"], "clean");
-    assert!(value["posture_id"].as_str().unwrap().starts_with("sha256:"));
-    assert_eq!(output.stdout.last(), Some(&b'}'));
-    assert!(!store_path.exists());
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("cycle"));
+    for retired in ["watchbill", "governor", "wicket", "wlp", "drill"] {
+        assert!(!help.to_ascii_lowercase().contains(retired), "{help}");
+    }
 }

@@ -12,6 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::currentness::{delivered_artifact_ids, QualifiedSupportV1, SupportStandingV1};
 use crate::diagnostic_execution_v2::{
     AcquisitionInterval, DiagnosticClaim, DiagnosticExecution, DiagnosticInputFailureTrace,
     DiagnosticOutcome,
@@ -1367,6 +1368,11 @@ impl DiagnosticInputs {
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
     Current,
+    SupportExpired,
+    SupportUnknown,
+    SupportUnsupported,
+    SupportContradictory,
+    SupportBlind,
     ClockUnqualified,
     FutureDated,
     Stale,
@@ -1730,6 +1736,7 @@ fn assess_delivered(
     entry: &InventoryEntry,
     evaluated_at: DateTime<Utc>,
     artifact: &DiagnosticExecution,
+    qualified_support: Option<&QualifiedSupportV1>,
 ) -> EntryAssessment {
     let key = entry.binding.key();
     let reference = Some(artifact_ref(artifact));
@@ -1798,6 +1805,49 @@ fn assess_delivered(
                 reason: "claim state bindings do not exactly match the inventory obligation".into(),
             };
         }
+    }
+    if let Some(support) = qualified_support {
+        let (standing, status, reason) = match support.standing {
+            SupportStandingV1::Current => (
+                Standing::Current,
+                status_from_artifact(artifact),
+                "the exact diagnostic basis has authority-owned present support",
+            ),
+            SupportStandingV1::Expired => (
+                Standing::SupportExpired,
+                OperatorStatus::Stale,
+                "the evidence authority reports support expired",
+            ),
+            SupportStandingV1::Unknown => (
+                Standing::SupportUnknown,
+                OperatorStatus::Unknown,
+                "present support is unknown",
+            ),
+            SupportStandingV1::Unsupported => (
+                Standing::SupportUnsupported,
+                OperatorStatus::Unsupported,
+                "the evidence authority reports the basis unsupported",
+            ),
+            SupportStandingV1::Contradictory => (
+                Standing::SupportContradictory,
+                OperatorStatus::Contradictory,
+                "the evidence authority retains unresolved contradiction custody",
+            ),
+            SupportStandingV1::Blind => (
+                Standing::SupportBlind,
+                OperatorStatus::Unknown,
+                "the evidence authority reports receiver blindness",
+            ),
+        };
+        return EntryAssessment {
+            key,
+            requirement: entry.requirement,
+            standing,
+            status,
+            artifact: reference,
+            nq_trace: trace,
+            reason: format!("{reason} (support {})", support.support_id),
+        };
     }
     let attempt_fallback;
     let freshness_intervals: &[AcquisitionInterval] = if intervals.is_empty() {
@@ -1940,6 +1990,7 @@ fn assess_entry(
     entry: &InventoryEntry,
     evaluated_at: DateTime<Utc>,
     inputs: &[DiagnosticInput],
+    qualified_support: Option<&QualifiedSupportV1>,
 ) -> EntryAssessment {
     let key = entry.binding.key();
     if entry.requirement == Requirement::Excluded {
@@ -1966,7 +2017,7 @@ fn assess_entry(
         },
         [input] => match &input.status {
             DiagnosticInputStatus::Delivered { artifact } => {
-                assess_delivered(entry, evaluated_at, artifact)
+                assess_delivered(entry, evaluated_at, artifact, qualified_support)
             }
             DiagnosticInputStatus::NoResponse => EntryAssessment {
                 key,
@@ -2636,6 +2687,14 @@ pub enum RecurrenceAxis {
     Incomplete,
 }
 
+/// Operator-facing summary of a posture, not a currentness predicate.
+///
+/// This projection is intentionally lossy: `Incomplete` covers both a posture
+/// whose evidence is current but whose required delivery is unqualified and a
+/// posture whose recurrence/evidence is not current. Consumers deciding
+/// currentness must use `OperationalPosture.current` or the retained
+/// completeness, coverage, and recurrence axes. They must not infer it from
+/// this enum alone.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Headline {
@@ -2686,6 +2745,11 @@ pub struct OperationalPosture {
     pub policy: PosturePolicy,
     pub schedule_obligations: Vec<ScheduleObligation>,
     pub input_evidence: DiagnosticInputs,
+    /// Exact authority-owned support result used by the canonical runtime.
+    /// Persisting this field preserves evidence only; it never recreates
+    /// currentness after restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present_support: Option<QualifiedSupportV1>,
     pub recurrence_evidence: RecurrenceEvidence,
     pub evaluated_at: String,
     pub inventory_valid: bool,
@@ -2699,6 +2763,8 @@ pub struct OperationalPosture {
     pub recurrence_axis: RecurrenceAxis,
     pub delivery: DeliveryStanding,
     pub current: bool,
+    /// Lossy operator summary. Use `current` or the retained axes for
+    /// currentness decisions; see [`Headline`].
     pub headline: Headline,
 }
 
@@ -2803,6 +2869,9 @@ pub struct OperatorProjection {
     pub coverage: CoverageAxis,
     pub recurrence_axis: RecurrenceAxis,
     pub delivery: DeliveryStanding,
+    /// Lossy operator summary. This projection intentionally omits a standalone
+    /// `current` flag; currentness is recoverable from the retained
+    /// completeness, coverage, and recurrence axes, not from this field alone.
     pub headline: Headline,
 }
 
@@ -2821,6 +2890,38 @@ pub fn evaluate_posture(
     inputs: &DiagnosticInputs,
     recurrence: &RecurrenceEvidence,
     evaluated_at: DateTime<Utc>,
+) -> Result<OperationalPosture, String> {
+    evaluate_posture_internal(policy, inputs, recurrence, evaluated_at, None)
+}
+
+/// Canonical runtime evaluator. Present support is decided by Pulse (or an
+/// equivalent qualified observation authority), exactly binds the complete NQ
+/// input basis, and replaces every raw producer-time freshness inference.
+pub fn evaluate_posture_with_support(
+    policy: &PosturePolicy,
+    inputs: &DiagnosticInputs,
+    recurrence: &RecurrenceEvidence,
+    evaluated_at: DateTime<Utc>,
+    support: &QualifiedSupportV1,
+) -> Result<OperationalPosture, String> {
+    support.validate_shape()?;
+    let artifact_ids = delivered_artifact_ids(inputs);
+    if support.diagnostic_inputs_id != inputs.inputs_id
+        || support.subject_id != policy.subject.id
+        || support.scope_id != policy.subject.scope.digest
+        || support.artifact_ids != artifact_ids
+    {
+        return Err("qualified support does not exactly bind the complete diagnostic basis".into());
+    }
+    evaluate_posture_internal(policy, inputs, recurrence, evaluated_at, Some(support))
+}
+
+fn evaluate_posture_internal(
+    policy: &PosturePolicy,
+    inputs: &DiagnosticInputs,
+    recurrence: &RecurrenceEvidence,
+    evaluated_at: DateTime<Utc>,
+    qualified_support: Option<&QualifiedSupportV1>,
 ) -> Result<OperationalPosture, String> {
     policy.validate()?;
     inputs.validate()?;
@@ -2841,7 +2942,7 @@ pub fn evaluate_posture(
     let assessments: Vec<_> = policy
         .inventory
         .iter()
-        .map(|entry| assess_entry(entry, evaluated_at, &inputs.inputs))
+        .map(|entry| assess_entry(entry, evaluated_at, &inputs.inputs, qualified_support))
         .collect();
     let recurrence_assessments: Vec<_> = policy
         .inventory
@@ -2951,6 +3052,7 @@ pub fn evaluate_posture(
         policy: policy.clone(),
         schedule_obligations: recurrence.obligations.clone(),
         input_evidence: inputs.clone(),
+        present_support: qualified_support.cloned(),
         recurrence_evidence: recurrence.clone(),
         evaluated_at: evaluated_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
         inventory_valid: true,
@@ -3989,6 +4091,46 @@ mod tests {
         assert_eq!(result.condition, ConditionAxis::ConditionPresent);
         assert_eq!(result.coverage, CoverageAxis::Narrowed);
         assert_eq!(result.headline, Headline::Incomplete);
+    }
+
+    #[test]
+    fn headline_does_not_determine_currentness() {
+        // Current evidence under a delivery-required policy can still have an
+        // Incomplete display headline when delivery was not qualified.
+        let artifact = base_artifact();
+        let mut delivery_required = policy(&artifact);
+        delivery_required.delivery_required = true;
+        reseal_policy(&mut delivery_required);
+        let mut delivery_failed = recurrence(&artifact, None);
+        delivery_failed.delivery = DeliveryStanding::Failed;
+        reseal_recurrence(&mut delivery_failed);
+        let current_but_incomplete = evaluate_posture(
+            &delivery_required,
+            &delivered(artifact.clone()),
+            &delivery_failed,
+            at("2026-07-27T12:00:30Z"),
+        )
+        .unwrap();
+
+        // A missed exact run slot is genuinely non-current and also renders
+        // Incomplete. The shared headline therefore cannot replace the axes.
+        let noncurrent = evaluate_posture(
+            &policy(&artifact),
+            &delivered(artifact.clone()),
+            &recurrence(
+                &artifact,
+                Some(RunSlotEvidence::Missed {
+                    reason: "prior slot remained active".into(),
+                }),
+            ),
+            at("2026-07-27T12:00:30Z"),
+        )
+        .unwrap();
+
+        assert_eq!(current_but_incomplete.headline, Headline::Incomplete);
+        assert_eq!(noncurrent.headline, Headline::Incomplete);
+        assert!(current_but_incomplete.current);
+        assert!(!noncurrent.current);
     }
 
     #[test]

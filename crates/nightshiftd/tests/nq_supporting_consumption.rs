@@ -1,17 +1,14 @@
 //! Supporting-evaluation consumption (2026-07-26 extension).
 //!
 //! NQ owns all supporting-evaluation law. What is under test here is only
-//! Night Shift's side of the contract: supporting paths pass through the
-//! invocation verbatim, disclosed supporting identities survive into the
+//! Night Shift's side of the contract: disclosed supporting identities survive into the
 //! source binding unmodified, the expected consumer profile is an explicit
 //! parameter rather than an ambient assumption, and **missing support (NQ
 //! testimony) never blurs into no response (Night Shift's own observation)**.
 
-use chrono::{TimeZone, Utc};
-use nightshiftd::nq::RelianceInvocation;
 use nightshiftd::nq_disposition::{
-    derive_disposition, Disposition, NqRelianceReceiptDto, SourceState,
-    EXPECTED_CONSUMER_PROFILE, NQ_RELIANCE_RECEIPT_SCHEMA,
+    derive_disposition, Disposition, NqRelianceReceiptDto, SourceState, EXPECTED_CONSUMER_PROFILE,
+    NQ_RELIANCE_RECEIPT_SCHEMA,
 };
 
 const NOW: &str = "2026-07-26T00:00:00Z";
@@ -77,7 +74,11 @@ fn supporting_refs_parse_and_are_preserved_in_order() {
 #[test]
 fn a_receipt_without_supporting_refs_still_parses() {
     // Pre-extension receipts have no supporting_receipts key at all.
-    let mut v = receipt_json(EXPECTED_CONSUMER_PROFILE, "authorized_reliance", serde_json::json!([]));
+    let mut v = receipt_json(
+        EXPECTED_CONSUMER_PROFILE,
+        "authorized_reliance",
+        serde_json::json!([]),
+    );
     v.as_object_mut().unwrap().remove("supporting_receipts");
     let dto = NqRelianceReceiptDto::parse_checked(
         &serde_json::to_vec(&v).unwrap(),
@@ -168,7 +169,12 @@ fn a_binding_without_supporting_refs_serializes_without_the_key() {
         EXPECTED_CONSUMER_PROFILE,
     )
     .unwrap();
-    let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
+    let rec = derive_disposition(
+        &SourceState::Fresh,
+        Some(&dto),
+        NOW,
+        EXPECTED_CONSUMER_PROFILE,
+    );
     let json = serde_json::to_value(&rec).unwrap();
     assert!(json["source"].get("supporting_receipts").is_none());
 }
@@ -215,7 +221,11 @@ fn disposition_id_matches_recomputation_over_the_emitted_record() {
 fn missing_support_and_no_response_never_blur() {
     // NQ *decided* that coverage is insufficient (e.g. required supporting
     // claims absent). That is fresh NQ testimony carrying a refusal.
-    let v = receipt_json(CONTINUITY_PROFILE, "coverage_insufficient", serde_json::json!([]));
+    let v = receipt_json(
+        CONTINUITY_PROFILE,
+        "coverage_insufficient",
+        serde_json::json!([]),
+    );
     let dto =
         NqRelianceReceiptDto::parse_checked(&serde_json::to_vec(&v).unwrap(), CONTINUITY_PROFILE)
             .unwrap();
@@ -241,105 +251,4 @@ fn missing_support_and_no_response_never_blur() {
         .does_not_establish
         .iter()
         .any(|s| s.contains("absence of a response is not evidence")));
-}
-
-// --- the invocation carries supporting paths verbatim ------------------------
-
-fn argv_capturing_nq(dir: &std::path::Path, receipt: &serde_json::Value) -> std::path::PathBuf {
-    let receipt_file = dir.join("canned-receipt.json");
-    std::fs::write(&receipt_file, serde_json::to_vec(receipt).unwrap()).unwrap();
-    let argv_file = dir.join("argv.txt");
-    let script = dir.join("fake-nq.sh");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\ncat {}\n",
-            argv_file.display(),
-            receipt_file.display()
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    script
-}
-
-#[test]
-fn supporting_paths_become_repeated_supporting_args_in_order() {
-    let dir = tempfile::tempdir().unwrap();
-    let receipt = receipt_json(CONTINUITY_PROFILE, "authorized_reliance", supporting_ref());
-    let inv = RelianceInvocation {
-        nq_bin: argv_capturing_nq(dir.path(), &receipt),
-        request: dir.path().join("req.json"),
-        receipt: dir.path().join("rec.json"),
-        evidence: None,
-        profiles: dir.path().join("profiles.json"),
-        supporting: vec![dir.path().join("sup-a.json"), dir.path().join("sup-b.json")],
-        expected_profile: CONTINUITY_PROFILE.to_string(),
-        timeout_seconds: 5,
-        max_age_seconds: 900,
-    };
-    let out = inv.evaluate(Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 10).unwrap());
-    assert!(matches!(out.state, SourceState::Fresh));
-    let argv = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
-    let lines: Vec<&str> = argv.lines().collect();
-    let positions: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| **l == "--supporting")
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(positions.len(), 2);
-    assert!(lines[positions[0] + 1].ends_with("sup-a.json"));
-    assert!(lines[positions[1] + 1].ends_with("sup-b.json"));
-}
-
-#[test]
-fn an_invocation_without_supporting_paths_adds_no_supporting_args() {
-    let dir = tempfile::tempdir().unwrap();
-    let receipt = receipt_json(
-        EXPECTED_CONSUMER_PROFILE,
-        "authorized_reliance",
-        serde_json::json!([]),
-    );
-    let inv = RelianceInvocation {
-        nq_bin: argv_capturing_nq(dir.path(), &receipt),
-        request: dir.path().join("req.json"),
-        receipt: dir.path().join("rec.json"),
-        evidence: None,
-        profiles: dir.path().join("profiles.json"),
-        supporting: vec![],
-        expected_profile: EXPECTED_CONSUMER_PROFILE.to_string(),
-        timeout_seconds: 5,
-        max_age_seconds: 900,
-    };
-    let out = inv.evaluate(Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 10).unwrap());
-    assert!(matches!(out.state, SourceState::Fresh));
-    let argv = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
-    assert!(!argv.contains("--supporting"));
-}
-
-#[test]
-fn the_invocation_refuses_a_receipt_addressed_to_someone_else() {
-    // The fake NQ answers with a receipt for the *continuity* consumer while
-    // the invocation expects the base profile: an integrity observation.
-    let dir = tempfile::tempdir().unwrap();
-    let receipt = receipt_json(CONTINUITY_PROFILE, "authorized_reliance", supporting_ref());
-    let inv = RelianceInvocation {
-        nq_bin: argv_capturing_nq(dir.path(), &receipt),
-        request: dir.path().join("req.json"),
-        receipt: dir.path().join("rec.json"),
-        evidence: None,
-        profiles: dir.path().join("profiles.json"),
-        supporting: vec![],
-        expected_profile: EXPECTED_CONSUMER_PROFILE.to_string(),
-        timeout_seconds: 5,
-        max_age_seconds: 900,
-    };
-    let out = inv.evaluate(Utc.with_ymd_and_hms(2026, 7, 26, 0, 0, 10).unwrap());
-    assert!(matches!(out.state, SourceState::Malformed { .. }));
-    assert!(out.receipt.is_none());
 }

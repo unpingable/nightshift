@@ -19,12 +19,6 @@ pub enum NqContractViolationKind {
 
 #[derive(Debug, Error)]
 pub enum NightShiftError {
-    #[error("agenda not found: {0}")]
-    AgendaNotFound(String),
-
-    #[error("invalid agenda: {0}")]
-    InvalidAgenda(String),
-
     /// A violation of the NQ export/interface contract. Distinct from
     /// `InvalidAgenda`: an NQ refusal arrives in its own stratum rather
     /// than wearing agenda vocabulary (no-vocabulary-laundering). The
@@ -34,46 +28,6 @@ pub enum NightShiftError {
         kind: NqContractViolationKind,
         detail: String,
     },
-
-    #[error("evidence source not allowed: {0}")]
-    EvidenceSourceNotAllowed(String),
-
-    #[error("authority ceiling violated: requested {requested:?} exceeds ceiling {ceiling:?}")]
-    AuthorityCeilingExceeded {
-        requested: String,
-        ceiling: String,
-    },
-
-    #[error("run aborted by coordination preflight: {0}")]
-    PreflightBlocked(String),
-
-    #[error("run not found: {0}")]
-    RunNotFound(String),
-
-    #[error("run already completed: {0} — reconcile is one-shot, start a new capture instead")]
-    RunAlreadyCompleted(String),
-
-    #[error("run has no persisted bundle: {0}")]
-    RunBundleMissing(String),
-
-    #[error("NQ finding inadmissible: finding_key={finding_key}, state={state}, reason={reason}")]
-    NqInadmissible {
-        finding_key: String,
-        state: String,
-        reason: String,
-    },
-
-    #[error("store error: {0}")]
-    Store(String),
-
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("yaml error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
-
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T, E = NightShiftError> = std::result::Result<T, E>;

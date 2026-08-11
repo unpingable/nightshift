@@ -5,11 +5,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Night Shift daemon — deferred agent work with receipts, reconciliation, and governed promotion"
+description = "Nightshift canonical temporal observation and attention runtime"
+autobins = false
 
 [[bin]]
 name = "nightshift"
-path = "src/main.rs"
+path = "src/bin/nightshift.rs"
 
 [lib]
 name = "nightshiftd"
@@ -22,15 +23,10 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_jcs.workspace = true
-serde_yaml.workspace = true
 chrono.workspace = true
 sha2.workspace = true
-hex.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
-# MVP-A Slices 2/3/4 (cross-repo, read-only consumers).
-wicket.workspace = true
-wlp.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true

@@ -66,7 +66,12 @@ fn nq_golden_vectors_addressed_to_this_consumer_map_to_the_expected_posture() {
             .unwrap_or_else(|| panic!("missing fixture {name}"));
         let dto = NqRelianceReceiptDto::parse_checked(bytes, EXPECTED_CONSUMER_PROFILE)
             .unwrap_or_else(|e| panic!("{name} must parse: {e}"));
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
+        let rec = derive_disposition(
+            &SourceState::Fresh,
+            Some(&dto),
+            NOW,
+            EXPECTED_CONSUMER_PROFILE,
+        );
         assert_eq!(rec.disposition, expected, "{name}");
     }
 }
@@ -101,8 +106,14 @@ fn receipts_addressed_to_another_consumer_are_refused_not_reinterpreted() {
 fn no_accepted_vector_yields_an_action_or_capability() {
     let fx = fixtures();
     for name in expected_for_this_consumer().keys() {
-        let dto = NqRelianceReceiptDto::parse_checked(&fx[*name], EXPECTED_CONSUMER_PROFILE).unwrap();
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
+        let dto =
+            NqRelianceReceiptDto::parse_checked(&fx[*name], EXPECTED_CONSUMER_PROFILE).unwrap();
+        let rec = derive_disposition(
+            &SourceState::Fresh,
+            Some(&dto),
+            NOW,
+            EXPECTED_CONSUMER_PROFILE,
+        );
         let text = serde_json::to_string(&rec).unwrap();
         for forbidden in ["\"capability\"", "\"lease\"", "\"execute\"", "\"retry\""] {
             assert!(
@@ -128,8 +139,14 @@ fn carried_facts_survive_every_accepted_vector() {
     ] {
         let raw: serde_json::Value = serde_json::from_slice(&fx[name]).unwrap();
         let source_len = raw[field].as_array().map_or(0, Vec::len);
-        let dto = NqRelianceReceiptDto::parse_checked(&fx[name], EXPECTED_CONSUMER_PROFILE).unwrap();
-        let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, EXPECTED_CONSUMER_PROFILE);
+        let dto =
+            NqRelianceReceiptDto::parse_checked(&fx[name], EXPECTED_CONSUMER_PROFILE).unwrap();
+        let rec = derive_disposition(
+            &SourceState::Fresh,
+            Some(&dto),
+            NOW,
+            EXPECTED_CONSUMER_PROFILE,
+        );
         let carried = serde_json::to_value(rec.source.as_ref().unwrap()).unwrap();
         assert_eq!(
             carried[field].as_array().map_or(0, Vec::len),
@@ -172,8 +189,7 @@ fn the_no_response_case_has_no_nq_fixture_because_it_is_not_an_nq_document() {
 // ---------------------------------------------------------------------------
 
 const CONTINUITY_CONSUMER: &str = "nightshift-readonly-continuity";
-const DOCKET_PRIMARY_SUBJECT: &str =
-    "gwr:ref-continuity:v0:repo-0123456789abcdef0123456789abcdef\
+const DOCKET_PRIMARY_SUBJECT: &str = "gwr:ref-continuity:v0:repo-0123456789abcdef0123456789abcdef\
      #refs/gwr/target@2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b";
 
 /// Receipts addressed to the continuity-gated consumer, and the posture each
@@ -181,12 +197,18 @@ const DOCKET_PRIMARY_SUBJECT: &str =
 /// vocabulary exactly as the base vectors do.
 fn expected_for_continuity_consumer() -> BTreeMap<&'static str, Disposition> {
     BTreeMap::from([
-        ("continuity_gated_authorized", Disposition::ContinueObserving),
+        (
+            "continuity_gated_authorized",
+            Disposition::ContinueObserving,
+        ),
         (
             "continuity_support_missing",
             Disposition::HumanJudgmentRequired,
         ),
-        ("continuity_support_lost", Disposition::HumanJudgmentRequired),
+        (
+            "continuity_support_lost",
+            Disposition::HumanJudgmentRequired,
+        ),
         (
             "continuity_support_stale",
             Disposition::WaitForFreshEvidence,
@@ -235,9 +257,11 @@ fn the_authorized_continuity_vector_disclosure_survives_the_projection() {
     let source_refs = raw["supporting_receipts"].as_array().unwrap();
     assert_eq!(source_refs.len(), 1, "the vector binds one supporting eval");
 
-    let dto =
-        NqRelianceReceiptDto::parse_checked(&fx["continuity_gated_authorized"], CONTINUITY_CONSUMER)
-            .unwrap();
+    let dto = NqRelianceReceiptDto::parse_checked(
+        &fx["continuity_gated_authorized"],
+        CONTINUITY_CONSUMER,
+    )
+    .unwrap();
     let rec = derive_disposition(&SourceState::Fresh, Some(&dto), NOW, CONTINUITY_CONSUMER);
     let carried = &rec.source.as_ref().unwrap().supporting_receipts;
     assert_eq!(carried.len(), 1);
@@ -249,10 +273,8 @@ fn the_authorized_continuity_vector_disclosure_survives_the_projection() {
 #[test]
 fn docket_primary_logical_subject_disclosure_survives_the_projection_unchanged() {
     let fx = fixtures();
-    let raw: serde_json::Value = serde_json::from_slice(
-        &fx["docket_primary_continuity_gated_authorized"],
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_slice(&fx["docket_primary_continuity_gated_authorized"]).unwrap();
     assert_eq!(raw["claim"], "docket_attempt_settled");
     assert_eq!(raw["decision"], "authorized_reliance");
     let raw_support = raw["supporting_receipts"]
