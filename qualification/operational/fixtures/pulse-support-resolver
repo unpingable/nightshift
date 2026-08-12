@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Deterministic present-evidence fixture; this program is not Pulse."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+QUERY_FIELDS = {
+    "schema",
+    "query_id",
+    "observation_cycle_id",
+    "request_nonce",
+    "observation_id",
+    "diagnostic_inputs_id",
+    "subject_id",
+    "scope_id",
+    "artifact_ids",
+}
+MODES = {"current", "expired", "unknown", "unsupported", "contradictory", "blind"}
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def object_id(value: dict[str, Any], field: str) -> str:
+    preimage = dict(value)
+    preimage.pop(field, None)
+    return "sha256:" + hashlib.sha256(canonical_bytes(preimage)).hexdigest()
+
+
+def fail(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 2
+
+
+def main() -> int:
+    try:
+        raw = sys.stdin.buffer.read()
+        query = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        return fail(f"invalid exact support query: {error}")
+    if not isinstance(query, dict) or set(query) != QUERY_FIELDS:
+        return fail("support fixture requires the exact v1 query field set")
+    if query.get("schema") != "nightshift.present_evidence_query.v1":
+        return fail("unsupported support query schema")
+    mode = os.environ.get("NIGHTSHIFT_QUAL_SUPPORT_MODE", "current")
+    if mode not in MODES:
+        return fail(f"unsupported NIGHTSHIFT_QUAL_SUPPORT_MODE: {mode}")
+
+    response: dict[str, Any] = {
+        "schema": "nightshift.qualified_support.v1",
+        "support_id": "",
+        "authority_id": "qualification-fixture-not-pulse",
+        "query_id": query["query_id"],
+        "observation_cycle_id": query["observation_cycle_id"],
+        "request_nonce": query["request_nonce"],
+        "observation_id": query["observation_id"],
+        "diagnostic_inputs_id": query["diagnostic_inputs_id"],
+        "subject_id": query["subject_id"],
+        "scope_id": query["scope_id"],
+        "artifact_ids": query["artifact_ids"],
+        "evaluated_at": {"clock_id": "qualification-pulse-receiver-clock", "tick": 100},
+        "standing": mode,
+    }
+    if mode == "current":
+        response["expiry"] = {"clock_id": "qualification-pulse-receiver-clock", "tick": 101}
+        response["evidence_refs"] = ["sha256:" + "9" * 64]
+    elif mode == "expired":
+        response["expiry"] = {"clock_id": "qualification-pulse-receiver-clock", "tick": 100}
+        response["evidence_refs"] = ["sha256:" + "9" * 64]
+    elif mode == "contradictory":
+        response["contradiction_refs"] = ["sha256:" + "8" * 64]
+    response["support_id"] = object_id(response, "support_id")
+
+    log_directory = os.environ.get("NIGHTSHIFT_QUAL_RESOLVER_LOG_DIR")
+    if log_directory:
+        directory = Path(log_directory)
+        record = {
+            "schema": "nightshift.qualification-support-fixture-invocation.v1",
+            "qualification_status": "not_assessed",
+            "fixture_is_not_pulse": True,
+            "query": query,
+            "response": response,
+        }
+        name = f"invocation-{time.time_ns()}-{os.getpid()}.json"
+        descriptor = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(canonical_bytes(record) + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    sys.stdout.buffer.write(canonical_bytes(response) + b"\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

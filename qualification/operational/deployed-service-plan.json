@@ -1,0 +1,32 @@
+{
+  "schema": "nightshift.operational-plan.v1",
+  "qualification_status": "not_assessed",
+  "environment": "deployed_service",
+  "premises": [
+    "nightshift.pulse_receiver_currentness",
+    "nightshift.deployed_nq_ag_correspondence"
+  ],
+  "preconditions": [
+    "Exact Nightshift, Pulse resolver, stable NQ adapter, and AG adapter identities captured",
+    "Non-production subject/scope and observation sources are allocated",
+    "No unfinished NQ Gen5 C2 store or signer internals are assumed",
+    "Any exact AG work targets a declared non-effecting qualification executor"
+  ],
+  "procedure": [
+    "Run preflight.py --profile deployed-service and preserve its manifest",
+    "Create distinct exact recurrence slots for Pulse current, equality-expired, expired, unknown, blind, and contradictory support",
+    "Capture the exact live support query/response and receiver-owned clock coordinates for each slot",
+    "Restart the Pulse/Nightshift boundary and verify support is unknown until a fresh live response",
+    "For current complete support, invoke the stable NQ diagnostic interface and retain premises, support, coverage, contradictions, refusals, residuals, limitations, subject, scope, and observation identity",
+    "Attempt lossy headline/severity/disposition substitution and capture refusal",
+    "For one deterministic exact-work case, verify Nightshift sends AG only new-occurrence/program/observation/proposal data and consumes only AG status",
+    "Record AG refusal, reconciliation, settled-observation-required, halt, and completion cases without local continuation or direct Docket/executor use",
+    "Seal all exact requests/responses, service identities, configs, logs, and Nightshift replay records"
+  ],
+  "pass_interpretation_owner": "later qualification campaign",
+  "forbidden_shortcuts": [
+    "Calling the deterministic support fixture Pulse",
+    "Binding to unfinished NQ Gen5 C2 runtime internals",
+    "Treating an AG settlement as fresh subject evidence"
+  ]
+}

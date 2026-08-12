@@ -1,0 +1,65 @@
+{
+  "schema": "nightshift.operational-qualification-gates.v1",
+  "qualification_status": "not_assessed",
+  "gates": [
+    {
+      "id": "nightshift.systemd_missed_catch_up",
+      "classification": "requires_trusted_host",
+      "local_proxy": [
+        "canonical recurrence-slot missed/catch-up tests",
+        "multi-process distinct-slot fixture"
+      ],
+      "closure_evidence": "The exact packaged Persistent timer, after a declared missed interval and reboot, creates the expected distinct catch-up observation slot exactly once.",
+      "local_proxy_does_not_establish": "systemd timer manager, boot ordering, journal, or deployed unit behavior"
+    },
+    {
+      "id": "nightshift.timer_restart",
+      "classification": "requires_trusted_host",
+      "local_proxy": [
+        "canonical store restart and live-lease noninheritance tests"
+      ],
+      "closure_evidence": "Restarting the exact timer/service preserves slot history, recreates no live lease or currentness, and schedules the next valid observation cycle without duplication.",
+      "local_proxy_does_not_establish": "systemd restart, daemon supervision, or host boot behavior"
+    },
+    {
+      "id": "nightshift.wall_clock_rollback",
+      "classification": "requires_fault_injection_environment",
+      "local_proxy": [
+        "separate support, recurrence, and horizon clock-type endpoint tests",
+        "unqualified cross-clock refusal tests"
+      ],
+      "closure_evidence": "A controlled host clock rollback cannot recreate a satisfied slot, current diagnostic posture, present support, or effect authority and produces the declared fail-closed recovery/attention behavior.",
+      "local_proxy_does_not_establish": "kernel, RTC, NTP, systemd timer, or deployed clock behavior"
+    },
+    {
+      "id": "nightshift.pulse_receiver_currentness",
+      "classification": "requires_deployed_service",
+      "local_proxy": [
+        "exact present-evidence command-port fixture",
+        "strict expiry-greater-than-evaluation and exact-query-binding tests"
+      ],
+      "closure_evidence": "The deployed Pulse receiver returns an exact cycle-bound support result with current, equality-expired, unknown, blind, and contradictory cases, and restart returns unknown until re-established.",
+      "local_proxy_does_not_establish": "Pulse custody, receiver timing, certificate authenticity, overload, or restart behavior"
+    },
+    {
+      "id": "nightshift.deployed_nq_ag_correspondence",
+      "classification": "requires_deployed_service",
+      "local_proxy": [
+        "complete diagnostic-basis preservation tests",
+        "real ag-loopctl command-adapter development test"
+      ],
+      "closure_evidence": "The deployed stable NQ interface preserves the complete exact basis into posture/proposal, and the deployed AG interface opens and reports only the exact new occurrence with no Nightshift authority fields.",
+      "local_proxy_does_not_establish": "deployed NQ evaluation, AG service identity, service currentness, or operational transport"
+    },
+    {
+      "id": "nightshift.sqlite_filesystem_power_loss",
+      "classification": "requires_fault_injection_environment",
+      "local_proxy": [
+        "canonical store logical crash/reopen/replay tests",
+        "multiprocess_cycle.py"
+      ],
+      "closure_evidence": "Abrupt VM or block-device loss at declared slot/cycle transaction cuts yields one replayable authoritative slot state, no reconstructed currentness, and no duplicate AG occurrence.",
+      "local_proxy_does_not_establish": "filesystem, controller cache, WAL, checkpoint, or physical power-loss durability"
+    }
+  ]
+}

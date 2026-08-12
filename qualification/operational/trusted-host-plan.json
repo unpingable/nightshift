@@ -1,0 +1,31 @@
+{
+  "schema": "nightshift.operational-plan.v1",
+  "qualification_status": "not_assessed",
+  "environment": "trusted_host",
+  "premises": [
+    "nightshift.systemd_missed_catch_up",
+    "nightshift.timer_restart"
+  ],
+  "preconditions": [
+    "Disposable VM or explicitly designated host with PID 1 systemd",
+    "Exact Nightshift binary, unit, timer, configuration, and source identities captured",
+    "Canonical cycle requests are posture-only or use a non-effecting AG fixture",
+    "The host clock is synchronized and not modified by this plan"
+  ],
+  "procedure": [
+    "Run preflight.py --profile trusted-host and save systemd-analyze/systemctl identities",
+    "Install the exact canonical service/timer into the isolated host without legacy units",
+    "Start one on-time slot and capture journal, timer properties, SQLite replay, and cycle identity",
+    "Stop or power off across more than one timer interval, then boot with Persistent=true",
+    "Capture the generated catch-up slot, trigger classification, exact cycle identity, and absence of duplicate attempts",
+    "Restart the service and timer independently during idle and active-cycle boundaries",
+    "Verify prior diagnostic/support bytes remain historical and live leases/currentness are not reconstructed",
+    "Seal unit files, manager properties, monotonic/realtime coordinates, boot IDs, journals, database, and replay output"
+  ],
+  "pass_interpretation_owner": "later qualification campaign",
+  "forbidden_shortcuts": [
+    "Calling deterministic slot tests real systemd evidence",
+    "Using diagnostic generation equality as slot satisfaction",
+    "Allowing a catch-up timer to authorize work"
+  ]
+}

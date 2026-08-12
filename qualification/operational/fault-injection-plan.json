@@ -1,0 +1,47 @@
+{
+  "schema": "nightshift.operational-plan.v1",
+  "qualification_status": "not_assessed",
+  "environment": "fault_injection",
+  "premises": [
+    "nightshift.wall_clock_rollback",
+    "nightshift.sqlite_filesystem_power_loss"
+  ],
+  "preconditions": [
+    "Disposable VM/block image with recorded filesystem, mount, SQLite, kernel, systemd, RTC, and NTP configuration",
+    "External hard-power or block-I/O fault control",
+    "Clock control cannot affect another workload",
+    "Cycles are posture-only or use a non-effecting AG fixture"
+  ],
+  "power_loss_cuts": [
+    "before recurrence-slot claim",
+    "during slot/cycle transaction WAL append",
+    "after slot claim before support query",
+    "after support response before posture transaction",
+    "after exact AG request preparation before AG response",
+    "after AG response before Nightshift reference persistence",
+    "after settlement observation before observation-required persistence"
+  ],
+  "clock_faults": [
+    "wall clock steps backward before nominal due instant",
+    "wall clock steps backward during an active slot",
+    "wall clock steps backward after a completed slot",
+    "RTC/boot time precedes the prior persisted observation",
+    "NTP correction crosses recurrence or horizon equality"
+  ],
+  "procedure": [
+    "Run preflight.py --profile fault-injection and snapshot the pristine image",
+    "Inject exactly one declared storage or clock fault per restored image",
+    "For storage cuts, capture the image before recovery and clone it",
+    "Run SQLite integrity checks and exact cycle replay after recovery",
+    "Verify one authoritative slot, explicit open-cycle classification, no live-lease/currentness reconstruction, and no duplicate AG request",
+    "For clock faults, capture realtime and monotonic coordinates, systemd timer properties, and Nightshift refusal/attention behavior",
+    "Verify old support, diagnostic posture, headline, generation, and slot records do not regain current force",
+    "Seal images or image hashes, fault traces, journals, databases, and replay outputs"
+  ],
+  "pass_interpretation_owner": "later qualification campaign",
+  "forbidden_shortcuts": [
+    "kill -9 represented as power loss",
+    "ordinary restart represented as wall-clock rollback",
+    "fixture currentness represented as Pulse operational evidence"
+  ]
+}
