@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::canonical_store::{
     AgOccurrenceReferenceV1, AgProgramCounterV1, AgRefusalReferenceV1, CanonicalStoreError,
-    ObservationRecordV1, PreparedAgRequestV1, TypedCoarseIntentV1, AG_REFERENCE_SCHEMA_V1,
+    ObservationRecordV1, PreparedAgRequestV1, TypedCoarseIntentV2, AG_REFERENCE_SCHEMA_V1,
     AG_REFUSAL_SCHEMA_V1, PREPARED_AG_REQUEST_SCHEMA_V1,
 };
 
@@ -211,7 +211,7 @@ impl AgOpenOccurrenceRequestV1 {
     pub fn validate_for(
         &self,
         observation: &ObservationRecordV1,
-        intent: &TypedCoarseIntentV1,
+        intent: &TypedCoarseIntentV2,
     ) -> Result<(), String> {
         self.validate()?;
         intent
@@ -225,6 +225,18 @@ impl AgOpenOccurrenceRequestV1 {
             || self.source_intent_id != intent.intent_id
         {
             return Err("AG request does not bind the exact Nightshift basis".into());
+        }
+        // The exact proposal's work must be the AG executable-work identity
+        // the sealed intent derived from the actual executor plan.
+        let proposal_work = exact_object(&self.proposal_input, "proposal_input")?
+            .get("proposal")
+            .and_then(|proposal| proposal.get("work"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "exact proposal work must be a digest".to_string())?;
+        if proposal_work != intent.expected_ag_work {
+            return Err(
+                "AG request proposal work does not bind the intent's expected AG work".into(),
+            );
         }
         Ok(())
     }

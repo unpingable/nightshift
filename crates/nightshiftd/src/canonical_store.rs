@@ -8,7 +8,9 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension as _, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension as _, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -21,7 +23,7 @@ use crate::diagnostic_posture::{Headline, OperationalPosture};
 pub const SLOT_SCHEMA_V1: &str = "nightshift.recurrence_slot.v1";
 pub const CYCLE_SCHEMA_V1: &str = "nightshift.observation_cycle.v1";
 pub const OBSERVATION_RECORD_SCHEMA_V1: &str = "nightshift.observation_record.v1";
-pub const TYPED_INTENT_SCHEMA_V1: &str = "nightshift.typed_coarse_intent.v1";
+pub const TYPED_INTENT_SCHEMA_V2: &str = "nightshift.typed_coarse_intent.v2";
 pub const AG_REFERENCE_SCHEMA_V1: &str = "nightshift.ag_occurrence_reference.v1";
 pub const AG_REFUSAL_SCHEMA_V1: &str = "nightshift.ag_refusal_reference.v1";
 pub const PREPARED_AG_REQUEST_SCHEMA_V1: &str = "nightshift.prepared_ag_request.v1";
@@ -381,6 +383,81 @@ impl ObservationRecordV1 {
     }
 }
 
+/// Observation lineage/domain identity, derived only from persisted canonical
+/// slot data. Per-occurrence fields (`nominal_due_at`, `latest_admissible`,
+/// `occurrence`, `trigger`, `catch_up_of`, `slot_id`) identify individual
+/// slots; they are deliberately not part of the family.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationFamilyKeyV1 {
+    pub policy_id: String,
+    pub configuration_version: String,
+    pub subject_id: String,
+    pub scope_id: String,
+    pub scheduler_clock_id: String,
+}
+
+impl ObservationFamilyKeyV1 {
+    pub fn of_slot(slot: &RecurrenceSlotV1) -> Self {
+        Self {
+            policy_id: slot.policy_id.clone(),
+            configuration_version: slot.configuration_version.clone(),
+            subject_id: slot.subject_id.clone(),
+            scope_id: slot.scope_id.clone(),
+            scheduler_clock_id: slot.scheduler_clock_id.clone(),
+        }
+    }
+}
+
+/// Logical observation order within one family. This is the supersession
+/// order substrate: lexicographic over slot occurrence, the slot's declared
+/// nominal due instant, then exact slot identity. It never uses `updated_at`,
+/// completion order, caller-supplied `evaluated_at`, or process time.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationOrderKeyV1 {
+    pub occurrence: u64,
+    pub nominal_due_at: DateTime<Utc>,
+    pub slot_id: String,
+}
+
+impl ObservationOrderKeyV1 {
+    pub fn of_slot(slot: &RecurrenceSlotV1) -> Self {
+        Self {
+            occurrence: slot.occurrence,
+            nominal_due_at: slot.nominal_due_at,
+            slot_id: slot.slot_id.as_str().to_owned(),
+        }
+    }
+}
+
+pub const OBSERVATION_EXPORT_SCHEMA_V1: &str = "nightshift.observation_export.v1";
+
+/// One persisted cycle carrying the requested observation identity, with its
+/// derived lineage position. Multiple matches are reported, never collapsed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationExportMatchV1 {
+    pub cycle_id: String,
+    pub slot_id: String,
+    pub family: ObservationFamilyKeyV1,
+    pub order_key: ObservationOrderKeyV1,
+    pub family_latest_cycle_id: Option<String>,
+    pub family_latest_order_key: Option<ObservationOrderKeyV1>,
+    pub observation: ObservationRecordV1,
+}
+
+/// Read-only export of every persisted observation with one exact
+/// `observation_id`. Zero, one, or several matches are all faithful results;
+/// ambiguity is preserved for the caller to classify.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationExportV1 {
+    pub schema: String,
+    pub observation_id: String,
+    pub matches: Vec<ObservationExportMatchV1>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttentionClassV1 {
@@ -453,7 +530,7 @@ impl TemporalPostureV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct TypedCoarseIntentV1 {
+pub struct TypedCoarseIntentV2 {
     pub schema: String,
     pub intent_id: String,
     pub workflow_id: String,
@@ -467,11 +544,20 @@ pub struct TypedCoarseIntentV1 {
     pub source_support_id: String,
     pub source_posture_id: String,
     pub immutable_parameters: serde_json::Value,
+    /// Nightshift-domain identity of the immutable compiled payload
+    /// (`sha256(JCS({parameters, schema}))`). Provenance only; it is not the
+    /// AG executable-work identity.
+    pub compiled_work: String,
+    /// The AG/Docket-domain executable-work identity deterministically
+    /// derived from the exact sealed executor plan at proposal-compilation
+    /// time. AG's `record_proposal` requires the submitted proposal's work to
+    /// equal this identity.
+    pub expected_ag_work: String,
 }
 
-impl TypedCoarseIntentV1 {
+impl TypedCoarseIntentV2 {
     pub fn seal(mut self) -> Result<Self, CanonicalStoreError> {
-        self.schema = TYPED_INTENT_SCHEMA_V1.into();
+        self.schema = TYPED_INTENT_SCHEMA_V2.into();
         self.intent_id.clear();
         self.intent_id = object_id(&self, "intent_id")?;
         self.validate()?;
@@ -479,12 +565,14 @@ impl TypedCoarseIntentV1 {
     }
 
     pub fn validate(&self) -> Result<(), CanonicalStoreError> {
-        if self.schema != TYPED_INTENT_SCHEMA_V1 {
+        if self.schema != TYPED_INTENT_SCHEMA_V2 {
             return Err(CanonicalStoreError::Invalid(
                 "unsupported typed intent schema".into(),
             ));
         }
         require_digest("intent_id", &self.intent_id)?;
+        require_digest("compiled_work", &self.compiled_work)?;
+        require_digest("expected_ag_work", &self.expected_ag_work)?;
         for (name, value) in [
             ("workflow_id", &self.workflow_id),
             ("intent_kind", &self.intent_kind),
@@ -780,7 +868,7 @@ pub struct ObservationCycleV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporal_posture: Option<TemporalPostureV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intent: Option<TypedCoarseIntentV1>,
+    pub intent: Option<TypedCoarseIntentV2>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_ag_request: Option<PreparedAgRequestV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -998,6 +1086,50 @@ impl CanonicalStore {
             ) STRICT;
             ",
         )?;
+        // Narrow migration: older databases predate the queryable
+        // observation_id column. Historical rows stay NULL; they are
+        // historical evidence only and are not backfilled.
+        let has_observation_id = connection
+            .prepare("PRAGMA table_info(canonical_observation_cycles)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| {
+                name.map(|column| column == "observation_id")
+                    .unwrap_or(false)
+            });
+        if !has_observation_id {
+            connection.execute_batch(
+                "ALTER TABLE canonical_observation_cycles
+                 ADD COLUMN observation_id TEXT",
+            )?;
+        }
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS canonical_cycles_observation_id
+             ON canonical_observation_cycles(observation_id)",
+        )?;
+        Ok(Self { connection })
+    }
+
+    /// Opens the store strictly read-only: no schema creation, no migration,
+    /// no writes. This is the observation resolver's open path, which must be
+    /// provably non-mutating at the SQLite level. A database predating the
+    /// `observation_id` projection is refused rather than migrated; the
+    /// runtime's migrating `open` remains the only schema owner.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, CanonicalStoreError> {
+        let connection =
+            Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let has_observation_id = connection
+            .prepare("PRAGMA table_info(canonical_observation_cycles)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| {
+                name.map(|column| column == "observation_id")
+                    .unwrap_or(false)
+            });
+        if !has_observation_id {
+            return Err(CanonicalStoreError::Invalid(
+                "canonical store predates the observation_id projection".into(),
+            ));
+        }
         Ok(Self { connection })
     }
 
@@ -1165,7 +1297,7 @@ impl CanonicalStore {
         &mut self,
         lease: &LiveCycleLeaseV1,
         expected_digest: &str,
-        intent: TypedCoarseIntentV1,
+        intent: TypedCoarseIntentV2,
         request: PreparedAgRequestV1,
         now: DateTime<Utc>,
     ) -> Result<ObservationCycleV1, CanonicalStoreError> {
@@ -1515,6 +1647,98 @@ impl CanonicalStore {
         Ok(values)
     }
 
+    /// Every persisted cycle carrying this exact `observation_id`. Zero, one,
+    /// or several matches are all faithful results; multiple matches are
+    /// returned, never collapsed. Classifying ambiguity (for example as
+    /// contradictory evidence) is caller policy, not store policy.
+    pub fn find_cycles_by_observation_id(
+        &self,
+        observation_id: &str,
+    ) -> Result<Vec<ObservationCycleV1>, CanonicalStoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT snapshot_json FROM canonical_observation_cycles
+             WHERE observation_id=?1 ORDER BY cycle_id",
+        )?;
+        let rows = statement.query_map([observation_id], |row| row.get::<_, String>(0))?;
+        let mut values = Vec::new();
+        for row in rows {
+            let cycle: ObservationCycleV1 = serde_json::from_str(&row?)?;
+            cycle.validate()?;
+            values.push(cycle);
+        }
+        drop(statement);
+        for cycle in &values {
+            self.validate_ag_occurrence_claim(cycle)?;
+        }
+        Ok(values)
+    }
+
+    /// The logically latest qualified observation in one lineage. A cycle is
+    /// qualified exactly when it contains a persisted `ObservationRecordV1`
+    /// (`Missed` and unrecovered cycles never qualify, whatever their support
+    /// or status). Ordering is the logical slot `ObservationOrderKeyV1`; slot
+    /// identity is unique, so no tie is ever broken by write time.
+    pub fn latest_qualified_observation_in_family(
+        &self,
+        family: &ObservationFamilyKeyV1,
+    ) -> Result<Option<ObservationCycleV1>, CanonicalStoreError> {
+        let mut latest: Option<ObservationCycleV1> = None;
+        for cycle in self.list_cycles()? {
+            if ObservationFamilyKeyV1::of_slot(&cycle.slot) != *family
+                || cycle.observation.is_none()
+            {
+                continue;
+            }
+            let newer = match &latest {
+                None => true,
+                Some(current) => {
+                    ObservationOrderKeyV1::of_slot(&cycle.slot)
+                        > ObservationOrderKeyV1::of_slot(&current.slot)
+                }
+            };
+            if newer {
+                latest = Some(cycle);
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Read-only export of every persisted observation with one exact
+    /// `observation_id`, including each match's derived lineage position and
+    /// its family's latest qualified observation.
+    pub fn export_observation(
+        &self,
+        observation_id: &str,
+    ) -> Result<ObservationExportV1, CanonicalStoreError> {
+        let mut matches = Vec::new();
+        for cycle in self.find_cycles_by_observation_id(observation_id)? {
+            let family = ObservationFamilyKeyV1::of_slot(&cycle.slot);
+            let latest = self.latest_qualified_observation_in_family(&family)?;
+            matches.push(ObservationExportMatchV1 {
+                cycle_id: cycle.cycle_id.as_str().to_owned(),
+                slot_id: cycle.slot.slot_id.as_str().to_owned(),
+                family,
+                order_key: ObservationOrderKeyV1::of_slot(&cycle.slot),
+                family_latest_cycle_id: latest
+                    .as_ref()
+                    .map(|value| value.cycle_id.as_str().to_owned()),
+                family_latest_order_key: latest
+                    .as_ref()
+                    .map(|value| ObservationOrderKeyV1::of_slot(&value.slot)),
+                observation: cycle.observation.ok_or_else(|| {
+                    CanonicalStoreError::Invalid(
+                        "observation_id index names a cycle without an observation".into(),
+                    )
+                })?,
+            });
+        }
+        Ok(ObservationExportV1 {
+            schema: OBSERVATION_EXPORT_SCHEMA_V1.into(),
+            observation_id: observation_id.into(),
+            matches,
+        })
+    }
+
     /// Classify restart without recreating freshness. Local in-flight cycles
     /// become `RecoveryRequired`; AG-bound cycles remain exact references that
     /// must be queried through AG.
@@ -1692,7 +1916,8 @@ impl CanonicalStore {
         }
         let changed = tx.execute(
             "UPDATE canonical_observation_cycles
-             SET version=?1, status=?2, state_digest=?3, snapshot_json=?4, updated_at=?5
+             SET version=?1, status=?2, state_digest=?3, snapshot_json=?4, updated_at=?5,
+                 observation_id=?8
              WHERE cycle_id=?6 AND state_digest=?7",
             params![
                 cycle.version,
@@ -1702,6 +1927,10 @@ impl CanonicalStore {
                 &cycle.updated_at,
                 cycle_id.as_str(),
                 &prior,
+                cycle
+                    .observation
+                    .as_ref()
+                    .map(|record| record.observation_id.as_str()),
             ],
         )?;
         if changed != 1 {
@@ -1778,8 +2007,9 @@ fn insert_initial_cycle(
     let json = canonical_json(cycle)?;
     tx.execute(
         "INSERT INTO canonical_observation_cycles
-         (cycle_id, slot_id, version, status, state_digest, snapshot_json, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (cycle_id, slot_id, version, status, state_digest, snapshot_json, updated_at,
+          observation_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             cycle.cycle_id.as_str(),
             cycle.slot.slot_id.as_str(),
@@ -1788,6 +2018,10 @@ fn insert_initial_cycle(
             &cycle.state_digest,
             &json,
             &cycle.updated_at,
+            cycle
+                .observation
+                .as_ref()
+                .map(|record| record.observation_id.as_str()),
         ],
     )?;
     tx.execute(
@@ -2062,5 +2296,592 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    fn digest(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn example_policy_inputs_recurrence() -> (
+        crate::diagnostic_posture::PosturePolicy,
+        crate::diagnostic_posture::DiagnosticInputs,
+        crate::diagnostic_posture::RecurrenceEvidence,
+    ) {
+        (
+            serde_json::from_str(include_str!(
+                "../../../docs/operator/examples/diagnostic-posture-v1/policy.json"
+            ))
+            .unwrap(),
+            serde_json::from_str(include_str!(
+                "../../../docs/operator/examples/diagnostic-posture-v1/inputs.json"
+            ))
+            .unwrap(),
+            serde_json::from_str(include_str!(
+                "../../../docs/operator/examples/diagnostic-posture-v1/recurrence.json"
+            ))
+            .unwrap(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn slot_with_ids(
+        policy_id: &str,
+        configuration_version: &str,
+        subject_id: &str,
+        scope_id: &str,
+        scheduler_clock_id: &str,
+        occurrence: u64,
+        trigger: RecurrenceTriggerV1,
+        catch_up_of: Option<RecurrenceSlotId>,
+    ) -> RecurrenceSlotV1 {
+        let nominal = time("2026-08-11T12:00:00Z") + chrono::Duration::minutes(occurrence as i64);
+        RecurrenceSlotV1::new(
+            policy_id.into(),
+            configuration_version.into(),
+            subject_id.into(),
+            scope_id.into(),
+            scheduler_clock_id.into(),
+            nominal,
+            nominal + chrono::Duration::minutes(5),
+            occurrence,
+            trigger,
+            catch_up_of,
+        )
+        .unwrap()
+    }
+
+    fn example_slot(occurrence: u64) -> RecurrenceSlotV1 {
+        let (policy, _, _) = example_policy_inputs_recurrence();
+        slot_with_ids(
+            &policy.policy_id,
+            "config-v1",
+            &policy.subject.id,
+            &policy.subject.scope.digest,
+            "nightshift-scheduler-1",
+            occurrence,
+            RecurrenceTriggerV1::Scheduled,
+            None,
+        )
+    }
+
+    fn support_for(
+        cycle_id: &ObservationCycleId,
+        observation_id: &str,
+        inputs: &crate::diagnostic_posture::DiagnosticInputs,
+        policy: &crate::diagnostic_posture::PosturePolicy,
+    ) -> crate::currentness::QualifiedSupportV1 {
+        let mut support = crate::currentness::QualifiedSupportV1 {
+            schema: crate::currentness::QUALIFIED_SUPPORT_SCHEMA_V1.into(),
+            support_id: String::new(),
+            authority_id: "pulse-receiver-1".into(),
+            query_id: digest('e'),
+            observation_cycle_id: cycle_id.as_str().into(),
+            request_nonce: "support-query:test-nonce".into(),
+            observation_id: observation_id.into(),
+            diagnostic_inputs_id: inputs.inputs_id.clone(),
+            subject_id: policy.subject.id.clone(),
+            scope_id: policy.subject.scope.digest.clone(),
+            artifact_ids: crate::currentness::delivered_artifact_ids(inputs),
+            evaluated_at: crate::currentness::SupportReceiverInstantV1 {
+                clock_id: "pulse-receiver-clock-1".into(),
+                tick: 100,
+            },
+            expiry: Some(crate::currentness::SupportExpiryV1 {
+                clock_id: "pulse-receiver-clock-1".into(),
+                tick: 101,
+            }),
+            standing: crate::currentness::SupportStandingV1::Current,
+            evidence_refs: vec![digest('9')],
+            contradiction_refs: Vec::new(),
+        };
+        support.support_id = support.computed_support_id().unwrap();
+        support
+    }
+
+    fn observation_for(cycle_id: &ObservationCycleId, observation_id: &str) -> ObservationRecordV1 {
+        let (policy, inputs, recurrence) = example_policy_inputs_recurrence();
+        let support = support_for(cycle_id, observation_id, &inputs, &policy);
+        let posture = crate::diagnostic_posture::evaluate_posture_with_support(
+            &policy,
+            &inputs,
+            &recurrence,
+            time("2026-07-27T20:00:10Z"),
+            &support,
+        )
+        .unwrap();
+        ObservationRecordV1 {
+            schema: OBSERVATION_RECORD_SCHEMA_V1.into(),
+            observation_id: observation_id.into(),
+            support,
+            posture,
+        }
+    }
+
+    fn record_test_observation(
+        store: &mut CanonicalStore,
+        slot: RecurrenceSlotV1,
+        clock: &str,
+        observation_id: &str,
+        now: DateTime<Utc>,
+    ) -> ObservationCycleV1 {
+        let (cycle, lease) = store.claim_slot(slot, clock, now).unwrap();
+        let observation = observation_for(&cycle.cycle_id, observation_id);
+        let attention = AttentionRecordV1 {
+            class: AttentionClassV1::Display,
+            source_posture_id: observation.posture.posture_id.clone(),
+            reason_code: "posture_observed".into(),
+            display_text: None,
+        };
+        store
+            .record_observation(
+                &lease,
+                &cycle.state_digest,
+                observation,
+                attention,
+                None,
+                now,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn record_observation_populates_the_queryable_observation_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let recorded = record_test_observation(
+            &mut store,
+            example_slot(1),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+        let matches = store.find_cycles_by_observation_id(&digest('a')).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].cycle_id, recorded.cycle_id);
+        assert_eq!(
+            matches[0].observation.as_ref().unwrap().observation_id,
+            digest('a')
+        );
+    }
+
+    #[test]
+    fn observation_lookup_miss_returns_zero_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        record_test_observation(
+            &mut store,
+            example_slot(1),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+        assert!(store
+            .find_cycles_by_observation_id(&digest('b'))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn observation_lookup_preserves_ambiguous_shared_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let first = record_test_observation(
+            &mut store,
+            example_slot(1),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+        let second = record_test_observation(
+            &mut store,
+            example_slot(2),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:02:00Z"),
+        );
+        let matches = store.find_cycles_by_observation_id(&digest('a')).unwrap();
+        assert_eq!(matches.len(), 2);
+        let ids: Vec<_> = matches.iter().map(|cycle| cycle.cycle_id.clone()).collect();
+        assert!(ids.contains(&first.cycle_id));
+        assert!(ids.contains(&second.cycle_id));
+    }
+
+    #[test]
+    fn family_latest_uses_logical_occurrence_order_not_write_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        // Write the logically later observation first.
+        let later = record_test_observation(
+            &mut store,
+            example_slot(2),
+            "nightshift-scheduler-1",
+            &digest('b'),
+            time("2026-08-11T12:02:00Z"),
+        );
+        record_test_observation(
+            &mut store,
+            example_slot(1),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+        let family = ObservationFamilyKeyV1::of_slot(&later.slot);
+        let latest = store
+            .latest_qualified_observation_in_family(&family)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.cycle_id, later.cycle_id);
+        assert_eq!(latest.slot.occurrence, 2);
+    }
+
+    #[test]
+    fn family_latest_excludes_other_lineages() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let base = record_test_observation(
+            &mut store,
+            example_slot(3),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:03:00Z"),
+        );
+        let (policy, _, _) = example_policy_inputs_recurrence();
+        let variants = [
+            slot_with_ids(
+                "policy-other",
+                "config-v1",
+                &policy.subject.id,
+                &policy.subject.scope.digest,
+                "nightshift-scheduler-1",
+                9,
+                RecurrenceTriggerV1::Scheduled,
+                None,
+            ),
+            slot_with_ids(
+                &policy.policy_id,
+                "config-v2",
+                &policy.subject.id,
+                &policy.subject.scope.digest,
+                "nightshift-scheduler-1",
+                9,
+                RecurrenceTriggerV1::Scheduled,
+                None,
+            ),
+            slot_with_ids(
+                &policy.policy_id,
+                "config-v1",
+                &policy.subject.id,
+                "scope-other",
+                "nightshift-scheduler-1",
+                9,
+                RecurrenceTriggerV1::Scheduled,
+                None,
+            ),
+            slot_with_ids(
+                &policy.policy_id,
+                "config-v1",
+                &policy.subject.id,
+                &policy.subject.scope.digest,
+                "nightshift-scheduler-2",
+                9,
+                RecurrenceTriggerV1::Scheduled,
+                None,
+            ),
+        ];
+        for (index, variant) in variants.into_iter().enumerate() {
+            let clock = variant.scheduler_clock_id.clone();
+            record_test_observation(
+                &mut store,
+                variant,
+                &clock,
+                &digest(char::from(b'b' + index as u8)),
+                time("2026-08-11T12:09:00Z"),
+            );
+        }
+        let family = ObservationFamilyKeyV1::of_slot(&base.slot);
+        let latest = store
+            .latest_qualified_observation_in_family(&family)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.cycle_id, base.cycle_id);
+        assert_eq!(latest.slot.occurrence, 3);
+    }
+
+    #[test]
+    fn missed_and_recovery_cycles_never_qualify_as_latest() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let observed = record_test_observation(
+            &mut store,
+            example_slot(1),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+        let missed_slot = example_slot(2);
+        store
+            .record_missed(
+                missed_slot,
+                "nightshift-scheduler-1",
+                time("2026-08-11T12:07:01Z"),
+                "scheduler_observed_missed_slot".into(),
+            )
+            .unwrap();
+        let (recovering, _) = store
+            .claim_slot(
+                example_slot(3),
+                "nightshift-scheduler-1",
+                time("2026-08-11T12:03:00Z"),
+            )
+            .unwrap();
+        store
+            .mark_recovery_required(
+                &recovering.cycle_id,
+                &recovering.state_digest,
+                "restart_local_currentness_erased".into(),
+                time("2026-08-11T12:04:00Z"),
+            )
+            .unwrap();
+        let family = ObservationFamilyKeyV1::of_slot(&observed.slot);
+        let latest = store
+            .latest_qualified_observation_in_family(&family)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.cycle_id, observed.cycle_id);
+        assert_eq!(latest.slot.occurrence, 1);
+    }
+
+    #[test]
+    fn catch_up_completion_order_does_not_override_logical_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let missed_slot = example_slot(1);
+        store
+            .record_missed(
+                missed_slot.clone(),
+                "nightshift-scheduler-1",
+                time("2026-08-11T12:06:01Z"),
+                "scheduler_observed_missed_slot".into(),
+            )
+            .unwrap();
+        // The logically later observation completes first.
+        let later = record_test_observation(
+            &mut store,
+            example_slot(2),
+            "nightshift-scheduler-1",
+            &digest('b'),
+            time("2026-08-11T12:02:00Z"),
+        );
+        // The catch-up keeps the earlier occurrence and completes last.
+        let mut catch_up = slot_with_ids(
+            &missed_slot.policy_id,
+            &missed_slot.configuration_version,
+            &missed_slot.subject_id,
+            &missed_slot.scope_id,
+            &missed_slot.scheduler_clock_id,
+            1,
+            RecurrenceTriggerV1::CatchUp,
+            Some(missed_slot.slot_id.clone()),
+        );
+        catch_up.nominal_due_at = time("2026-08-11T12:08:00Z");
+        catch_up.latest_admissible = crate::currentness::RecurrenceLatestAdmissibleV1 {
+            scheduler_clock_id: "nightshift-scheduler-1".into(),
+            at: time("2026-08-11T12:13:00Z"),
+        };
+        catch_up.slot_id = RecurrenceSlotId(object_id(&catch_up, "slot_id").unwrap());
+        catch_up.validate().unwrap();
+        record_test_observation(
+            &mut store,
+            catch_up,
+            "nightshift-scheduler-1",
+            &digest('c'),
+            time("2026-08-11T12:08:00Z"),
+        );
+        let family = ObservationFamilyKeyV1::of_slot(&later.slot);
+        let latest = store
+            .latest_qualified_observation_in_family(&family)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.cycle_id, later.cycle_id);
+        assert_eq!(latest.slot.occurrence, 2);
+    }
+
+    #[test]
+    fn export_reports_every_match_with_lineage_position() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let first = record_test_observation(
+            &mut store,
+            example_slot(1),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+        let second = record_test_observation(
+            &mut store,
+            example_slot(2),
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:02:00Z"),
+        );
+        let export = store.export_observation(&digest('a')).unwrap();
+        assert_eq!(export.schema, OBSERVATION_EXPORT_SCHEMA_V1);
+        assert_eq!(export.matches.len(), 2);
+        for entry in &export.matches {
+            assert_eq!(entry.observation.observation_id, digest('a'));
+            assert_eq!(
+                entry.family_latest_cycle_id.as_deref(),
+                Some(second.cycle_id.as_str())
+            );
+            assert_eq!(
+                entry.family_latest_order_key.as_ref().unwrap().occurrence,
+                2
+            );
+        }
+        let first_export = export
+            .matches
+            .iter()
+            .find(|entry| entry.cycle_id == first.cycle_id.as_str())
+            .unwrap();
+        assert_eq!(first_export.order_key.occurrence, 1);
+        assert_eq!(
+            first_export.family,
+            ObservationFamilyKeyV1::of_slot(&first.slot)
+        );
+    }
+
+    #[test]
+    fn migration_adds_observation_id_column_and_preserves_rows() {
+        let scratch_directory = tempfile::tempdir().unwrap();
+        let scratch_database = scratch_directory.path().join("scratch.sqlite");
+        let cycle_id = {
+            let mut scratch = CanonicalStore::open(&scratch_database).unwrap();
+            scratch
+                .claim_slot(
+                    example_slot(1),
+                    "nightshift-scheduler-1",
+                    time("2026-08-11T12:01:00Z"),
+                )
+                .unwrap()
+                .0
+                .cycle_id
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("nightshift.sqlite");
+        {
+            let legacy = rusqlite::Connection::open(&database).unwrap();
+            legacy
+                .execute_batch(
+                    "CREATE TABLE canonical_recurrence_slots (
+                        slot_id TEXT PRIMARY KEY,
+                        cycle_id TEXT NOT NULL UNIQUE,
+                        status TEXT NOT NULL,
+                        basis_json TEXT NOT NULL,
+                        state_digest TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    ) STRICT;
+                    CREATE TABLE canonical_observation_cycles (
+                        cycle_id TEXT PRIMARY KEY,
+                        slot_id TEXT NOT NULL UNIQUE,
+                        version INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        state_digest TEXT NOT NULL,
+                        snapshot_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY(slot_id) REFERENCES canonical_recurrence_slots(slot_id)
+                    ) STRICT;",
+                )
+                .unwrap();
+            let source = rusqlite::Connection::open(&scratch_database).unwrap();
+            let slot_row: (String, String, String, String, String, String) = source
+                .query_row(
+                    "SELECT slot_id, cycle_id, status, basis_json, state_digest, updated_at
+                     FROM canonical_recurrence_slots",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .unwrap();
+            legacy
+                .execute(
+                    "INSERT INTO canonical_recurrence_slots
+                     (slot_id, cycle_id, status, basis_json, state_digest, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        slot_row.0, slot_row.1, slot_row.2, slot_row.3, slot_row.4, slot_row.5,
+                    ],
+                )
+                .unwrap();
+            let cycle_row: (String, String, i64, String, String, String, String) = source
+                .query_row(
+                    "SELECT cycle_id, slot_id, version, status, state_digest, snapshot_json,
+                            updated_at
+                     FROM canonical_observation_cycles",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .unwrap();
+            legacy
+                .execute(
+                    "INSERT INTO canonical_observation_cycles
+                     (cycle_id, slot_id, version, status, state_digest, snapshot_json, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        cycle_row.0,
+                        cycle_row.1,
+                        cycle_row.2,
+                        cycle_row.3,
+                        cycle_row.4,
+                        cycle_row.5,
+                        cycle_row.6,
+                    ],
+                )
+                .unwrap();
+        }
+        let store = CanonicalStore::open(&database).unwrap();
+        let inspector = rusqlite::Connection::open(&database).unwrap();
+        let columns: Vec<String> = inspector
+            .prepare("PRAGMA table_info(canonical_observation_cycles)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "observation_id"));
+        let index_count: i64 = inspector
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='canonical_cycles_observation_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        let cycles = store.list_cycles().unwrap();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].cycle_id, cycle_id);
+        // A pre-migration row has a NULL observation_id and never matches.
+        assert!(store
+            .find_cycles_by_observation_id(&digest('a'))
+            .unwrap()
+            .is_empty());
     }
 }

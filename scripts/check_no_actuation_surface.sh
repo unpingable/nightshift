@@ -19,20 +19,50 @@ fail() {
 manifest="crates/nightshiftd/Cargo.toml"
 production_src="crates/nightshiftd/src"
 
-# Exactly one explicitly named production binary. `autobins = false` prevents
-# an added src/main.rs or src/bin/*.rs file from silently becoming a target.
+# Exactly two explicitly named production binaries: the canonical runtime CLI
+# and the read-only observation resolver. `autobins = false` prevents an
+# added src/main.rs or src/bin/*.rs file from silently becoming a target.
 bin_count=$(rg -c '^\[\[bin\]\]$' "$manifest" || true)
-if [ "$bin_count" -ne 1 ]; then
-    fail "expected exactly one [[bin]] target, found ${bin_count}"
+if [ "$bin_count" -ne 2 ]; then
+    fail "expected exactly two [[bin]] targets, found ${bin_count}"
 fi
 if ! rg -q '^autobins = false$' "$manifest"; then
     fail "Cargo automatic binary discovery is not disabled"
 fi
 if ! rg -q '^name = "nightshift"$' "$manifest"; then
-    fail "sole production binary is not named nightshift"
+    fail "canonical runtime binary is not named nightshift"
 fi
 if ! rg -q '^path = "src/bin/nightshift.rs"$' "$manifest"; then
     fail "nightshift target does not point to the canonical runtime CLI"
+fi
+if ! rg -q '^name = "nightshift-observation-resolver"$' "$manifest"; then
+    fail "read-only observation resolver binary is not explicitly named"
+fi
+if ! rg -q '^path = "src/bin/nightshift_observation_resolver.rs"$' "$manifest"; then
+    fail "observation resolver target does not point to its read-only source"
+fi
+
+# The observation resolver is the one permitted second binary: a read-only
+# evidence translator for AG's observation-resolution boundary. It must open
+# no subprocess, must not use the migrating store open path, and must call no
+# cycle-mutating store method.
+resolver_sources="crates/nightshiftd/src/observation_resolver.rs crates/nightshiftd/src/bin/nightshift_observation_resolver.rs"
+for source in $resolver_sources; do
+    if [ ! -f "$source" ]; then
+        fail "observation resolver source is missing: $source"
+    fi
+done
+if rg -n 'Command::new' $resolver_sources >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "observation resolver opens a subprocess:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'CanonicalStore::open\(' $resolver_sources >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "observation resolver uses the migrating store open path:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n '\.(claim_slot|record_missed|record_observation|prepare_ag_occurrence|attach_ag_occurrence|record_ag_status|record_ag_refusal|recover_ag_occurrence|mark_recovery_required|close_without_proposal|recover_after_restart)\(' $resolver_sources >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "observation resolver calls a cycle-mutating store method:"
+    cat /tmp/nightshift_exclusivity_hits >&2
 fi
 
 # Active system-level deployment must target the same binary and cycle

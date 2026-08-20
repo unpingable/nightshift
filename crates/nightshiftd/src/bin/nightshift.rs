@@ -100,6 +100,13 @@ enum CycleCommand {
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
+    /// Read-only export of every persisted observation with one exact
+    /// observation identity, including lineage position. It never mutates
+    /// cycle state, acquires leases, or contacts AG.
+    ExportObservation {
+        #[arg(long)]
+        observation_id: String,
+    },
     List,
     Replay {
         #[arg(long)]
@@ -257,6 +264,14 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
             }
         }
         CycleCommand::List => write_exact(&CanonicalStore::open(store_path)?.list_cycles()?),
+        CycleCommand::ExportObservation { observation_id } => {
+            let store = CanonicalStore::open(store_path)?;
+            write_exact(
+                &store
+                    .export_observation(&observation_id)
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
         CycleCommand::Replay { cycle_id } => {
             let store = CanonicalStore::open(store_path)?;
             write_exact(&store.replay(&ObservationCycleId::parse(cycle_id)?)?)

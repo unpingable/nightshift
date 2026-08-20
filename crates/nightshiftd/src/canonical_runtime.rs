@@ -15,7 +15,7 @@ use crate::ag_port::{
 use crate::canonical_store::{
     AttentionClassV1, AttentionRecordV1, CanonicalStore, CanonicalStoreError, CycleStatusV1,
     ObservationCycleId, ObservationCycleV1, ObservationRecordV1, RecurrenceSlotV1, SlotTimingV1,
-    TemporalDecisionV1, TemporalPostureV1, TypedCoarseIntentV1,
+    TemporalDecisionV1, TemporalPostureV1, TypedCoarseIntentV2,
 };
 use crate::currentness::{
     delivered_artifact_ids, PresentEvidencePortV1, PresentEvidenceQueryV1, SupportStandingV1,
@@ -27,12 +27,42 @@ use crate::diagnostic_posture::{
 };
 
 pub const CYCLE_REQUEST_SCHEMA_V1: &str = "nightshift.canonical_cycle_request.v1";
-pub const PRECOMPILED_PROPOSAL_SCHEMA_V1: &str = "nightshift.precompiled_workflow_proposal.v1";
+pub const PRECOMPILED_PROPOSAL_SCHEMA_V2: &str = "nightshift.precompiled_workflow_proposal.v2";
+/// The AG/Docket executable-work identity domain: the executor-plan schema
+/// string is the digest domain of the plan identity. The digest construction
+/// below mirrors `ag_primitives::Digest::hash_domain` byte-exactly and is
+/// pinned cross-repository by an exact test vector.
+pub const AG_EXECUTOR_PLAN_IDENTITY_DOMAIN_V1: &str = "ag-effectd.docket-executor-plan/v1";
 
 fn digest_value(value: &serde_json::Value) -> Result<String, String> {
     Ok(format!(
         "sha256:{:x}",
         Sha256::digest(serde_jcs::to_vec(value).map_err(|error| error.to_string())?)
+    ))
+}
+
+fn ag_hash_domain(domain: &str, payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ag-ng\0digest\0v1\0");
+    hasher.update((domain.len() as u128).to_be_bytes());
+    hasher.update(domain.as_bytes());
+    hasher.update((payload.len() as u128).to_be_bytes());
+    hasher.update(payload);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+/// The AG/Docket executable-work identity of one exact executor-plan
+/// document: AG's domain-separated digest of the plan's canonical JCS.
+/// Nightshift derives this at proposal-compilation time so the persisted
+/// binding is verified, never caller-asserted.
+pub fn ag_executor_plan_identity(plan: &serde_json::Value) -> Result<String, String> {
+    if !plan.is_object() {
+        return Err("AG executor plan must be an exact typed object".into());
+    }
+    let canonical = serde_jcs::to_vec(plan).map_err(|error| error.to_string())?;
+    Ok(ag_hash_domain(
+        AG_EXECUTOR_PLAN_IDENTITY_DOMAIN_V1,
+        &canonical,
     ))
 }
 
@@ -82,23 +112,33 @@ pub struct TemporalPolicyRequestV1 {
 
 /// Already-compiled workflow-specific exact work. This adapter binds the
 /// complete live Nightshift basis; it never interprets free text.
+///
+/// Version 2 carries the exact AG/Docket executor-plan document and seals
+/// the cross-domain work binding: the exact AG proposal's `work` must equal
+/// the AG executable-work identity deterministically derived from that plan.
+/// The Nightshift-domain compiled-payload identity is a distinct digest
+/// sealed into the typed intent as `compiled_work`; the two identity domains
+/// are deliberately not equal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PrecompiledWorkflowProposalV1 {
+pub struct PrecompiledWorkflowProposalV2 {
     pub schema: String,
     pub workflow_id: String,
     pub intent_kind: String,
     pub subject_digest: String,
     pub immutable_parameters: serde_json::Value,
+    /// The exact sealed AG/Docket executor plan whose derived identity is the
+    /// expected AG executable-work digest.
+    pub ag_executor_plan: serde_json::Value,
     pub campaign_id: String,
     pub occurrence_id: String,
     pub mode: AgOpenModeV1,
     pub proposal_input: serde_json::Value,
 }
 
-impl PrecompiledWorkflowProposalV1 {
+impl PrecompiledWorkflowProposalV2 {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != PRECOMPILED_PROPOSAL_SCHEMA_V1 {
+        if self.schema != PRECOMPILED_PROPOSAL_SCHEMA_V2 {
             return Err("unsupported precompiled workflow proposal schema".into());
         }
         require_token("workflow_id", &self.workflow_id)?;
@@ -113,27 +153,18 @@ impl PrecompiledWorkflowProposalV1 {
         if !self.proposal_input.is_object() {
             return Err("proposal_input must be an exact typed object".into());
         }
+        let expected_ag_work = ag_executor_plan_identity(&self.ag_executor_plan)?;
         let proposal = self
             .proposal_input
             .get("proposal")
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| "proposal_input must contain one exact proposal object".to_string())?;
-        let work_schema = proposal
-            .get("work_schema")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "exact proposal work_schema must be a string".to_string())?;
         let work = proposal
             .get("work")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "exact proposal work must be a digest".to_string())?;
-        let compiled_payload = serde_json::json!({
-            "parameters": &self.immutable_parameters,
-            "schema": work_schema,
-        });
-        if work != digest_value(&compiled_payload)? {
-            return Err(
-                "exact proposal work digest does not bind the immutable compiled payload".into(),
-            );
+        if work != expected_ag_work {
+            return Err("exact proposal work does not bind the sealed AG executor plan".into());
         }
         Ok(())
     }
@@ -141,9 +172,19 @@ impl PrecompiledWorkflowProposalV1 {
     fn compile(
         &self,
         observation: &ObservationRecordV1,
-    ) -> Result<(TypedCoarseIntentV1, AgOpenOccurrenceRequestV1), String> {
+    ) -> Result<(TypedCoarseIntentV2, AgOpenOccurrenceRequestV1), String> {
         self.validate()?;
-        let intent = TypedCoarseIntentV1 {
+        let work_schema = self
+            .proposal_input
+            .get("proposal")
+            .and_then(|proposal| proposal.get("work_schema"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "exact proposal work_schema must be a string".to_string())?;
+        let compiled_work = digest_value(&serde_json::json!({
+            "parameters": &self.immutable_parameters,
+            "schema": work_schema,
+        }))?;
+        let intent = TypedCoarseIntentV2 {
             schema: String::new(),
             intent_id: String::new(),
             workflow_id: self.workflow_id.clone(),
@@ -155,6 +196,8 @@ impl PrecompiledWorkflowProposalV1 {
             source_support_id: observation.support.support_id.clone(),
             source_posture_id: observation.posture.posture_id.clone(),
             immutable_parameters: self.immutable_parameters.clone(),
+            compiled_work,
+            expected_ag_work: ag_executor_plan_identity(&self.ag_executor_plan)?,
         }
         .seal()
         .map_err(|error| error.to_string())?;
@@ -193,7 +236,7 @@ pub struct CanonicalCycleRequestV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporal_policy: Option<TemporalPolicyRequestV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposal: Option<PrecompiledWorkflowProposalV1>,
+    pub proposal: Option<PrecompiledWorkflowProposalV2>,
 }
 
 impl CanonicalCycleRequestV1 {
@@ -288,7 +331,7 @@ where
                 request.slot,
                 &request.scheduler_clock_id,
                 request.evaluated_at,
-                "slot passed its exact latest-admissible instant".into(),
+                "slot_passed_exact_latest_admissible_instant".into(),
             )?;
             return Ok(CycleRunOutcomeV1::Missed { cycle });
         }
@@ -494,12 +537,17 @@ mod tests {
     use super::*;
     use crate::ag_port::parse_ag_refusal;
     use crate::canonical_store::{
-        AgOccurrenceReferenceV1, AgProgramCounterV1, RecurrenceTriggerV1, AG_REFERENCE_SCHEMA_V1,
+        AgOccurrenceReferenceV1, AgProgramCounterV1, AttentionClassV1, RecurrenceTriggerV1,
+        AG_REFERENCE_SCHEMA_V1,
     };
     use crate::currentness::{
         PresentEvidenceQueryV1, QualifiedSupportV1, SupportExpiryV1, SupportReceiverInstantV1,
     };
-    use crate::diagnostic_posture::Headline;
+    use crate::diagnostic_execution_v2::{DiagnosticClaim, DiagnosticExecution};
+    use crate::diagnostic_posture::{
+        ConditionV1, DeliveryStanding, DiagnosticExecutionV1, DiagnosticInputStatus, Headline,
+        RunSlotEvidence,
+    };
 
     fn digest(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
@@ -528,8 +576,57 @@ mod tests {
         )
     }
 
+    /// Pinned cross-repository vector: the AG executable-work identity of
+    /// `test_executor_plan()`, asserted identically in ag_ng.
+    const AG_EXECUTOR_PLAN_VECTOR_DIGEST: &str =
+        "sha256:c938048c15ac6ebe40053d6137924cd60e75c649e4239b318901a5be77517ca6";
+
+    /// One fixed executor-plan document used for the cross-repository
+    /// identity vector and for the in-crate proposal fixtures.
+    fn hex_digest(byte: &str) -> String {
+        format!("sha256:{}", byte.repeat(32))
+    }
+
+    fn test_executor_plan() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "ag-effectd.docket-executor-plan/v1",
+            "attempt_store": "/tmp/wo9-1-vector/effect-attempts.sqlite",
+            "subject": hex_digest("62"),
+            "scope": hex_digest("31"),
+            "effect_index": 0,
+            "effect": {
+                "kind": "managed_file_put",
+                "target": "wo9-1-vector",
+                "path": "/tmp/wo9-1-vector/target",
+                "expected_content": null,
+                "content": hex_digest("35"),
+                "mode": 384,
+                "uid": 1000,
+                "gid": 1000
+            },
+            "artifacts": [{"digest": hex_digest("35"), "path": "/tmp/wo9-1-vector/artifact"}],
+            "file_policy": {
+                "max_content_bytes": 1024,
+                "trusted_ancestor_uid": 0,
+                "trusted_parent_uid": 1000,
+                "require_private_parent_writes": true
+            },
+            "preparation_checkpoint": null
+        })
+    }
+
     fn cycle_request(occurrence: u64, proposal: bool) -> CanonicalCycleRequestV1 {
         let (policy, inputs, recurrence) = policy_inputs_recurrence();
+        sealed_cycle_request(policy, inputs, recurrence, occurrence, proposal)
+    }
+
+    fn sealed_cycle_request(
+        policy: PosturePolicy,
+        inputs: DiagnosticInputs,
+        recurrence: RecurrenceEvidence,
+        occurrence: u64,
+        proposal: bool,
+    ) -> CanonicalCycleRequestV1 {
         let campaign = digest('a');
         let scope = policy.subject.scope.digest.clone();
         let occurrence_id = format!("00000000-0000-4000-8000-{occurrence:012}");
@@ -548,11 +645,8 @@ mod tests {
         .unwrap();
         let immutable_parameters = serde_json::json!({"resource_id":"resource-1"});
         let work_schema = "example.exact-work/v1";
-        let work = digest_value(&serde_json::json!({
-            "parameters": &immutable_parameters,
-            "schema": work_schema,
-        }))
-        .unwrap();
+        let plan = test_executor_plan();
+        let work = ag_executor_plan_identity(&plan).unwrap();
         CanonicalCycleRequestV1 {
             schema: String::new(),
             request_id: String::new(),
@@ -565,11 +659,12 @@ mod tests {
             inputs,
             recurrence,
             temporal_policy: None,
-            proposal: proposal.then(|| PrecompiledWorkflowProposalV1 {
-                schema: PRECOMPILED_PROPOSAL_SCHEMA_V1.into(),
+            proposal: proposal.then(|| PrecompiledWorkflowProposalV2 {
+                schema: PRECOMPILED_PROPOSAL_SCHEMA_V2.into(),
                 workflow_id: "workflow:host-care".into(),
                 intent_kind: "inspect_exact_resource".into(),
                 subject_digest: digest('b'),
+                ag_executor_plan: plan,
                 immutable_parameters,
                 campaign_id: campaign.clone(),
                 occurrence_id: occurrence_id.clone(),
@@ -599,6 +694,47 @@ mod tests {
         }
         .seal()
         .unwrap()
+    }
+
+    fn reseal_artifact(artifact: &mut DiagnosticExecutionV1) {
+        artifact.artifact_id.clear();
+        let mut value = serde_json::to_value(&*artifact).unwrap();
+        value.as_object_mut().unwrap().remove("artifact_id");
+        artifact.artifact_id = digest_value(&value).unwrap();
+    }
+
+    /// The example basis with the delivered mandatory artifact reporting
+    /// `ConditionV1::Present`, consistently re-sealed through the artifact,
+    /// inputs, and recurrence evidence.
+    fn condition_present_inputs_recurrence() -> (DiagnosticInputs, RecurrenceEvidence) {
+        let (_policy, mut inputs, mut recurrence) = policy_inputs_recurrence();
+        let mut new_artifact_id = String::new();
+        for input in &mut inputs.inputs {
+            if let DiagnosticInputStatus::Delivered { artifact } = &mut input.status {
+                if let DiagnosticExecution::V1(artifact) = artifact.as_mut() {
+                    artifact.outcome.condition = ConditionV1::Present;
+                    for claim in &mut artifact.claims {
+                        claim.condition_effect = Some(ConditionV1::Present);
+                    }
+                    reseal_artifact(artifact);
+                    new_artifact_id = artifact.artifact_id.clone();
+                }
+            }
+        }
+        assert!(!new_artifact_id.is_empty());
+        inputs.inputs_id.clear();
+        inputs.inputs_id = inputs.computed_inputs_id().unwrap();
+        for record in &mut recurrence.records {
+            if let RunSlotEvidence::Completed { artifact, .. } = &mut record.evidence {
+                artifact.artifact_id = new_artifact_id.clone();
+                if let Some(DiagnosticClaim::V1(claim)) = &mut artifact.claim {
+                    claim.condition_effect = Some(ConditionV1::Present);
+                }
+            }
+        }
+        recurrence.recurrence_id.clear();
+        recurrence.recurrence_id = recurrence.computed_recurrence_id().unwrap();
+        (inputs, recurrence)
     }
 
     struct CurrentSupportPort {
@@ -751,6 +887,160 @@ mod tests {
         assert_eq!(cycle.status, CycleStatusV1::Closed);
         assert!(cycle.observation.unwrap().posture.present_support.is_some());
         assert_eq!(ag.open_count, 0);
+    }
+
+    /// REGRESSION PIN (WO-1, pre-change semantics): the current proposal gate
+    /// requires exactly `!temporal_hold && posture.current && support Current`.
+    /// `posture.current` excludes the condition axis, so a ConditionPresent
+    /// posture still opens an AG occurrence; the condition surfaces only as a
+    /// non-authorizing attention record. Later docket work moves condition
+    /// checks into per-workflow AG catalog preconditions — this pin makes that
+    /// a deliberate behavioral diff, not a silent change. Do not "fix" this.
+    #[test]
+    fn condition_present_currently_reaches_ag_occurrence_opened() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let (policy, _, _) = policy_inputs_recurrence();
+        let (inputs, recurrence) = condition_present_inputs_recurrence();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+            .run_cycle(sealed_cycle_request(policy, inputs, recurrence, 0, true))
+            .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!(
+                "current gate must open the AG occurrence for a current \
+                 ConditionPresent posture with Current support and no hold"
+            )
+        };
+        let observation = cycle.observation.expect("observation recorded");
+        assert!(observation.posture.current);
+        assert_eq!(
+            observation.posture.condition,
+            ConditionAxis::ConditionPresent
+        );
+        let attention = cycle.attention.expect("attention recorded");
+        assert_eq!(attention.class, AttentionClassV1::AttentionRequired);
+        assert_eq!(attention.reason_code, "condition_present");
+        assert_eq!(ag.open_count, 1);
+    }
+
+    /// REGRESSION PIN (WO-1, pre-change semantics): `posture.current` also
+    /// excludes the delivery axis, and the current proposal gate never
+    /// consults delivery independently. Under a delivery-required policy with
+    /// failed delivery, the posture is still `current` (headline Incomplete)
+    /// and the AG occurrence still opens. Do not "fix" this.
+    #[test]
+    fn unqualified_delivery_currently_reaches_ag_occurrence_opened() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let (mut policy, inputs, mut recurrence) = policy_inputs_recurrence();
+        policy.delivery_required = true;
+        policy.policy_id.clear();
+        policy.policy_id = policy.computed_policy_id().unwrap();
+        recurrence.delivery = DeliveryStanding::Failed;
+        recurrence.recurrence_id.clear();
+        recurrence.recurrence_id = recurrence.computed_recurrence_id().unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+            .run_cycle(sealed_cycle_request(policy, inputs, recurrence, 0, true))
+            .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!(
+                "current gate must open the AG occurrence for a current \
+                 posture with unqualified delivery"
+            )
+        };
+        let observation = cycle.observation.expect("observation recorded");
+        assert!(observation.posture.current);
+        assert_eq!(observation.posture.delivery, DeliveryStanding::Failed);
+        assert_eq!(observation.posture.headline, Headline::Incomplete);
+        assert_eq!(ag.open_count, 1);
+    }
+
+    /// The runtime's own Missed branch must actually persist a Missed cycle:
+    /// a slot evaluated after its exact latest-admissible instant produces
+    /// `CycleRunOutcomeV1::Missed` with the stable token reason, and no
+    /// observation, intent, prepared request, or AG occurrence is created.
+    #[test]
+    fn missed_slot_records_a_missed_cycle_without_observation_or_ag() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let (policy, inputs, recurrence) = policy_inputs_recurrence();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+
+        let mut missed_request =
+            sealed_cycle_request(policy.clone(), inputs.clone(), recurrence.clone(), 1, true);
+        missed_request.evaluated_at = time("2026-07-27T20:02:00Z");
+        let outcome = runtime.run_cycle(missed_request.seal().unwrap()).unwrap();
+        let CycleRunOutcomeV1::Missed { cycle } = outcome else {
+            panic!("a slot past its latest-admissible instant must record Missed")
+        };
+        assert_eq!(cycle.status, CycleStatusV1::Missed);
+        assert_eq!(
+            cycle.recovery_reason.as_deref(),
+            Some("slot_passed_exact_latest_admissible_instant")
+        );
+        assert!(cycle.observation.is_none());
+        assert!(cycle.intent.is_none());
+        assert!(cycle.prepared_ag_request.is_none());
+        assert!(cycle.ag.is_none());
+        let persisted = runtime.store.get_cycle(&cycle.cycle_id).unwrap();
+        assert_eq!(persisted, cycle);
+
+        // Boundary pin: equality with latest-admissible is still admitted
+        // (`admits` is `now <= at`), so this cycle is not Missed.
+        let mut admitted_request = sealed_cycle_request(policy, inputs, recurrence, 2, false);
+        admitted_request.evaluated_at = time("2026-07-27T20:02:30Z");
+        let outcome = runtime.run_cycle(admitted_request.seal().unwrap()).unwrap();
+        assert!(matches!(outcome, CycleRunOutcomeV1::PostureOnly { .. }));
+        drop(runtime);
+        assert_eq!(ag.open_count, 0);
+    }
+
+    /// A runtime-produced Missed cycle carries no observation, so it is not
+    /// qualified lineage evidence: the earlier observed cycle remains the
+    /// latest qualified observation in the family.
+    #[test]
+    fn runtime_missed_cycle_is_not_qualified_lineage_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let (policy, inputs, recurrence) = policy_inputs_recurrence();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+
+        let observed_outcome = runtime
+            .run_cycle(sealed_cycle_request(
+                policy.clone(),
+                inputs.clone(),
+                recurrence.clone(),
+                0,
+                true,
+            ))
+            .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened {
+            cycle: observed, ..
+        } = observed_outcome
+        else {
+            panic!("the earlier cycle must observe and open its AG occurrence")
+        };
+
+        let mut missed_request = sealed_cycle_request(policy, inputs, recurrence, 1, false);
+        missed_request.evaluated_at = time("2026-07-27T20:02:00Z");
+        let outcome = runtime.run_cycle(missed_request.seal().unwrap()).unwrap();
+        assert!(matches!(outcome, CycleRunOutcomeV1::Missed { .. }));
+
+        let family = crate::canonical_store::ObservationFamilyKeyV1::of_slot(&observed.slot);
+        let latest = runtime
+            .store
+            .latest_qualified_observation_in_family(&family)
+            .unwrap()
+            .expect("the observed cycle is qualified");
+        assert_eq!(latest.cycle_id, observed.cycle_id);
     }
 
     #[test]
@@ -1176,10 +1466,59 @@ mod tests {
 
     #[test]
     fn immutable_work_parameters_cannot_be_substituted_after_compilation() {
+        // Substituting the sealed executor plan breaks the derived AG work
+        // binding: the exact proposal no longer names the plan's identity.
         let mut request = cycle_request(0, true);
-        request.proposal.as_mut().unwrap().immutable_parameters["resource_id"] =
-            serde_json::json!("different-resource");
+        request.proposal.as_mut().unwrap().ag_executor_plan["effect"]["content"] =
+            serde_json::json!(digest('8'));
         assert!(request.seal().is_err());
+        // Substituting the proposal's claimed work identity breaks it too.
+        let mut request = cycle_request(0, true);
+        request.proposal.as_mut().unwrap().proposal_input["proposal"]["work"] =
+            serde_json::json!(digest('8'));
+        assert!(request.seal().is_err());
+    }
+
+    #[test]
+    fn nightshift_and_ag_work_identities_are_distinct_domains() {
+        // The Nightshift-domain compiled-payload identity and the AG-domain
+        // executable-work identity coexist in one sealed intent and are not
+        // equal. Mutating Nightshift-only compilation input moves only the
+        // Nightshift-domain identity.
+        let request = cycle_request(0, true);
+        let proposal = request.proposal.as_ref().unwrap();
+        let expected_ag_work = ag_executor_plan_identity(&proposal.ag_executor_plan).unwrap();
+        let compiled_work = digest_value(&serde_json::json!({
+            "parameters": &proposal.immutable_parameters,
+            "schema": "example.exact-work/v1",
+        }))
+        .unwrap();
+        assert_ne!(compiled_work, expected_ag_work);
+        let mut changed = cycle_request(0, true);
+        changed.proposal.as_mut().unwrap().immutable_parameters["resource_id"] =
+            serde_json::json!("different-resource");
+        let changed = changed.proposal.unwrap();
+        let changed_compiled = digest_value(&serde_json::json!({
+            "parameters": &changed.immutable_parameters,
+            "schema": "example.exact-work/v1",
+        }))
+        .unwrap();
+        assert_ne!(compiled_work, changed_compiled);
+        assert_eq!(
+            expected_ag_work,
+            ag_executor_plan_identity(&changed.ag_executor_plan).unwrap()
+        );
+    }
+
+    #[test]
+    fn ag_executor_plan_identity_matches_the_pinned_cross_repo_vector() {
+        // The identical plan document and expected digest are pinned in ag_ng
+        // against `EffectExecutorPlanV1::identity()`: the two repositories
+        // compute the AG executable-work identity independently.
+        assert_eq!(
+            ag_executor_plan_identity(&test_executor_plan()).unwrap(),
+            AG_EXECUTOR_PLAN_VECTOR_DIGEST
+        );
     }
 
     #[test]

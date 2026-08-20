@@ -42,13 +42,56 @@ fn production_source() -> String {
 }
 
 #[test]
-fn cargo_exposes_exactly_one_canonical_production_binary() {
+fn cargo_exposes_exactly_the_two_canonical_production_binaries() {
     let manifest = read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
-    assert_eq!(manifest.matches("[[bin]]").count(), 1);
+    assert_eq!(manifest.matches("[[bin]]").count(), 2);
     assert!(manifest.contains("autobins = false"));
     assert!(manifest.contains("name = \"nightshift\""));
     assert!(manifest.contains("path = \"src/bin/nightshift.rs\""));
+    assert!(manifest.contains("name = \"nightshift-observation-resolver\""));
+    assert!(manifest.contains("path = \"src/bin/nightshift_observation_resolver.rs\""));
     assert!(!manifest.contains("nightshift-canonical"));
+}
+
+#[test]
+fn observation_resolver_is_a_read_only_evidence_surface() {
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let resolver_sources = [
+        src.join("observation_resolver.rs"),
+        src.join("bin").join("nightshift_observation_resolver.rs"),
+    ];
+    for path in &resolver_sources {
+        let source = read(path);
+        assert!(
+            !source.contains("Command::new"),
+            "observation resolver opens a subprocess: {}",
+            path.display()
+        );
+        assert!(
+            !source.contains("CanonicalStore::open("),
+            "observation resolver must use the read-only store open path: {}",
+            path.display()
+        );
+        for mutator in [
+            "claim_slot",
+            "record_missed",
+            "record_observation",
+            "prepare_ag_occurrence",
+            "attach_ag_occurrence",
+            "record_ag_status",
+            "record_ag_refusal",
+            "recover_ag_occurrence",
+            "mark_recovery_required",
+            "close_without_proposal",
+            "recover_after_restart",
+        ] {
+            assert!(
+                !source.contains(mutator),
+                "observation resolver references cycle-mutating {mutator}: {}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]
