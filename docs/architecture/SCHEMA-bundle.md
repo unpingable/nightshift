@@ -1,5 +1,10 @@
 # SCHEMA: Context Bundle (v0)
 
+> **PRE-CUTOVER — retained for provenance.** This schema describes the
+> deleted Watchbill-era bundle pipeline (`crates/nightshiftd/src/bundle.rs`
+> no longer exists). It does not describe the canonical runtime; see
+> `docs/CANONICAL_RUNTIME_C1.md` for the current contract.
+
 > Status: draft. The architectural heart of Night Shift.
 
 A **context bundle** is a declared evidence object. Every input has

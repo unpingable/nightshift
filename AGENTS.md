@@ -23,18 +23,17 @@ cargo test
 cargo run --bin nightshift -- --help
 ```
 
-End-to-end Watchbill run against the bundled NQ fixture:
+The production executable surface is two binaries: `nightshift` (the
+canonical observation-cycle runtime) and `nightshift-observation-resolver`
+(a one-shot, read-only evidence translator for AG's observation-resolution
+boundary; it has no cycle-mutation, AG, Docket, or executor surface). The
+structural gate `scripts/check_no_actuation_surface.sh` enforces the closed
+production graph.
 
-```bash
-cargo run --bin nightshift -- watchbill run \
-    tests/fixtures/wal-bloat-review.yaml \
-    --finding nq:wal_bloat:labelwatch-host:/var/lib/db
-```
-
-The Tier-2 horizon path (cross-run tolerance lineage → Governor
-receipts) activates when both `--horizon-policy <path>` and
-`--governor-socket <path>` are supplied. Either flag alone is a
-configuration error.
+The semantic runtime boundary contract — proposal recording, exact-work
+binding, evidence bases, observation currentness and lineage, workflow
+preconditions, standing, authorization, and the Docket seam — is defined by
+`docs/CANONICAL_RUNTIME_C1.md`.
 
 ## Tests
 
@@ -42,14 +41,11 @@ configuration error.
 cargo test
 ```
 
-One integration test (`tests/governor_rpc_live.rs`) is opt-in — it
-requires a live `agent_gov` daemon on a Unix socket and is gated by
-the `NIGHTSHIFT_GOVERNOR_SOCKET` env var (the file uses env gating,
-not `#[ignore]`). Note this exercises the **legacy** Governor wire
-(`agent_gov`), kept optional and disabled by default; the canonical
-authority office for governed work is AG ng, whose authorization
-path reaches Night Shift's world through Docket, not through this
-socket.
+The full Nightshift → AG → Docket integration suite
+(`crates/nightshiftd/tests/ag_governed_integration.rs`) is opt-in because it
+drives adjacent-repository binaries (`ag-loopctl`, `ag-standing-resolver`,
+`ag-effectd`, and the Docket binary); `docs/CANONICAL_RUNTIME_C1.md` records
+the exact invocation environment.
 
 Always run tests before proposing commits. Never claim tests pass
 without running them.
@@ -74,37 +70,28 @@ without running them.
 
 ## Repository layout
 
-v1 is effectively Rust-only. The DESIGN.md Rust+Python split is
-preserved as the architectural target for Code mode, but no Python
-package exists yet — `pyproject.toml` is a placeholder.
+The canonical runtime is a single Rust crate:
 
 ```
-crates/nightshiftd/         Rust crate — daemon + library
+crates/nightshiftd/         Rust crate — canonical runtime + library
   src/
-    agenda.rs               Agenda declaration + YAML loader
-    bundle.rs               Capture + reconciliation DTOs
-    reconciler.rs           Pure adjudicate over (bundle, acquisition)
-    pipeline.rs             capture → reconcile → packet
-    nq.rs                   NQ source (fixture + CLI-backed)
-    liveness.rs             NQ liveness gate
-    freshness.rs            Imported-basis freshness (Slice B)
-    posture_class.rs        Silence-aware posture (Slice C.1)
-    horizon.rs              Tolerability-horizon decision logic
-    horizon_policy.rs       NS-local horizon declarations
-    reconcile_horizon.rs    Horizon phase: policy + tolerance + receipt
-    governor_client.rs      JSON-RPC client (record_receipt today)
-    store/sqlite.rs         SQLite persistence
-    packet.rs               Review-packet schema
-    main.rs                 `nightshift` CLI entry
-  tests/                    Integration tests
-tests/fixtures/             Agenda + NQ fixtures
-docs/                       Lifecycle-organized documentation; see docs/README.md
-  architecture/             Ratified design: DESIGN, FLOW-tolerability-horizon, SCHEMA-*, GAP-reack-doctrine
-  theory/                   Positioning docs: DEPLOYMENT-MATURITY
-  operator/                 Placeholder; operator docs owed at MVP exit
-  working/
-    gaps/                   Open spec-shaped GAPs (14)
-    decisions/              Candidate doctrine, working notes, FEATURE-HISTORY ledger, AUDIT-BACKLOG
+    canonical_runtime.rs    Observation-cycle runtime (slot → posture → intent)
+    canonical_store.rs      Authoritative SQLite cycle/slot/event state
+    diagnostic_posture.rs   Posture evaluation over complete NQ evidence
+    decision_basis.rs       DecisionBasisV1 projection + frozen vocabulary
+    currentness.rs          Qualified-support boundary
+    observation_resolver.rs Read-only AG observation-evidence translator
+    ag_port.rs              ag-loopctl adapter (status/init/continue/record-proposal)
+    bin/nightshift.rs       `nightshift` CLI
+    bin/nightshift_observation_resolver.rs  read-only resolver binary
+  tests/                    Integration tests (incl. the opt-in full-chain
+                            Nightshift → AG → Docket suite)
+docs/
+  CANONICAL_RUNTIME_C1.md   The authoritative runtime boundary contract
+  architecture/             Ratified design (pre-C1 documents bannered as such)
+  theory/                   Positioning docs
+  operator/                 Operator examples and surface docs
+  working/                  Working/historical tree: gaps, decisions, roadmaps
 ```
 
 ---
@@ -113,7 +100,8 @@ docs/                       Lifecycle-organized documentation; see docs/README.m
 
 - Rust: stable toolchain, clippy clean, no unsafe without justification
 - Receipts: content-addressed, append-only, deterministic
-- Governor integration: required for any mode above `observe`
+- The canonical authority office for governed work is AG ng; there is no
+  production classic-Governor integration in this crate
 
 ---
 

@@ -9,7 +9,10 @@ authorize or execute effects, own AG continuation, or call Docket/executors.
 
 ## Runtime status
 
-The sole production binary is `nightshift`. Its sole production cycle is:
+The production executable surface is two binaries: `nightshift` (the
+canonical observation-cycle runtime) and `nightshift-observation-resolver`
+(a one-shot, read-only evidence translator for AG's observation boundary).
+The sole production cycle is:
 
 ```text
 exact recurrence slot

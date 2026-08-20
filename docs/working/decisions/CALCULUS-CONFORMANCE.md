@@ -1,5 +1,17 @@
 # CALCULUS-CONFORMANCE.md — Night Shift ↔ Admissibility Calculus
 
+> **PRE-CUTOVER / RETIRED — DO NOT CITE AS CURRENT RUNTIME CONFORMANCE.**
+>
+> This manifest's runtime-side symbols and modules (`bundle.rs`,
+> `reconciler.rs`, `horizon.rs`, the Governor receipt path, and the rest of
+> the Watchbill-era pipeline) were deleted or quarantined by the canonical
+> runtime cutover. Its HELD/PARTIAL/BLOCKER rows describe that deleted
+> runtime and have not been rehabilitated against current code. Retained for
+> provenance only. The current runtime boundary contract is
+> `docs/CANONICAL_RUNTIME_C1.md`.
+
+---
+
 **Status: CANDIDATE (unratified).** Authoring this manifest is routine
 implementation. Ratifying the constitutional transition it describes —
 from *formal reference* to *runtime governing specification* — is an

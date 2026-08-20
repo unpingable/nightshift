@@ -1,5 +1,22 @@
 # NQ–Nightshift Lean correspondence
 
+> **SUPERSEDED — retained for historical/formal provenance only. Do not cite
+> as the current runtime contract.**
+>
+> This record described the pre-2026-08-11 runtime. Its claim that the
+> runtime stops before even the model's inert proposal boundary is false
+> after the canonical runtime cutover: the current runtime prepares and
+> records exact-work proposals across the AG boundary, and the pinned model's
+> `OperationalMayRely` universal proposal-time condition gate is not the
+> current runtime contract — proposal recording is informational, and
+> condition/delivery semantics are per-workflow catalog preconditions judged
+> by AG at `decide` and `authorize`. The current contract is defined by
+> `docs/CANONICAL_RUNTIME_C1.md`. The pins below remain an exact record of
+> what was claimed against which formal objects, and the formalization
+> handoff for the current boundary is separate later work.
+
+---
+
 This record pins the private formal north star used for the Stage 6 runtime
 foundation. It claims correspondence only where named below. It does not
 claim extraction, proof-carrying code, runtime equivalence, or full formal

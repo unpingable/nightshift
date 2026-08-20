@@ -1,11 +1,12 @@
 # Nightshift canonical runtime C1
 
-**Status:** canonical production runtime; legacy cutover closed; development
-evidence green; not yet operationally qualified.
-
-This is the active developer-facing runtime correspondence note for the
-canonical Nightshift path. It does not issue standing, authority, execution
-permission, or a qualification claim.
+**Status:** canonical production runtime; this document is the authoritative
+statement of the current Nightshift → AG → Docket runtime boundary contract.
+It supersedes pre-cutover runtime-correspondence claims wherever they
+conflict, including the pre-2026-08-11 proposal-boundary model retired in
+`docs/working/decisions/NQ-NIGHTSHIFT-LEAN-CORRESPONDENCE.md` and
+`docs/working/decisions/CALCULUS-CONFORMANCE.md`. It does not issue standing,
+authority, execution permission, or an operational qualification claim.
 
 ## Responsibility boundary
 
@@ -16,11 +17,382 @@ currentness is supplied by its owning authority. NQ supplies the complete
 diagnostic basis. AG exclusively owns exact-work occurrence governance.
 Docket and the executor remain behind AG.
 
-The sole production binary is `nightshift`. Its only
-consequence-adjacent port is `ag-loopctl`, restricted to `status`, `init`,
-`continue`, and `record-proposal`. It has no standing, authorization,
-dispatch, retry, reconciliation, Docket, executor, or human-disposition
-command.
+The production executable surface is two binaries:
+
+- `nightshift` — the canonical observation-cycle runtime. Its only
+  consequence-adjacent port is `ag-loopctl`, restricted to `status`, `init`,
+  `continue`, and `record-proposal`. It has no standing, authorization,
+  dispatch, retry, reconciliation, Docket, executor, or human-disposition
+  command.
+- `nightshift-observation-resolver` — a one-shot, read-only evidence
+  translator answering AG's observation-resolution requests against the
+  canonical store. It opens the store strictly read-only and has no
+  cycle-mutation, lease, AG, Docket, or executor surface.
+
+The structural exclusivity gate
+(`scripts/check_no_actuation_surface.sh`) enforces this closed graph.
+
+## Boundary contract: Nightshift → AG → Docket
+
+### Proposal recording is informational
+
+`ProposalRecorded` means the exact work proposed has been
+identity/binding-validated and recorded as information. It does not mean the
+workflow predicate is satisfied, standing is granted, the catalog admitted
+the work, or anything is authorized or executable.
+
+`record_proposal` performs integrity and binding checks only. It performs no
+workflow-policy judgment. Binding correctness and policy admissibility are
+distinct gates, and the distinction is load-bearing: a proposal may be
+recorded while presently inadmissible, because admission is judged later,
+under the catalog and standing in force at judgment time.
+
+### Exact work is bound across identity domains before recording
+
+Nightshift and AG intentionally use different work-identity domains:
+
+- The Nightshift-domain compiled-work identity is
+  `sha256(JCS({parameters, schema}))` over the immutable compiled payload.
+  It is sealed into `TypedCoarseIntentV2.compiled_work` as provenance.
+- The AG/Docket-domain executable-work identity is the identity of the exact
+  executor plan, derived with AG's domain-separated digest
+  (`hash_domain("ag-effectd.docket-executor-plan/v1", JCS(plan))`).
+
+The two digest values need not be equal, because they identify different
+semantic objects. Safety comes from the sealed cross-domain binding, not
+from digest equality:
+
+1. `PrecompiledWorkflowProposalV2` carries the exact executor plan and
+   validates that the prepared AG proposal's `work` equals the identity
+   Nightshift independently derives from that plan. The expected AG work is
+   derived from the plan content, never caller-asserted.
+2. The sealed intent persists both identities (`compiled_work` and
+   `expected_ag_work`); the prepared AG occurrence request is cross-checked
+   against them.
+3. AG binds the expected work into occurrence metadata at occurrence
+   creation (`OccurrenceMetaV1.expected_work`, via genesis or continuation
+   open).
+4. `record_proposal` requires `proposal.work == expected_work` and rejects a
+   mismatch with an integrity error (`BindingMismatch`) before observation
+   resolution, catalog judgment, or any policy evaluation.
+
+The expected AG work is per occurrence. Continuation occurrences bind their
+own expected work at open; they do not inherit a predecessor's work blindly.
+
+### Evidence basis is pinned; new evidence requires a successor occurrence
+
+A proposal binds exactly one `PreconditionBasisRefV1` — the canonical digest
+of the observation's `DecisionBasisV1` — at record time. Every later
+judgment re-resolves the cited observation and requires the same basis
+digest. New evidence therefore never silently refreshes an existing
+proposal; new evidence requires a successor occurrence.
+
+### DecisionBasisV1 and the normalization rule
+
+The evidence basis is a finite, versioned projection of the Nightshift
+posture:
+
+```text
+schema: nightshift.decision-basis.v1
+rule:   nightshift.posture-normalization, version 1
+atoms:  exactly one condition.* and one delivery.* from the frozen vocabulary:
+
+  condition.clean
+  condition.condition_present
+  condition.unresolved
+  delivery.qualified
+  delivery.partial_delivery
+  delivery.failed
+  delivery.not_configured
+  delivery.not_required
+```
+
+The basis intentionally excludes observation identity, subject/scope
+identity, timestamps and freshness, support standing, completeness, coverage,
+recurrence, attention/headline, and workflow policy.
+Completeness/coverage/recurrence remain upstream proposal-currentness
+concerns: they determine whether a proposal may be prepared, not the content
+of the evidence basis.
+
+The normalization rule identity follows the repository's semantic-identity
+convention. A semantic normalization change requires an explicit rule
+version/identity change; the rule digest identifies the declared
+normalization rule version — it does not automatically detect arbitrary
+source-code semantic changes.
+
+### Decision-relative adequacy, not injectivity
+
+The adequacy invariant is:
+
+> If two exportable posture states normalize to the same `DecisionBasisV1`,
+> then every workflow predicate in the supported predicate family gives the
+> same source-level decision for both.
+
+Normalization is not required to be injective, and different posture states
+are not required to have different bases. Collapsing a distinction no
+supported predicate can observe is benign.
+
+The executable certificate is
+`crates/nightshiftd/tests/decision_basis_adequacy.rs`:
+
+- source domain: `ConditionAxis × DeliveryStanding` (3 × 5 = 15 states);
+- predicate family: every valid `required`/`forbidden` assignment over the 8
+  frozen atoms (3^8 = 6561 predicates);
+- 98,415 production source-level verdict comparisons, zero unsafe
+  collisions;
+- the source-level evaluator matches on the real source enums and never
+  consults `normalize_posture`;
+- self-tests prove the checker accepts a benign collision and detects a
+  deliberately broken normalizer.
+
+Maintenance rule: a new workflow predicate requires rerunning the adequacy
+checker; only a predicate that distinguishes states the normalization
+collapses requires a new normalization rule version. A new predicate does
+not automatically require a normalization change.
+
+### Observation currentness
+
+`nightshift-observation-resolver` answers one exact question about one
+already-persisted observation. It is one-shot and read-only, carries an
+explicit resolver identity, retrieves and revalidates canonical persisted
+evidence, and never judges workflow policy or authorizes anything.
+
+Status meanings:
+
+- **Current**: the cited observation resolves uniquely, passes the canonical
+  store's revalidation and the resolver's subject cross-bindings, is bound
+  to the requesting AG subject through the cycle's sealed typed intent, is
+  inside its actionable freshness window, and is the latest qualified
+  observation in its lineage family. Current does not mean clean,
+  workflow-admissible, standing-granted, authorized, or that the world was
+  re-observed at resolution time.
+- **Stale**: the observation's actionable wall-clock evidence window has
+  expired. The implemented rule is
+  `fresh_until = posture.evaluated_at + configured resolver TTL`, with
+  equality stale (`now >= fresh_until → Stale`). Support expiry is not used:
+  `SupportExpiryV1` lives on the external evidence authority's opaque
+  receiver clock and has no valid Unix-time translation. The actionable
+  window therefore inherits the deployment's existing trust in the
+  caller-sealed `evaluated_at`.
+- **Superseded**: a strictly later qualified observation exists in the same
+  domain-scoped lineage.
+- **Contradictory**: the citation is ambiguous (duplicate observation
+  identities) or the persisted evidence fails integrity/cross-binding
+  validation, or its support is explicitly contradictory.
+- **Absent**: no persisted observation carries the cited identity.
+
+Negative-status responses carry a syntactically valid sentinel basis only
+because the wire schema requires one; it has no workflow-policy meaning. AG
+refuses any non-Current resolution before the catalog decider is consulted.
+
+### Observation lineage and supersession
+
+The lineage family key is exactly:
+
+```text
+(policy_id, configuration_version, subject_id, scope_id, scheduler_clock_id)
+```
+
+and logical order within a family is exactly:
+
+```text
+(occurrence, nominal_due_at, slot_id)
+```
+
+There is no subject-wide "latest observation", no `updated_at` ordering, no
+completion-time ordering, and no caller-supplied `evaluated_at` ordering.
+Qualified for supersession means exactly `cycle.observation.is_some()`.
+Consequences: a later persisted observation with weak or blind support still
+supersedes earlier evidence; `Missed`, `RecoveryRequired`, and in-flight
+cycles carry no observation and never supersede; catch-up completion time
+cannot reorder logical recurrence.
+
+The canonical Missed law: `now == latest_admissible` remains admitted;
+`now > latest_admissible` persists a Missed cycle with reason token
+`slot_passed_exact_latest_admissible_instant`. Missed cycles contain no
+observation and cannot supersede.
+
+### Workflow preconditions and their placement
+
+Each catalog entry may declare a finite precondition over basis atoms:
+
+```text
+required ⊆ basis.atoms  AND  forbidden ∩ basis.atoms = ∅
+```
+
+An absent precondition is unconditional. Catalog validation rejects a
+required/forbidden overlap and any atom outside the frozen vocabulary. There
+is no general expression language, no numeric predicate, and no universal
+Clean rule. The canonical example: a rollout workflow
+(`required = {condition.clean}`) refuses condition-present evidence while a
+remediation workflow (`required = {condition.condition_present}`) admits the
+identical basis.
+
+Placement is fixed:
+
+- `record_proposal`: no workflow predicate;
+- `decide`: the predicate is evaluated;
+- `authorize`: the predicate is re-evaluated.
+
+The predicate is owned by `CatalogAdmissibilityDeciderV1` — not by
+Nightshift, the observation resolver, the kernel's observation-health layer,
+the standing resolver, or Docket.
+
+### Catalog policy identity is content-derived
+
+`ExactWorkCatalogV1.policy_basis` is derived, not caller-asserted: the
+canonical domain-separated digest of the semantic policy content (schema and
+entries; per entry work schema, subject, scope, and precondition sets).
+There is no self-referential policy-identity wire field, and no caller can
+attach an unrelated identity. Every admission decision, spend, and issuance
+identifies the actual catalog content evaluated at that judgment.
+
+Catalog policy is present-tense: `decide` and `authorize` each evaluate the
+catalog currently in force. A policy tightened between them refuses the
+spend; a policy loosened between them is judged under the new policy.
+Policy changes never mutate the proposal or the pinned evidence basis.
+
+### Standing is present-tense governance, never authority
+
+Standing answers one question: does the designated external governance
+authority presently maintain a mandate under which this exact scoped
+proposal context may proceed toward AG authorization? Standing is not
+evidence health, not a workflow predicate, not catalog policy, not
+authorization, and not a bearer capability.
+
+AG validates each standing resolution: explicit resolver identity (the
+configured expectation is never a wildcard), exact
+occurrence/observation/proposal/subject/scope echoes, the resolver's answer
+window against a configured maximum TTL (inclusive at the maximum), and
+freshness `resolved_at <= now < expires_at`.
+
+Standing may change without any evidence change:
+
+- standing Absent at proposal time may later become Current;
+- standing Current at `decide` may become Revoked before `authorize`;
+- `authorize` re-resolves standing every time;
+- recovery may allow the same proposal to be retried.
+
+The asymmetry is intentional: an evidence change requires a successor
+occurrence; a standing change does not.
+
+### The production standing authority
+
+`ag-standing-resolver` is a one-shot, read-only resolver over a local
+mandate store. It has no networking, no write API, and no signatures, and it
+is not authority. Mandates are keyed by exact `(subject, scope)` and carry
+`generation`, `status`, and `valid_until_unix_ms`; mandate identity is
+content-derived. The highest generation governs: no mandate yields Absent;
+a highest generation expired at request time yields Expired; revoked yields
+Revoked; active yields Current. `Superseded` is not emitted: the request
+asks for present standing, not a historical generation, and older
+generations are simply dominated by the highest.
+
+The answer lease is
+`expires_at = min(request.now + configured answer TTL, mandate.valid_until)`;
+AG independently enforces its own configured maximum on top. The irreducible
+environmental assumption: a correctly configured standing authority can lie.
+Schema and content binding establish provenance and scope, not truth.
+
+### The authority boundary
+
+Standing never authorizes. The sole AG authority-minting event is
+`AgAuthorizationSpendV1`, produced only after fresh observation-health
+validation, pinned-basis validation, workflow/catalog judgment, and standing
+validation all pass at authorize time. `AgIssuanceV1` derives from the
+one-use spend. No resolver response, no mandate reference, and no proposal
+is executable authority.
+
+### Docket custody and execution standing
+
+AG standing closes the revocation window between `decide` and `authorize`.
+Docket execution standing independently closes the window between
+`authorize` and effect. Docket receives the signed issuance; standing
+artifacts are never presented to Docket as authority.
+
+A Docket refusal after an AG spend prevents execution and effect but does
+not erase the historically real spend. An AG refusal creates no issuance and
+cannot be resurrected by any permissive Docket state. The two standing
+concepts are distinct gates, not redundant ones.
+
+## Frozen invariants
+
+1. Proposal existence is not admissibility.
+2. Exact work is cross-domain bound before `record_proposal`; work
+   substitution fails as an integrity error.
+3. The evidence basis is pinned when the proposal is recorded.
+4. New evidence requires a successor occurrence; old proposals do not
+   silently refresh.
+5. Workflow preconditions are per-workflow catalog judgments over
+   DecisionBasis atoms.
+6. `decide` evaluates and `authorize` re-evaluates under the catalog policy
+   currently in force.
+7. Observation supersession is domain-scoped and logical-order based.
+8. Standing is present-tense external governance state and never authority.
+9. `AgAuthorizationSpendV1` is the sole AG authority-minting event.
+10. Docket independently gates the post-spend execution/effect boundary.
+11. Catalog `policy_basis` is derived from policy content.
+12. Normalization adequacy is decision-relative, not injective.
+13. Observation freshness is the persisted `evaluated_at` plus a deployment
+    TTL, not opaque support-clock expiry.
+
+## Full-chain qualification evidence
+
+`crates/nightshiftd/tests/ag_governed_integration.rs` exercises the complete
+boundary with real subprocesses — the Nightshift canonical runtime and store,
+`nightshift-observation-resolver`, `ag-loopctl`, `ag-standing-resolver`,
+Docket, and `ag-effectd` — using a controlled fixture only for Docket's own
+execution-standing resolver. Covered scenarios: healthy execution with full
+provenance reconstruction; rollout refusal of condition-present evidence;
+remediation admission of the identical evidence; same-family observation
+supersession before spend; standing revocation before spend; standing
+recovery for the same proposal; Docket refusal after spend; non-resurrection
+of an AG refusal; and exact-work substitution rejection.
+
+The tests are opt-in because they need adjacent-repository binaries. Run:
+
+```sh
+AG_LOOPCTL_BIN=<path to ag-loopctl> \
+AG_STANDING_RESOLVER_BIN=<path to ag-standing-resolver> \
+AG_DOCKET_BIN=<path to docket> \
+AG_EFFECTD_BIN=<path to ag-effectd> \
+cargo test -p nightshiftd --test ag_governed_integration -- --include-ignored
+```
+
+Build the AG binaries from the AG workspace (`cargo build --bins` there
+produces `ag-loopctl`, `ag-standing-resolver`, and `ag-effectd`) and the
+Docket binary from the Docket runtime workspace; pass absolute paths.
+
+## Environmental assumptions
+
+The runtime does not prove external truth. The boundary contract assumes:
+
+- honesty of the observation resolver's source evidence and of the
+  present-evidence authority;
+- caller/request-sealer integrity, including the caller-sealed
+  `evaluated_at` the freshness window derives from;
+- honesty of the configured standing authority and of Docket's
+  execution-standing authority;
+- revocation propagation and timeliness within the configured TTL bounds;
+- correctness of NQ/upstream artifact admission;
+- SHA-256 collision resistance;
+- deployment correctness of resolver identities, store paths, and TTL
+  configuration.
+
+These are deployment assumptions, not defects.
+
+## Nonclaims
+
+- Current Lean does not prove end-to-end runtime conformance.
+- The observation-adequacy certificate is executable CI evidence, not yet a
+  Lean theorem.
+- Standing truthfulness is not formally provable from AG; resolver
+  designation is a deployment trust assumption.
+- There is no claim of open-world enumeration of arbitrary environment or
+  successor state.
+- `DecisionBasisV1` does not preserve all Nightshift posture distinctions;
+  it preserves exactly the distinctions the supported predicate family can
+  observe.
 
 ## Runtime flow
 
@@ -71,7 +443,7 @@ qualified observation and NQ evaluation.
 ## Current command surface
 
 ```sh
-cargo build --locked --release --bin nightshift
+cargo build --locked --release --bins
 ./target/release/nightshift cycle --help
 ```
 
@@ -79,15 +451,18 @@ cargo build --locked --release --bin nightshift
 `pulse-support-resolver`. AG options are required only when the request
 contains an exact precompiled proposal. `cycle sync-ag` and `cycle recover`
 read AG state through `ag-loopctl`; neither can resubmit a prepared request.
+`nightshift-observation-resolver` is invoked by AG as a configured
+subprocess, never by operators, and takes its store, identity, and TTL from
+explicit arguments.
 
 ## Production exclusivity
 
-Cargo automatic binary discovery is disabled and the manifest declares one
-binary target: `nightshift` at `src/bin/nightshift.rs`. Wicket/WLP path
-dependencies, MVP-A, classic Governor, the authority ladder, prose action,
-same-generation skip, and production drills are absent from production source.
-The structural gate enforces this closed graph and mutation-tests representative
-resurrections.
+Cargo automatic binary discovery is disabled and the manifest declares
+exactly two binary targets: `nightshift` and the read-only
+`nightshift-observation-resolver`. Wicket/WLP path dependencies, MVP-A,
+classic Governor, the authority ladder, prose action, same-generation skip,
+and production drills are absent from production source. The structural gate
+enforces this closed graph and mutation-tests representative resurrections.
 
 Historical Watchbill test sources that retain useful archaeology are
 quarantined outside Cargo discovery and are explicitly noncanonical. The old
