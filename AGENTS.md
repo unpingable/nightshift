@@ -11,7 +11,9 @@ If anything here conflicts with the user's explicit instructions, the user wins.
 
 Night Shift manages admissibility across time. Its job is not to decide whether action is authorized, but to prevent old observations, stale plans, and deferred work from silently becoming current authority.
 
-Pair with NQ (premise-movement detection) and Governor (authorization decisions): *NQ detects that the premise moved. Governor decides whether the authorization fell off. Night Shift makes that movement legible across the deferral.*
+Pair with NQ (premise-movement detection) and AG (authorization decisions):
+*NQ detects that the premise moved. AG decides whether the authorization fell
+off. Night Shift makes that movement legible across the deferral.*
 
 ---
 
@@ -47,6 +49,14 @@ drives adjacent-repository binaries (`ag-loopctl`, `ag-standing-resolver`,
 `ag-effectd`, and the Docket binary); `docs/CANONICAL_RUNTIME_C1.md` records
 the exact invocation environment.
 
+For a new or changed governance check, pair the accepting path with a direct
+hostile/refusal witness that would fail if the check were bypassed. Reuse the
+existing natural homes: `observation_resolver.rs` tests for freshness and
+lineage, `ag_governed_integration.rs` for work/subject binding, one-use spend,
+and non-resurrection, and `check_no_actuation_surface.sh --self-test-inject`
+for forbidden production surfaces. Prefer a small mutated fixture or injected
+source specimen; do not add a mutation-testing framework.
+
 Always run tests before proposing commits. Never claim tests pass
 without running them.
 
@@ -59,7 +69,7 @@ without running them.
 - Delete or rewrite git history
 - Modify dependency files in ways that change the lock file
 - Any action that would promote an agenda beyond `propose` stage
-- Anything that touches Governor policy or NQ configuration
+- Anything that touches AG catalog/policy or NQ configuration
 
 ### Preferred workflow
 - Make changes in small, reviewable steps
@@ -107,20 +117,29 @@ docs/
 
 ## Invariants
 
-1. No mutation without Governor authorization. Night Shift proposes; Governor permits.
+1. No mutation without AG authorization. Night Shift proposes; AG permits.
+   Observation/proposal existence, binding validity, catalog admissibility,
+   and current standing are distinct inputs or gates; none is authorization.
 2. Context bundles must be reconciled before execution. Stale context is not evidence.
 3. Every run produces receipts. If it happened without a receipt, it didn't happen correctly.
 4. Promotion is explicit and sequential. No step in `observe → reconcile → propose → authorize → execute → verify → publish` may be skipped.
-5. MCP is tool transport, not authority. Tool availability is not permission.
+5. Transport and operational locators are not identity or authority. MCP tool
+   availability, executable paths, and store paths are mechanism data, not
+   permission; separately bound identities remain authoritative.
 6. Staleness escalates to revalidation, not action. Night Shift may schedule a recheck on stale evidence; it may not propose mutation against it.
 7. Witness positions are NQ's grammar, not Night Shift's. NS consumes the finding shape NQ surfaces; it does not branch behavior on substrate / application_internal / application_external / platform_internal / platform_external. If position disagreement should change scheduling, NQ encodes it into the finding shape and NS responds to the shape.
+8. Recovery, retry, and execution mechanics do not widen, renew, or
+   replace authorization. They may realize only the exact governed effect and
+   provenance bound by the explicit AG authorization and Docket execution
+   gates.
 
 ---
 
 ## What this is not
 
 - Not cron. Cron executes blindly; Night Shift reconciles before acting.
-- Not Governor. Governor is the authority layer. Night Shift is the scheduling/promotion layer.
+- Not AG. AG is the authority office. Night Shift is the observation,
+  scheduling, and proposal office.
 - Not an autonomous operator. It reduces toil without laundering accountability.
 
 ---
@@ -128,7 +147,7 @@ docs/
 ## When you're unsure
 
 Ask for clarification rather than guessing, especially around:
-- Whether a change affects the Governor integration boundary
+- Whether a change affects the AG integration boundary
 - Anything involving the promotion path or escalation ladder
 - Receipt schema changes (these are append-only contracts)
 - Anything that changes a documented invariant

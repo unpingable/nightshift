@@ -32,6 +32,13 @@ The production executable surface is two binaries:
 The structural exclusivity gate
 (`scripts/check_no_actuation_surface.sh`) enforces this closed graph.
 
+Configured executable, store, and database paths are operational locators.
+They select where resolution or execution machinery is reached; they do not
+establish resolver, subject, policy, work, or authority identity. Those
+identities are bound separately by configured expected resolver identities,
+content-derived object identities, and the exact subject/scope/occurrence/work
+bindings described below.
+
 ## Boundary contract: Nightshift → AG → Docket
 
 ### Proposal recording is informational
@@ -276,6 +283,12 @@ Standing may change without any evidence change:
 The asymmetry is intentional: an evidence change requires a successor
 occurrence; a standing change does not.
 
+Equal standing status does not erase how that status was established. When
+authorization succeeds, the spend and issuance retain the exact standing
+resolution and content-derived mandate identity used at that authorization;
+a later Current mandate generation is not rewritten as though it were the
+earlier authorization path.
+
 ### The production standing authority
 
 `ag-standing-resolver` is a one-shot, read-only resolver over a local
@@ -302,6 +315,14 @@ validation, pinned-basis validation, workflow/catalog judgment, and standing
 validation all pass at authorize time. `AgIssuanceV1` derives from the
 one-use spend. No resolver response, no mandate reference, and no proposal
 is executable authority.
+
+Subprocess location, status synchronization, recovery, retry, and Docket
+execution attempts are mechanisms for resolving or realizing
+an already-governed exact effect. They do not widen work or scope, refresh a
+pinned evidence basis, replace authorization provenance, or mint another
+spend. Changed evidence, policy, or standing can affect authority only through
+the explicit gates defined above; execution machinery does not create an
+implicit authorization path.
 
 ### Docket custody and execution standing
 
@@ -335,6 +356,11 @@ concepts are distinct gates, not redundant ones.
 12. Normalization adequacy is decision-relative, not injective.
 13. Observation freshness is the persisted `evaluated_at` plus a deployment
     TTL, not opaque support-clock expiry.
+14. Operational locators select machinery; they do not establish identity or
+    authority.
+15. Resolution, recovery, retry, and execution mechanisms do not widen or
+    renew authorization, and authority receipts retain the exact evidence,
+    policy, and standing provenance used at the spend.
 
 ## Full-chain qualification evidence
 
