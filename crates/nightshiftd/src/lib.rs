@@ -15,6 +15,7 @@ pub mod decision_basis;
 pub mod diagnostic_execution_v2;
 pub mod diagnostic_posture;
 pub mod errors;
+pub mod external_observation;
 pub mod nq_admission;
 pub mod nq_disposition;
 pub mod observation_resolver;

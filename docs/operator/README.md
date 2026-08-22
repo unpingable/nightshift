@@ -120,6 +120,12 @@ Nightshift records it and enters observation-required posture. Success does not
 mean healthy, failure does not diagnose the cause, and indeterminate never
 causes a repeat.
 
+Workflow-specific application/world evidence may be retained through the
+authenticated [external-observation custody contract](../EXTERNAL_OBSERVATION_CUSTODY_V1.md).
+That projection is deliberately separate from canonical observation cycles:
+source-evidence age is not Nightshift currentness, and settlement remains
+neither health nor recovery.
+
 ## Scheduling
 
 Reference systemd files are under [`../../deploy/systemd/`](../../deploy/systemd/).

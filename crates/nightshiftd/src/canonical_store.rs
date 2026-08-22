@@ -26,6 +26,11 @@ use crate::currentness::{
     QualifiedSupportV1, RecurrenceLatestAdmissibleV1, SupportStandingV1, TemporalHoldExpiryV1,
 };
 use crate::diagnostic_posture::{Headline, OperationalPosture};
+use crate::external_observation::{
+    evidence_age, ExternalObservationCustodyProvenanceV1, ExternalObservationExportMatchV1,
+    ExternalObservationExportV1, ExternalObservationQueryV1, LocalComposeWorldObservationV1,
+    VerifiedExternalObservationHandoffV1, EXTERNAL_OBSERVATION_EXPORT_SCHEMA_V1,
+};
 use crate::nq_admission::{validate_admission_cover, NqAdmissionProvenanceV1};
 
 pub const SLOT_SCHEMA_V1: &str = "nightshift.recurrence_slot.v1";
@@ -114,6 +119,8 @@ pub enum CanonicalStoreError {
     WrongLiveLease,
     #[error("deterministic replay failed: {0}")]
     Replay(String),
+    #[error("external observation conflicts with canonical custody: {0}")]
+    ExternalObservationConflict(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1215,6 +1222,21 @@ impl CanonicalStore {
             ) STRICT;
             CREATE INDEX IF NOT EXISTS canonical_authoring_custody_by_maude_context
             ON canonical_authoring_context_custody(maude_plan_ref, maude_session_id);
+            CREATE TABLE IF NOT EXISTS canonical_external_observations (
+                observation_id TEXT PRIMARY KEY,
+                handoff_id TEXT NOT NULL UNIQUE,
+                custody_id TEXT NOT NULL UNIQUE,
+                campaign_id TEXT NOT NULL,
+                occurrence_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL UNIQUE,
+                executor_evidence_receipt TEXT NOT NULL UNIQUE,
+                observation_json TEXT NOT NULL,
+                custody_json TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                UNIQUE(campaign_id, occurrence_id)
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS canonical_external_observations_by_governed_occurrence
+            ON canonical_external_observations(campaign_id, occurrence_id);
             ",
         )?;
         // Narrow migration: older databases predate the queryable
@@ -2052,6 +2074,210 @@ impl CanonicalStore {
         };
         export.validate().map_err(CanonicalStoreError::Invalid)?;
         Ok(export)
+    }
+
+    /// Persist one authenticated application/world observation candidate.
+    ///
+    /// This is a custody journal independent of canonical observation cycles.
+    /// Insertion cannot create an `ObservationRecordV1`, currentness, a
+    /// proposal, or an AG transition. Exact replay returns the first durable
+    /// custody receipt; any attempt/occurrence/source substitution refuses.
+    pub fn record_external_observation(
+        &mut self,
+        verified: &VerifiedExternalObservationHandoffV1,
+        received_at: DateTime<Utc>,
+    ) -> Result<ExternalObservationCustodyProvenanceV1, CanonicalStoreError> {
+        let handoff = verified.handoff();
+        if received_at < handoff.created_at
+            || handoff.observation.observed_at_unix_ms > handoff.created_at.timestamp_millis()
+        {
+            return Err(CanonicalStoreError::Invalid(
+                "external-observation custody time precedes source or handoff".into(),
+            ));
+        }
+        let custody = ExternalObservationCustodyProvenanceV1::mint(verified, received_at)
+            .map_err(CanonicalStoreError::Invalid)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT observation_json, custody_json
+                 FROM canonical_external_observations
+                 WHERE observation_id=?1 OR handoff_id=?2 OR attempt_id=?3
+                    OR executor_evidence_receipt=?4
+                    OR (campaign_id=?5 AND occurrence_id=?6)",
+                params![
+                    &handoff.observation.observation_id,
+                    &handoff.handoff_id,
+                    &handoff.observation.attempt_id,
+                    &handoff.observation.executor_evidence_receipt,
+                    &handoff.observation.campaign_id,
+                    &handoff.observation.occurrence_id,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((observation_json, custody_json)) = existing {
+            let observation =
+                serde_json::from_str::<LocalComposeWorldObservationV1>(&observation_json)?;
+            let existing_custody =
+                serde_json::from_str::<ExternalObservationCustodyProvenanceV1>(&custody_json)?;
+            observation
+                .validate()
+                .map_err(CanonicalStoreError::Invalid)?;
+            existing_custody
+                .validate()
+                .map_err(CanonicalStoreError::Invalid)?;
+            if observation == handoff.observation
+                && existing_custody.handoff_id == custody.handoff_id
+                && existing_custody.observation_id == custody.observation_id
+                && existing_custody.producer_principal_id == custody.producer_principal_id
+                && existing_custody.producer_key_id == custody.producer_key_id
+                && existing_custody.target_runtime_id == custody.target_runtime_id
+            {
+                // Receipt time belongs to first durable acceptance. A timeout
+                // resend never rewrites it or creates a second candidate.
+                return Ok(existing_custody);
+            }
+            return Err(CanonicalStoreError::ExternalObservationConflict(
+                "attempt, occurrence, handoff, or source receipt is already bound".into(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO canonical_external_observations
+             (observation_id, handoff_id, custody_id, campaign_id, occurrence_id,
+              attempt_id, executor_evidence_receipt, observation_json, custody_json,
+              received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &handoff.observation.observation_id,
+                &handoff.handoff_id,
+                &custody.custody_id,
+                &handoff.observation.campaign_id,
+                &handoff.observation.occurrence_id,
+                &handoff.observation.attempt_id,
+                &handoff.observation.executor_evidence_receipt,
+                canonical_json(&handoff.observation)?,
+                canonical_json(&custody)?,
+                timestamp(received_at),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(custody)
+    }
+
+    /// Read-only exact candidate/custody lookup with an explicit age
+    /// projection. `fresh_at_evaluation` says only that source evidence falls
+    /// inside this caller-supplied age window; it is not Nightshift currentness.
+    pub fn export_external_observation(
+        &self,
+        query: ExternalObservationQueryV1,
+        evaluated_at_unix_ms: i64,
+        evidence_ttl_ms: u64,
+    ) -> Result<ExternalObservationExportV1, CanonicalStoreError> {
+        query.validate().map_err(CanonicalStoreError::Invalid)?;
+        if evaluated_at_unix_ms < 0 {
+            return Err(CanonicalStoreError::Invalid(
+                "external-observation evaluation time is invalid".into(),
+            ));
+        }
+        let has_projection = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='canonical_external_observations'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_projection {
+            return Err(CanonicalStoreError::Invalid(
+                "canonical store predates the external-observation custody projection".into(),
+            ));
+        }
+        let rows = match &query {
+            ExternalObservationQueryV1::Observation { observation_id } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT observation_json, custody_json
+                     FROM canonical_external_observations WHERE observation_id=?1",
+                )?;
+                let rows = statement
+                    .query_map([observation_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            ExternalObservationQueryV1::GovernedOccurrence {
+                campaign_id,
+                occurrence_id,
+            } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT observation_json, custody_json
+                     FROM canonical_external_observations
+                     WHERE campaign_id=?1 AND occurrence_id=?2",
+                )?;
+                let rows = statement
+                    .query_map(params![campaign_id, occurrence_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            ExternalObservationQueryV1::Attempt { attempt_id } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT observation_json, custody_json
+                     FROM canonical_external_observations WHERE attempt_id=?1",
+                )?;
+                let rows = statement
+                    .query_map([attempt_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+        };
+        let matches = rows
+            .into_iter()
+            .map(|(observation_json, custody_json)| {
+                let observation =
+                    serde_json::from_str::<LocalComposeWorldObservationV1>(&observation_json)?;
+                let custody =
+                    serde_json::from_str::<ExternalObservationCustodyProvenanceV1>(&custody_json)?;
+                observation
+                    .validate()
+                    .map_err(CanonicalStoreError::Replay)?;
+                custody.validate().map_err(CanonicalStoreError::Replay)?;
+                if custody.observation_id != observation.observation_id
+                    || custody.campaign_id != observation.campaign_id
+                    || custody.occurrence_id != observation.occurrence_id
+                    || custody.exact_work_id != observation.exact_work_id
+                    || custody.attempt_id != observation.attempt_id
+                    || custody.settlement_id != observation.settlement_id
+                    || custody.executor_evidence_receipt != observation.executor_evidence_receipt
+                {
+                    return Err(CanonicalStoreError::Replay(
+                        "external-observation custody projection is contradictory".into(),
+                    ));
+                }
+                Ok(ExternalObservationExportMatchV1 {
+                    evidence_age: evidence_age(
+                        observation.observed_at_unix_ms,
+                        evaluated_at_unix_ms,
+                        evidence_ttl_ms,
+                    ),
+                    observation,
+                    custody,
+                    evaluated_at_unix_ms,
+                    evidence_ttl_ms,
+                })
+            })
+            .collect::<Result<Vec<_>, CanonicalStoreError>>()?;
+        Ok(ExternalObservationExportV1 {
+            schema: EXTERNAL_OBSERVATION_EXPORT_SCHEMA_V1.into(),
+            query,
+            matches,
+        })
     }
 
     /// Read-only export of every persisted observation with one exact

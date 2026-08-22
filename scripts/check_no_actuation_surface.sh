@@ -239,6 +239,37 @@ fi
 if [ "$(rg -c 'AuthoringContextCustodyProvenanceV1::mint' crates/nightshiftd/src/canonical_runtime.rs || true)" -ne 1 ]; then
     fail "authoring custody mint is not confined to the canonical handoff"
 fi
+
+# External application/world observations are authenticated source evidence,
+# never an alternate observation cycle or authority input. The ingress lives
+# in the existing one-shot Nightshift binary, invokes no subprocess, and its
+# custody constructor is confined to the canonical store insertion boundary.
+external_observation_source="crates/nightshiftd/src/external_observation.rs"
+if [ ! -f "$external_observation_source" ]; then
+    fail "external-observation custody source is missing"
+fi
+if rg -n 'Command::new|AgOccurrencePortV1|Docket|Authorization|StandingResolution|QualifiedSupportV1' \
+    "$external_observation_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    # Narrative comments and explicit nonclaims may name layers. Restrict the
+    # actionable check to Rust paths/types/process construction.
+    if rg -n 'Command::new|docket::|ag_port::|AuthorizationReceipt|StandingResolution|QualifiedSupportV1' \
+        "$external_observation_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+        fail "external-observation custody reaches governed authority/effect code:"
+        cat /tmp/nightshift_exclusivity_hits >&2
+    fi
+fi
+if rg -n 'pub (authorization|spend|standing|capability|currentness|admissibility):' \
+    "$external_observation_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "external-observation record contains authority-bearing fields:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if [ "$(rg -c 'ExternalObservationCustodyProvenanceV1::mint' crates/nightshiftd/src/canonical_store.rs || true)" -ne 1 ]; then
+    fail "external-observation custody mint is not confined to canonical store insertion"
+fi
+if rg -n 'record_external_observation' crates/nightshiftd/src/canonical_runtime.rs crates/nightshiftd/src/observation_resolver.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "external-observation custody leaked into cycle currentness/runtime evaluation:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
 if [ "$(rg -c 'MaudeCustodyVerifierV1::from_key_file' crates/nightshiftd/src/bin/nightshift.rs || true)" -ne 1 ]; then
     fail "production Maude custody authentication is not confined to cycle ingress"
 fi

@@ -24,6 +24,9 @@ use nightshiftd::canonical_store::{
 use nightshiftd::currentness::{
     CommandPresentEvidencePortV1, PresentEvidencePortV1, PresentEvidenceQueryV1, QualifiedSupportV1,
 };
+use nightshiftd::external_observation::{
+    ExternalObservationHandoffV1, ExternalObservationQueryV1, ExternalObservationVerifierV1,
+};
 use nightshiftd::nq_admission::{
     CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenanceV1, NqAdmissionQueryV1,
 };
@@ -48,6 +51,46 @@ enum Command {
     Cycle {
         #[command(subcommand)]
         command: CycleCommand,
+    },
+    /// Authenticated custody and read-only inspection for external world-
+    /// observation candidates. This does not create an observation cycle.
+    ExternalObservation {
+        #[command(subcommand)]
+        command: ExternalObservationCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ExternalObservationCommand {
+    /// Authenticate and durably retain one exact candidate handoff.
+    Import {
+        #[arg(long)]
+        handoff: PathBuf,
+        #[arg(long)]
+        credential: PathBuf,
+        #[arg(long)]
+        producer_principal_id: String,
+        #[arg(long)]
+        producer_key_id: String,
+        #[arg(long)]
+        nightshift_runtime_id: String,
+        #[arg(long)]
+        received_at: String,
+    },
+    /// Read-only lookup. Select exactly one identity form.
+    Export {
+        #[arg(long)]
+        observation_id: Option<String>,
+        #[arg(long, requires = "occurrence_id")]
+        campaign_id: Option<String>,
+        #[arg(long, requires = "campaign_id")]
+        occurrence_id: Option<String>,
+        #[arg(long)]
+        attempt_id: Option<String>,
+        #[arg(long)]
+        evaluated_at_unix_ms: i64,
+        #[arg(long)]
+        evidence_ttl_ms: u64,
     },
 }
 
@@ -236,6 +279,70 @@ fn main() -> anyhow::Result<()> {
     let arguments = Arguments::parse();
     match arguments.command {
         Command::Cycle { command } => run_cycle_command(&arguments.store, command),
+        Command::ExternalObservation { command } => {
+            run_external_observation_command(&arguments.store, command)
+        }
+    }
+}
+
+fn run_external_observation_command(
+    store_path: &Path,
+    command: ExternalObservationCommand,
+) -> anyhow::Result<()> {
+    match command {
+        ExternalObservationCommand::Import {
+            handoff,
+            credential,
+            producer_principal_id,
+            producer_key_id,
+            nightshift_runtime_id,
+            received_at,
+        } => {
+            let handoff: ExternalObservationHandoffV1 = read_exact_canonical(&handoff)?;
+            let verifier = ExternalObservationVerifierV1::from_key_file(
+                producer_principal_id,
+                producer_key_id,
+                nightshift_runtime_id,
+                &credential,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let verified = verifier.verify(&handoff).map_err(anyhow::Error::msg)?;
+            let received_at = parse_time(&received_at)?;
+            let mut store = CanonicalStore::open(store_path)?;
+            write_exact(&store.record_external_observation(&verified, received_at)?)
+        }
+        ExternalObservationCommand::Export {
+            observation_id,
+            campaign_id,
+            occurrence_id,
+            attempt_id,
+            evaluated_at_unix_ms,
+            evidence_ttl_ms,
+        } => {
+            let query = match (observation_id, campaign_id, occurrence_id, attempt_id) {
+                (Some(observation_id), None, None, None) => {
+                    ExternalObservationQueryV1::Observation { observation_id }
+                }
+                (None, Some(campaign_id), Some(occurrence_id), None) => {
+                    ExternalObservationQueryV1::GovernedOccurrence {
+                        campaign_id,
+                        occurrence_id,
+                    }
+                }
+                (None, None, None, Some(attempt_id)) => {
+                    ExternalObservationQueryV1::Attempt { attempt_id }
+                }
+                _ => bail!(
+                    "choose exactly one external-observation query: observation, campaign+occurrence, or attempt"
+                ),
+            };
+            let store = CanonicalStore::open_read_only(store_path)?;
+            write_exact(&store.export_external_observation(
+                query,
+                evaluated_at_unix_ms,
+                evidence_ttl_ms,
+            )?)
+        }
     }
 }
 
@@ -599,6 +706,11 @@ fn render_cycle_text(cycle: &ObservationCycleV1) -> anyhow::Result<()> {
 }
 
 fn read_exact<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
+    let bytes = read_exact_bytes(path)?;
+    decode_exact(&bytes, path)
+}
+
+fn read_exact_bytes(path: &Path) -> anyhow::Result<Vec<u8>> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -625,12 +737,26 @@ fn read_exact<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     if bytes.len() as u64 > MAX_EXACT_INPUT_BYTES {
         bail!("exact input exceeds 16 MiB: {}", path.display());
     }
-    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    Ok(bytes)
+}
+
+fn decode_exact<T: DeserializeOwned>(bytes: &[u8], path: &Path) -> anyhow::Result<T> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = T::deserialize(&mut deserializer)
         .with_context(|| format!("decode exact JSON {}", path.display()))?;
     deserializer
         .end()
         .with_context(|| format!("reject trailing JSON in {}", path.display()))?;
+    Ok(value)
+}
+
+fn read_exact_canonical<T: DeserializeOwned + Serialize>(path: &Path) -> anyhow::Result<T> {
+    let actual = read_exact_bytes(path)?;
+    let value = decode_exact(&actual, path)?;
+    let expected = serde_jcs::to_vec(&value).context("canonicalize exact input")?;
+    if actual != expected {
+        bail!("external-observation handoff must be exact canonical JSON");
+    }
     Ok(value)
 }
 
@@ -679,5 +805,17 @@ mod exact_input_tests {
             symlink(&path, &linked).unwrap();
             assert!(read_exact::<serde_json::Value>(&linked).is_err());
         }
+    }
+
+    #[test]
+    fn external_observation_input_requires_exact_canonical_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("handoff.json");
+        std::fs::write(&path, br#"{ "b": 2, "a": 1 }"#).unwrap();
+        assert!(read_exact_canonical::<serde_json::Value>(&path).is_err());
+
+        std::fs::write(&path, br#"{"a":1,"b":2}"#).unwrap();
+        let value: serde_json::Value = read_exact_canonical(&path).unwrap();
+        assert_eq!(value, serde_json::json!({"a": 1, "b": 2}));
     }
 }
