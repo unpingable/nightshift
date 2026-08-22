@@ -8,13 +8,27 @@ conflict, including the pre-2026-08-11 proposal-boundary model retired in
 `docs/working/decisions/CALCULUS-CONFORMANCE.md`. It does not issue standing,
 authority, execution permission, or an operational qualification claim.
 
+New optional Maude plan/session lineage for exact proposals is specified in
+[`authoring-context-provenance.md`](authoring-context-provenance.md). It is an
+immutable Nightshift-owned provenance relation, deliberately absent from every
+authority gate. Historical and runtime-generated occurrences remain valid when
+the relation is not recorded.
+
+New Maude authoring inputs use the separate two-role authenticated custody
+contract in
+[`authoring-context-custody.md`](authoring-context-custody.md). Custody
+authentication is verified before cycle admission and is persisted as audit
+lineage only; it supplies no currentness, standing, authorization, or
+execution predicate.
+
 ## Responsibility boundary
 
 Nightshift owns exact recurrence-slot and observation-cycle identity,
 scheduling posture, application posture over complete current diagnostic
 evidence, attention, and typed non-authorizing intent. Present-evidence
-currentness is supplied by its owning authority. NQ supplies the complete
-diagnostic basis. AG exclusively owns exact-work occurrence governance.
+currentness is supplied by its owning authority. NQ-NG supplies the complete
+diagnostic basis and qualifies its historical admission provenance. AG
+exclusively owns exact-work occurrence governance.
 Docket and the executor remain behind AG.
 
 The production executable surface is two binaries:
@@ -32,12 +46,44 @@ The production executable surface is two binaries:
 The structural exclusivity gate
 (`scripts/check_no_actuation_surface.sh`) enforces this closed graph.
 
+### NQ-NG admission provenance boundary
+
+Before a non-missed cycle claims its recurrence slot, every delivered
+diagnostic must be qualified through the configured `nq` executable and
+stable NQ store-genesis `source_id`. NQ-NG's read-only `diagnostics qualify`
+operation accepts only a locally emitted `nq.diagnostic_execution.v2` whose
+artifact commitment, exact bytes, run/evaluation, provider intake, admission
+context, profile semantic identity, and judgment or governed refusal/failure
+history all reopen exactly. Imported custody is ineligible.
+
+Nightshift recomputes the full canonical-byte digest and checks the returned
+`nq.diagnostic_admission_provenance.v1` against the artifact ID, contract,
+byte length, run, completion time, profile semantic ID, producer/source ID,
+and closed nonclaims. `nightshift.observation_record.v2` persists one such
+carrier per unique delivered artifact. A missing, refused, malformed, or
+substituted carrier creates no cycle claim and no observation. Historical v1
+observation records remain readable; the production NQ-NG qualifier does not
+mint new provenance for v1 or imported artifacts.
+
+This admission is evidence eligibility, not currentness, standing, AG
+authorization, or permission to act. The carrier self-hash is an integrity
+binding, not a signature. The configured executable and config paths are
+locators; source authenticity and honesty remain deployment assumptions.
+
 Configured executable, store, and database paths are operational locators.
 They select where resolution or execution machinery is reached; they do not
 establish resolver, subject, policy, work, or authority identity. Those
 identities are bound separately by configured expected resolver identities,
 content-derived object identities, and the exact subject/scope/occurrence/work
 bindings described below.
+
+For an exact-work cycle, Nightshift also supplies AG's deployment-owned
+runtime-profile locator at campaign genesis. AG persists the exact canonical
+profile and its content identity atomically with the first occurrence. The
+profile, not a later caller, binds observation/standing resolver identities and
+bytes, the exact-work catalog, and the Docket custody/executor root. Repeated
+CLI paths are compatibility assertions; they cannot select a replacement
+authority or execution boundary.
 
 ## Boundary contract: Nightshift → AG → Docket
 
@@ -400,7 +446,11 @@ The runtime does not prove external truth. The boundary contract assumes:
 - honesty of the configured standing authority and of Docket's
   execution-standing authority;
 - revocation propagation and timeliness within the configured TTL bounds;
-- correctness of NQ/upstream artifact admission;
+- honesty and correct deployment of the configured NQ-NG source that emits
+  locally verified admission provenance;
+- host-level custody and honest deployment of the distinct Maude session
+  issuer and handoff producer credentials, service principals, custody store,
+  and request/handoff directories;
 - SHA-256 collision resistance;
 - deployment correctness of resolver identities, store paths, and TTL
   configuration.
@@ -424,6 +474,7 @@ These are deployment assumptions, not defects.
 
 ```text
 exact recurrence slot
+  -> exact local NQ-NG admission provenance
   -> exact observation cycle
   -> authority-owned present-support result
   -> complete NQ diagnostic posture
@@ -473,10 +524,14 @@ cargo build --locked --release --bins
 ./target/release/nightshift cycle --help
 ```
 
-`cycle run` accepts one exact sealed cycle request and an executable named
-`pulse-support-resolver`. AG options are required only when the request
-contains an exact precompiled proposal. `cycle sync-ag` and `cycle recover`
-read AG state through `ag-loopctl`; neither can resubmit a prepared request.
+`cycle run` accepts one exact sealed cycle request, an executable named
+`nq` with its config locator and expected store-genesis source identity, and
+an executable named `pulse-support-resolver`. AG options are required only
+when the request contains an exact precompiled proposal; the complete set is
+the AG CLI, database, observation-resolver locator and expected identity, and
+runtime-profile locator. `cycle sync-ag` and
+`cycle recover` read AG state through `ag-loopctl`; neither can resubmit a
+prepared request.
 `nightshift-observation-resolver` is invoked by AG as a configured
 subprocess, never by operators, and takes its store, identity, and TTL from
 explicit arguments.

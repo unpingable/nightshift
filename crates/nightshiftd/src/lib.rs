@@ -6,6 +6,8 @@
 //! standing, authorization, execution-custody, effect, or AG-continuation API.
 
 pub mod ag_port;
+pub mod authoring_context;
+pub mod authoring_custody;
 pub mod canonical_runtime;
 pub mod canonical_store;
 pub mod currentness;
@@ -13,6 +15,7 @@ pub mod decision_basis;
 pub mod diagnostic_execution_v2;
 pub mod diagnostic_posture;
 pub mod errors;
+pub mod nq_admission;
 pub mod nq_disposition;
 pub mod observation_resolver;
 

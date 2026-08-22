@@ -2,6 +2,8 @@
 //! The store is populated through the real runtime path (posture-only cycle),
 //! then the compiled binary is exercised as a subprocess.
 
+mod common;
+
 use std::process::Command;
 
 use chrono::{DateTime, Utc};
@@ -17,6 +19,8 @@ use nightshiftd::currentness::{
     SupportReceiverInstantV1, SupportStandingV1,
 };
 use nightshiftd::diagnostic_posture::{DiagnosticInputs, PosturePolicy, RecurrenceEvidence};
+
+use common::TestNqAdmissionPort;
 
 fn digest(byte: char) -> String {
     format!("sha256:{}", byte.to_string().repeat(64))
@@ -121,6 +125,7 @@ fn posture_only_request(observation_id: &str) -> CanonicalCycleRequestV1 {
         recurrence,
         temporal_policy: None,
         proposal: None,
+        authoring_context: None,
     }
     .seal()
     .unwrap()
@@ -144,6 +149,30 @@ fn export_observation(store: &std::path::Path, observation_id: &str) -> serde_js
     serde_json::from_slice(&output.stdout).expect("export output is JSON")
 }
 
+fn export_authoring_context(
+    store: &std::path::Path,
+    campaign_id: &str,
+    occurrence_id: &str,
+) -> serde_json::Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_nightshift"))
+        .arg("--store")
+        .arg(store)
+        .arg("cycle")
+        .arg("export-authoring-context")
+        .arg("--campaign-id")
+        .arg(campaign_id)
+        .arg("--occurrence-id")
+        .arg(occurrence_id)
+        .output()
+        .expect("run nightshift cycle export-authoring-context");
+    assert!(
+        output.status.success(),
+        "export-authoring-context failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("authoring-context export is JSON")
+}
+
 #[test]
 fn export_observation_reports_the_unique_match_with_lineage() {
     let directory = tempfile::tempdir().unwrap();
@@ -153,7 +182,7 @@ fn export_observation_reports_the_unique_match_with_lineage() {
     let mut store = CanonicalStore::open(&database).unwrap();
     let mut support = CurrentSupportPort;
     let mut ag = NoAgPort;
-    let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+    let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
         .run_cycle(posture_only_request(&observation_id))
         .unwrap();
     let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
@@ -172,6 +201,17 @@ fn export_observation_reports_the_unique_match_with_lineage() {
     assert_eq!(
         entry["observation"]["observation_id"],
         observation_id.as_str()
+    );
+    assert_eq!(
+        entry["observation"]["schema"],
+        "nightshift.observation_record.v2"
+    );
+    assert_eq!(
+        entry["observation"]["source_admissions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
     assert_eq!(entry["family"]["policy_id"], policy.policy_id.as_str());
     assert_eq!(entry["family"]["subject_id"], policy.subject.id.as_str());
@@ -192,7 +232,7 @@ fn export_observation_reports_absent_as_zero_matches() {
     let mut store = CanonicalStore::open(&database).unwrap();
     let mut support = CurrentSupportPort;
     let mut ag = NoAgPort;
-    CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+    CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
         .run_cycle(posture_only_request(&digest('a')))
         .unwrap();
     drop(store);
@@ -210,7 +250,7 @@ fn export_observation_does_not_mutate_runtime_state() {
     let mut store = CanonicalStore::open(&database).unwrap();
     let mut support = CurrentSupportPort;
     let mut ag = NoAgPort;
-    let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+    let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
         .run_cycle(posture_only_request(&observation_id))
         .unwrap();
     let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
@@ -225,4 +265,33 @@ fn export_observation_does_not_mutate_runtime_state() {
     let store = CanonicalStore::open(&database).unwrap();
     let after = store.get_cycle(&cycle.cycle_id);
     assert_eq!(before, after.expect("cycle remains readable"));
+}
+
+#[test]
+fn export_authoring_context_reports_historical_unlinked_without_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("ns.sqlite");
+    let mut store = CanonicalStore::open(&database).unwrap();
+    let mut support = CurrentSupportPort;
+    let mut ag = NoAgPort;
+    let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+        .run_cycle(posture_only_request(&digest('a')))
+        .unwrap();
+    let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
+        panic!("expected a posture-only cycle")
+    };
+    let before = store.get_cycle(&cycle.cycle_id).unwrap();
+    drop(store);
+
+    let export = export_authoring_context(
+        &database,
+        &digest('c'),
+        "00000000-0000-4000-8000-000000000000",
+    );
+    assert_eq!(export["schema"], "nightshift.authoring_context_export.v1");
+    assert_eq!(export["query"]["by"], "governed_occurrence");
+    assert_eq!(export["matches"].as_array().unwrap().len(), 0);
+
+    let store = CanonicalStore::open(&database).unwrap();
+    assert_eq!(store.get_cycle(&cycle.cycle_id).unwrap(), before);
 }

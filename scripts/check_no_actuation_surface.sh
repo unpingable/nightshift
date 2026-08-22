@@ -88,6 +88,11 @@ if ! rg -q '/nightshift[[:space:]\\]+$' deploy/systemd/nightshift-observation-cy
     || ! rg -q 'cycle run' deploy/systemd/nightshift-observation-cycle.service; then
     fail "systemd service does not invoke canonical nightshift cycle run"
 fi
+for nq_option in nq-program nq-config nq-source-id; do
+    if ! rg -q -- "--${nq_option}" deploy/systemd/nightshift-observation-cycle.service; then
+        fail "systemd service does not bind required NQ admission option --${nq_option}"
+    fi
+done
 if rg -n -i 'watchbill|wicket|\bwlp\b|governor|no-governor|authority[_ -]?level|scheduled[_ -]?skip' \
     "${active_units[@]}" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
     fail "retired runtime vocabulary remains in active systemd deployment:"
@@ -156,13 +161,15 @@ if rg -n '\.(post|put|delete|patch)\(' "$production_src" >/tmp/nightshift_exclus
     cat /tmp/nightshift_exclusivity_hits >&2
 fi
 
-# The only process boundaries are exact, closed ports: present-support
-# resolution and AG occurrence opening/status. Any third site is a new runtime
-# authority or execution surface and fails closed.
+# The only process boundaries are exact, closed ports: read-only NQ admission
+# qualification, present-support resolution, and AG occurrence opening/status.
+# Any fourth site is a new runtime authority or execution surface and fails
+# closed.
 mapfile -t command_files < <(rg -l 'Command::new' "$production_src" | sort)
 expected_command_files=(
     crates/nightshiftd/src/ag_port.rs
     crates/nightshiftd/src/currentness.rs
+    crates/nightshiftd/src/nq_admission.rs
 )
 if [ "${command_files[*]}" != "${expected_command_files[*]}" ]; then
     fail "production subprocess files are not the exact closed port set: ${command_files[*]:-<none>}"
@@ -173,12 +180,33 @@ fi
 if [ "$(rg -c 'Command::new' crates/nightshiftd/src/currentness.rs || true)" -ne 1 ]; then
     fail "present-support port must contain exactly one subprocess site"
 fi
+if [ "$(rg -c 'Command::new' crates/nightshiftd/src/nq_admission.rs || true)" -ne 1 ]; then
+    fail "NQ admission port must contain exactly one subprocess site"
+fi
 if ! rg -q 'Some\("ag-loopctl"\)' crates/nightshiftd/src/ag_port.rs; then
     fail "AG port is not executable-name pinned to ag-loopctl"
+fi
+if ! rg -q '"--runtime-profile"' crates/nightshiftd/src/ag_port.rs; then
+    fail "AG campaign genesis is not bound to a deployment-owned runtime profile"
+fi
+if ! rg -q '"--expected-observation-resolver-id"' crates/nightshiftd/src/ag_port.rs; then
+    fail "AG proposal recording does not repeat the profile-checked resolver identity"
 fi
 if ! rg -q 'Some\("pulse-support-resolver"\)' crates/nightshiftd/src/currentness.rs; then
     fail "present-support port is not executable-name pinned to pulse-support-resolver"
 fi
+if ! rg -q 'Some\("nq"\)' crates/nightshiftd/src/nq_admission.rs; then
+    fail "NQ admission port is not executable-name pinned to nq"
+fi
+if ! rg -q '\.arg\("qualify"\)' crates/nightshiftd/src/nq_admission.rs; then
+    fail "NQ admission port lost its sole read-only qualification operation"
+fi
+for forbidden_nq_verb in execute import export watcher admit revoke collect; do
+    if rg -n "\.arg\(\"${forbidden_nq_verb}\"\)" crates/nightshiftd/src/nq_admission.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+        fail "Nightshift NQ admission port exposes forbidden verb ${forbidden_nq_verb}:"
+        cat /tmp/nightshift_exclusivity_hits >&2
+    fi
+done
 
 for forbidden_ag_verb in authorize dispatch retry reconcile standing resume halt disposition; do
     if rg -n "run(_with_input)?\\(\"${forbidden_ag_verb}\"" crates/nightshiftd/src/ag_port.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
@@ -192,12 +220,62 @@ for required_ag_verb in init continue record-proposal status; do
     fi
 done
 
+# Authoring-context lineage is deliberately authority-neutral. Its constructor
+# is crate-private and the final mint occurs only at canonical proposal
+# compilation; no field or AG wire type may carry authority material.
+authoring_source="crates/nightshiftd/src/authoring_context.rs"
+custody_source="crates/nightshiftd/src/authoring_custody.rs"
+if rg -n 'pub (authorization|spend|issuance|signature|capability|secret|standing|admissibility):' "$authoring_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "authoring-context provenance contains authority-bearing fields:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'pub (authorization|spend|issuance|capability|secret|standing|admissibility|currentness):' "$custody_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "authoring custody contains governed authority fields:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if [ "$(rg -c 'AuthoringContextProvenanceV1::mint' crates/nightshiftd/src/canonical_runtime.rs || true)" -ne 1 ]; then
+    fail "authoring-context provenance mint is not confined to the canonical handoff"
+fi
+if [ "$(rg -c 'AuthoringContextCustodyProvenanceV1::mint' crates/nightshiftd/src/canonical_runtime.rs || true)" -ne 1 ]; then
+    fail "authoring custody mint is not confined to the canonical handoff"
+fi
+if [ "$(rg -c 'MaudeCustodyVerifierV1::from_key_file' crates/nightshiftd/src/bin/nightshift.rs || true)" -ne 1 ]; then
+    fail "production Maude custody authentication is not confined to cycle ingress"
+fi
+if [ "$(rg -c 'read_protected_key_path\(' "$custody_source" || true)" -ne 3 ]; then
+    # One definition and exactly two calls: independently pinned producer and
+    # supervised-session issuer credentials.
+    fail "Maude handoff producer and session issuer are not independently authenticated"
+fi
+for required_role in session_issuer_principal_id session_issuer_key_id producer_principal_id producer_key_id; do
+    if ! rg -q "pub ${required_role}: String" "$custody_source"; then
+        fail "authoring custody lost distinct identity role ${required_role}"
+    fi
+done
+if rg -n '^pub fn sign_|^pub\(crate\) fn sign_' "$custody_source" | rg -v '#\[cfg\(test\)\]' >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    # The cfg attributes sit on the preceding lines, so separately require
+    # every crate-confined signer name to occur only in the test section.
+    first_test_line=$(rg -n '^#\[cfg\(test\)\]$' "$custody_source" | head -n1 | cut -d: -f1)
+    first_sign_line=$(rg -n 'pub\(crate\) fn sign_' "$custody_source" | head -n1 | cut -d: -f1)
+    if [ -n "${first_sign_line:-}" ] && [ "${first_sign_line}" -lt "${first_test_line:-0}" ]; then
+        fail "production Nightshift exposes a custody signer"
+    fi
+fi
+if ! rg -q 'pub\(crate\) fn prepare_ag_occurrence' crates/nightshiftd/src/canonical_store.rs; then
+    fail "canonical proposal preparation became externally callable"
+fi
+if rg -n 'authoring_context|AuthoringContext|authoring_custody|AuthoringCustody|MaudeCustody' crates/nightshiftd/src/ag_port.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "AG wire adapter consumes Maude authoring context:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+
 # Self-test against a disposable copy: every representative resurrection must
 # make the copied guard fail. This does not mutate the real worktree.
 if [ "${1:-}" = "--self-test-inject" ]; then
     sandbox=$(mktemp -d)
     trap 'rm -rf "$sandbox" /tmp/nightshift_exclusivity_hits /tmp/nightshift_exclusivity_selftest' EXIT
-    cp -a . "$sandbox/repo"
+    mkdir "$sandbox/repo"
+    cp -a Cargo.toml Cargo.lock crates deploy scripts "$sandbox/repo/"
 
     cat >"$sandbox/repo/crates/nightshiftd/src/_legacy_resurrection.rs" <<'EOF'
 use wicket::Intent;

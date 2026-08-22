@@ -130,7 +130,7 @@ fn retired_authority_stack_is_structurally_absent_from_production() {
 }
 
 #[test]
-fn only_present_support_and_ag_are_process_boundaries() {
+fn only_nq_admission_present_support_and_ag_are_process_boundaries() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut command_files = Vec::new();
     fn visit(directory: &Path, command_files: &mut Vec<String>) {
@@ -152,7 +152,22 @@ fn only_present_support_and_ag_are_process_boundaries() {
     }
     visit(&src, &mut command_files);
     command_files.sort();
-    assert_eq!(command_files, ["ag_port.rs", "currentness.rs"]);
+    assert_eq!(
+        command_files,
+        ["ag_port.rs", "currentness.rs", "nq_admission.rs"]
+    );
+}
+
+#[test]
+fn ag_genesis_carries_the_deployment_owned_runtime_profile() {
+    let source = read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("ag_port.rs"),
+    );
+    assert!(source.contains("\"--runtime-profile\""));
+    assert!(source.contains("\"--expected-observation-resolver-id\""));
+    assert!(source.contains("runtime_profile"));
 }
 
 #[test]

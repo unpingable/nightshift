@@ -137,9 +137,18 @@ impl AgOpenOccurrenceRequestV1 {
             }
             AgOpenModeV1::Continuation { continuation } => {
                 let object = exact_object(continuation, "continuation")?;
-                if object.len() != 1 || exact_string(object, "occurrence")? != self.occurrence_id {
-                    return Err("AG continuation does not bind exactly one new occurrence".into());
+                let fields: BTreeSet<_> = ["expected_ag_work", "occurrence"].into_iter().collect();
+                if object.keys().map(String::as_str).collect::<BTreeSet<_>>() != fields
+                    || exact_string(object, "occurrence")? != self.occurrence_id
+                {
+                    return Err(
+                        "AG continuation does not bind exactly one new occurrence and work".into(),
+                    );
                 }
+                require_digest(
+                    "continuation.expected_ag_work",
+                    exact_string(object, "expected_ag_work")?,
+                )?;
             }
         }
         let input = exact_object(&self.proposal_input, "proposal_input")?;
@@ -192,11 +201,24 @@ impl AgOpenOccurrenceRequestV1 {
         {
             return Err("exact AG proposal does not bind campaign/subject/scope".into());
         }
-        require_digest("proposal.work", exact_string(proposal, "work")?)?;
+        let proposal_work = exact_string(proposal, "work")?;
+        require_digest("proposal.work", proposal_work)?;
         require_token(
             "proposal.work_schema",
             exact_string(proposal, "work_schema")?,
         )?;
+        let expected_work = match &self.mode {
+            AgOpenModeV1::Genesis { genesis } => {
+                exact_string(exact_object(genesis, "genesis")?, "expected_ag_work")?
+            }
+            AgOpenModeV1::Continuation { continuation } => exact_string(
+                exact_object(continuation, "continuation")?,
+                "expected_ag_work",
+            )?,
+        };
+        if expected_work != proposal_work {
+            return Err("AG occurrence expected work differs from the exact proposal work".into());
+        }
         let mut value = serde_json::to_value(self).map_err(|error| error.to_string())?;
         value
             .as_object_mut()
@@ -273,6 +295,8 @@ pub struct AgLoopCtlPortV1 {
     program: PathBuf,
     database: PathBuf,
     observation_resolver: PathBuf,
+    expected_observation_resolver_id: String,
+    runtime_profile: PathBuf,
 }
 
 impl AgLoopCtlPortV1 {
@@ -280,6 +304,8 @@ impl AgLoopCtlPortV1 {
         program: impl Into<PathBuf>,
         database: impl Into<PathBuf>,
         observation_resolver: impl Into<PathBuf>,
+        expected_observation_resolver_id: impl Into<String>,
+        runtime_profile: impl Into<PathBuf>,
     ) -> Result<Self, String> {
         let program = program.into();
         if program.file_name().and_then(|name| name.to_str()) != Some("ag-loopctl") {
@@ -287,13 +313,26 @@ impl AgLoopCtlPortV1 {
         }
         let database = database.into();
         let observation_resolver = observation_resolver.into();
-        if database.as_os_str().is_empty() || observation_resolver.as_os_str().is_empty() {
-            return Err("AG database and observation resolver paths must be non-empty".into());
+        let expected_observation_resolver_id = expected_observation_resolver_id.into();
+        let runtime_profile = runtime_profile.into();
+        if database.as_os_str().is_empty()
+            || observation_resolver.as_os_str().is_empty()
+            || runtime_profile.as_os_str().is_empty()
+            || expected_observation_resolver_id.trim().is_empty()
+            || expected_observation_resolver_id
+                .chars()
+                .any(char::is_whitespace)
+        {
+            return Err(
+                "AG database, observation resolver, resolver identity, and runtime profile must be non-empty".into(),
+            );
         }
         Ok(Self {
             program,
             database,
             observation_resolver,
+            expected_observation_resolver_id,
+            runtime_profile,
         })
     }
 
@@ -332,6 +371,7 @@ impl AgLoopCtlPortV1 {
         let input_path = file.path().to_string_lossy();
         if include_observation_resolver {
             let resolver = self.observation_resolver.to_string_lossy();
+            let resolver_id = &self.expected_observation_resolver_id;
             self.run(&[
                 command,
                 "--database",
@@ -340,14 +380,22 @@ impl AgLoopCtlPortV1 {
                 &input_path,
                 "--observation-resolver",
                 &resolver,
+                "--expected-observation-resolver-id",
+                resolver_id,
+            ])
+        } else if command == "init" {
+            let profile = self.runtime_profile.to_string_lossy();
+            self.run(&[
+                command,
+                "--database",
+                &database,
+                "--genesis",
+                &input_path,
+                "--runtime-profile",
+                &profile,
             ])
         } else {
-            let input_flag = if command == "init" {
-                "--genesis"
-            } else {
-                "--input"
-            };
-            self.run(&[command, "--database", &database, input_flag, &input_path])
+            self.run(&[command, "--database", &database, "--input", &input_path])
         }
     }
 
@@ -617,6 +665,7 @@ mod tests {
                     "campaign": campaign.clone(),
                     "occurrence": occurrence,
                     "program": digest('2'),
+                    "expected_ag_work": digest('3'),
                     "residuals": [],
                     "budget": {"retry_limit": 1, "retries_used": 0, "probe_limit": 1, "probes_used": 0, "escalation_limit": 1, "escalations_used": 0}
                 }),
@@ -729,18 +778,33 @@ mod tests {
 
     #[test]
     fn adapter_rejects_arbitrary_executable() {
-        assert!(AgLoopCtlPortV1::new("sh", "ag.sqlite", "observe").is_err());
+        assert!(AgLoopCtlPortV1::new(
+            "sh",
+            "ag.sqlite",
+            "observe",
+            "nightshift-observation-resolver/v1",
+            "profile.json",
+        )
+        .is_err());
     }
 
     /// Explicit stable-contract check against a real canonical AG database.
     /// Ignored by default because the executable/database are external inputs.
     #[test]
-    #[ignore = "set NIGHTSHIFT_TEST_AG_LOOPCTL, NIGHTSHIFT_TEST_AG_DB, and NIGHTSHIFT_TEST_AG_OBSERVATION_RESOLVER"]
+    #[ignore = "set NIGHTSHIFT_TEST_AG_LOOPCTL, NIGHTSHIFT_TEST_AG_DB, NIGHTSHIFT_TEST_AG_OBSERVATION_RESOLVER, and NIGHTSHIFT_TEST_AG_RUNTIME_PROFILE"]
     fn real_ag_loopctl_status_contract() {
         let program = std::env::var_os("NIGHTSHIFT_TEST_AG_LOOPCTL").unwrap();
         let database = std::env::var_os("NIGHTSHIFT_TEST_AG_DB").unwrap();
         let resolver = std::env::var_os("NIGHTSHIFT_TEST_AG_OBSERVATION_RESOLVER").unwrap();
-        let mut port = AgLoopCtlPortV1::new(program, database, resolver).unwrap();
+        let profile = std::env::var_os("NIGHTSHIFT_TEST_AG_RUNTIME_PROFILE").unwrap();
+        let mut port = AgLoopCtlPortV1::new(
+            program,
+            database,
+            resolver,
+            "nightshift-observation-resolver/v1",
+            profile,
+        )
+        .unwrap();
         let value = port
             .status(&digest('a'), "00000000-0000-4000-8000-000000000001")
             .unwrap();
@@ -753,13 +817,20 @@ mod tests {
     /// init/record-proposal seam. No standing, authorization, or dispatch
     /// command is available to this adapter.
     #[test]
-    #[ignore = "set NIGHTSHIFT_TEST_AG_LOOPCTL and NIGHTSHIFT_TEST_AG_OBSERVATION_RESOLVER"]
+    #[ignore = "set NIGHTSHIFT_TEST_AG_LOOPCTL, NIGHTSHIFT_TEST_AG_OBSERVATION_RESOLVER, and NIGHTSHIFT_TEST_AG_RUNTIME_PROFILE"]
     fn real_ag_loopctl_open_occurrence_contract() {
         let program = std::env::var_os("NIGHTSHIFT_TEST_AG_LOOPCTL").unwrap();
         let resolver = std::env::var_os("NIGHTSHIFT_TEST_AG_OBSERVATION_RESOLVER").unwrap();
+        let profile = std::env::var_os("NIGHTSHIFT_TEST_AG_RUNTIME_PROFILE").unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let mut port =
-            AgLoopCtlPortV1::new(program, directory.path().join("ag.sqlite"), resolver).unwrap();
+        let mut port = AgLoopCtlPortV1::new(
+            program,
+            directory.path().join("ag.sqlite"),
+            resolver,
+            "nightshift-observation-resolver/v1",
+            profile,
+        )
+        .unwrap();
         let request = request();
         let value = port.open_occurrence(&request).unwrap();
         assert_eq!(value.campaign_id, request.campaign_id);

@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
     let store = CanonicalStore::open_read_only(&arguments.store)
         .context("open canonical store read-only")?;
     let resolution = resolve_observation(&store, &request, &config)
-        .map_err(|error| anyhow::Error::new(error))
+        .map_err(anyhow::Error::new)
         .context("resolve observation")?;
     let body = serde_jcs::to_vec(&resolution).context("canonicalize resolution")?;
     let body = String::from_utf8(body).context("resolution is UTF-8")?;

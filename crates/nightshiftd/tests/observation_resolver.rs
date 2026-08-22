@@ -3,6 +3,8 @@
 //! `ag.governed-loop.observation-resolution/v2` response on stdout. Store
 //! state is built through the real canonical runtime.
 
+mod common;
+
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -24,6 +26,8 @@ use nightshiftd::currentness::{
 use nightshiftd::decision_basis::{normalize_posture, DecisionBasisV1};
 use nightshiftd::diagnostic_posture::{DiagnosticInputs, PosturePolicy, RecurrenceEvidence};
 use sha2::{Digest as _, Sha256};
+
+use common::TestNqAdmissionPort;
 
 const RESOLVER_ID: &str = "nightshift-observation-resolver/v1";
 /// The AG subject digest compiled into every test proposal (`digest('b')`).
@@ -268,6 +272,7 @@ fn cycle_request_in(
                     "campaign": digest('a'),
                     "occurrence": occurrence_uuid(occurrence),
                     "program": digest('2'),
+                    "expected_ag_work": work.clone(),
                     "residuals": [],
                     "budget": {"retry_limit":1,"retries_used":0,"probe_limit":1,"probes_used":0,"escalation_limit":1,"escalations_used":0}
                 }),
@@ -286,6 +291,7 @@ fn cycle_request_in(
                 "class":"initial"
             }),
         }),
+        authoring_context: None,
     }
     .seal()
     .unwrap()
@@ -296,7 +302,7 @@ fn run_cycle(store: &mut CanonicalStore, request: CanonicalCycleRequestV1) -> Cy
         standing: SupportStandingV1::Current,
     };
     let mut ag = FakeAg;
-    CanonicalRuntime::new(store, &mut support, &mut ag)
+    CanonicalRuntime::new(store, TestNqAdmissionPort, &mut support, &mut ag)
         .run_cycle(request)
         .unwrap()
 }
@@ -308,7 +314,7 @@ fn run_cycle_with_support(
 ) -> CycleRunOutcomeV1 {
     let mut support = SupportPort { standing };
     let mut ag = FakeAg;
-    CanonicalRuntime::new(store, &mut support, &mut ag)
+    CanonicalRuntime::new(store, TestNqAdmissionPort, &mut support, &mut ag)
         .run_cycle(request)
         .unwrap()
 }
@@ -726,14 +732,10 @@ fn missed_and_recovery_cycles_do_not_supersede() {
     // no persisted observation.
     let mut failing = FailingSupportPort;
     let mut ag = FakeAg;
-    let result = CanonicalRuntime::new(&mut store, &mut failing, &mut ag).run_cycle(cycle_request(
-        &policy,
-        &inputs,
-        &recurrence,
-        2,
-        &digest('f'),
-        false,
-    ));
+    let result =
+        CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut failing, &mut ag).run_cycle(
+            cycle_request(&policy, &inputs, &recurrence, 2, &digest('f'), false),
+        );
     assert!(result.is_err());
     drop(store);
 

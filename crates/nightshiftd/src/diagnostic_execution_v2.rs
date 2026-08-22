@@ -905,6 +905,13 @@ impl DiagnosticExecution {
         }
     }
 
+    pub fn completed_at(&self) -> &str {
+        match self {
+            Self::V1(value) => &value.completed_at,
+            Self::V2(value) => &value.completed_at,
+        }
+    }
+
     pub fn question(&self) -> &SemanticIdentityV1 {
         match self {
             Self::V1(value) => &value.question,

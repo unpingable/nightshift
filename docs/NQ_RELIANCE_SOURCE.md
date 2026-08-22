@@ -8,6 +8,13 @@ application posture and attention without re-evaluating diagnostic truth.
 
 The production `nightshift cycle run` request carries an exact closed
 `DiagnosticInputs` basis containing canonical NQ diagnostic artifacts.
+For every delivered input, Nightshift separately invokes the configured NQ-NG
+`diagnostics qualify` read boundary and persists the exact
+`nq.diagnostic_admission_provenance.v1` carrier in
+`nightshift.observation_record.v2`. The carrier must bind the artifact's full
+canonical bytes, local store-genesis source, run, profile semantic identity,
+provider admission context, and judgment or refusal/failure disposition.
+Imported custody and substitution refuse before a cycle is claimed.
 Present support/currentness arrives separately through the exact
 `PresentEvidencePortV1` query/response contract. Nightshift does not compare a
 raw NQ producer timestamp to its scheduler clock to make the basis actionable.
@@ -17,9 +24,11 @@ the canonical CLI. The retained `nq_disposition` module and conformance vectors
 are read-only contract specimens used to preserve testimony/refusal semantics;
 they do not create a second runtime path.
 
-Nightshift does not open NQ storage, bind to unfinished Gen5 Store/signer
-internals, parse human prose, or share authority-bearing Rust types across the
-repository boundary.
+Nightshift does not link NQ storage internals, parse human prose, or share
+authority-bearing Rust types across the repository boundary. Its configured
+NQ-NG subprocess opens the source store read-only and returns a closed JSON
+carrier. The carrier is historical evidence eligibility, not reliance,
+standing, authorization, or permission to act.
 
 ## Full-basis preservation
 

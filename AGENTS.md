@@ -52,9 +52,10 @@ the exact invocation environment.
 For a new or changed governance check, pair the accepting path with a direct
 hostile/refusal witness that would fail if the check were bypassed. Reuse the
 existing natural homes: `observation_resolver.rs` tests for freshness and
-lineage, `ag_governed_integration.rs` for work/subject binding, one-use spend,
-and non-resurrection, and `check_no_actuation_surface.sh --self-test-inject`
-for forbidden production surfaces. Prefer a small mutated fixture or injected
+lineage, `nq_admission.rs` tests for exact upstream admission binding,
+`ag_governed_integration.rs` for work/subject binding, one-use spend, and
+non-resurrection, and `check_no_actuation_surface.sh --self-test-inject` for
+forbidden production surfaces. Prefer a small mutated fixture or injected
 source specimen; do not add a mutation-testing framework.
 
 Always run tests before proposing commits. Never claim tests pass
@@ -90,6 +91,7 @@ crates/nightshiftd/         Rust crate — canonical runtime + library
     diagnostic_posture.rs   Posture evaluation over complete NQ evidence
     decision_basis.rs       DecisionBasisV1 projection + frozen vocabulary
     currentness.rs          Qualified-support boundary
+    nq_admission.rs         Read-only NQ-NG admission-provenance boundary
     observation_resolver.rs Read-only AG observation-evidence translator
     ag_port.rs              ag-loopctl adapter (status/init/continue/record-proposal)
     bin/nightshift.rs       `nightshift` CLI

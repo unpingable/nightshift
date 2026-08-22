@@ -15,14 +15,24 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
+use crate::authoring_context::{
+    ag_proposal_identity, exact_work_identity, AuthoringContextExportV1,
+    AuthoringContextProvenanceV1, AuthoringContextQueryV1,
+};
+use crate::authoring_custody::{
+    AuthoringContextCustodyExportV1, AuthoringContextCustodyProvenanceV1, CUSTODY_EXPORT_SCHEMA_V1,
+};
 use crate::currentness::{
     QualifiedSupportV1, RecurrenceLatestAdmissibleV1, SupportStandingV1, TemporalHoldExpiryV1,
 };
 use crate::diagnostic_posture::{Headline, OperationalPosture};
+use crate::nq_admission::{validate_admission_cover, NqAdmissionProvenanceV1};
 
 pub const SLOT_SCHEMA_V1: &str = "nightshift.recurrence_slot.v1";
 pub const CYCLE_SCHEMA_V1: &str = "nightshift.observation_cycle.v1";
 pub const OBSERVATION_RECORD_SCHEMA_V1: &str = "nightshift.observation_record.v1";
+pub const OBSERVATION_RECORD_SCHEMA_V2: &str = "nightshift.observation_record.v2";
+pub const OBSERVATION_RECORD_SCHEMA: &str = OBSERVATION_RECORD_SCHEMA_V2;
 pub const TYPED_INTENT_SCHEMA_V2: &str = "nightshift.typed_coarse_intent.v2";
 pub const AG_REFERENCE_SCHEMA_V1: &str = "nightshift.ag_occurrence_reference.v1";
 pub const AG_REFUSAL_SCHEMA_V1: &str = "nightshift.ag_refusal_reference.v1";
@@ -340,6 +350,10 @@ impl CycleStatusV1 {
 pub struct ObservationRecordV1 {
     pub schema: String,
     pub observation_id: String,
+    /// Exact upstream NQ-NG admission provenance for every delivered
+    /// diagnostic. This establishes evidence eligibility only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_admissions: Vec<NqAdmissionProvenanceV1>,
     pub support: QualifiedSupportV1,
     pub posture: OperationalPosture,
 }
@@ -349,10 +363,22 @@ impl ObservationRecordV1 {
         &self,
         cycle: &ObservationCycleId,
     ) -> Result<(), CanonicalStoreError> {
-        if self.schema != OBSERVATION_RECORD_SCHEMA_V1 {
-            return Err(CanonicalStoreError::Invalid(
-                "unsupported observation record schema".into(),
-            ));
+        match self.schema.as_str() {
+            OBSERVATION_RECORD_SCHEMA_V1 if self.source_admissions.is_empty() => {}
+            OBSERVATION_RECORD_SCHEMA_V1 => {
+                return Err(CanonicalStoreError::Invalid(
+                    "v1 observation record cannot carry NQ admission provenance".into(),
+                ));
+            }
+            OBSERVATION_RECORD_SCHEMA_V2 => {
+                validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
+                    .map_err(CanonicalStoreError::Invalid)?
+            }
+            _ => {
+                return Err(CanonicalStoreError::Invalid(
+                    "unsupported observation record schema".into(),
+                ));
+            }
         }
         require_digest("observation_id", &self.observation_id)?;
         self.support
@@ -717,6 +743,13 @@ pub struct PreparedAgRequestV1 {
     pub exact_request: serde_json::Value,
 }
 
+/// Optional inert authoring lineage and its separately authenticated custody
+/// evidence, committed atomically with the prepared AG request.
+pub(crate) struct PreparedAuthoringEvidenceV1 {
+    pub(crate) lineage: Option<AuthoringContextProvenanceV1>,
+    pub(crate) custody: Option<AuthoringContextCustodyProvenanceV1>,
+}
+
 impl PreparedAgRequestV1 {
     pub fn validate(&self) -> Result<(), CanonicalStoreError> {
         if self.schema != PREPARED_AG_REQUEST_SCHEMA_V1 {
@@ -871,6 +904,14 @@ pub struct ObservationCycleV1 {
     pub intent: Option<TypedCoarseIntentV2>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_ag_request: Option<PreparedAgRequestV1>,
+    /// Immutable plan/session lineage minted at exact proposal preparation.
+    /// It is retained as evidence only and is absent from AG authority inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_context_provenance: Option<AuthoringContextProvenanceV1>,
+    /// Authenticated delivery evidence for newly linked Maude contexts.
+    /// Historical lineage predating custody remains valid with this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_context_custody: Option<AuthoringContextCustodyProvenanceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ag: Option<AgOccurrenceReferenceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -956,6 +997,51 @@ impl ObservationCycleV1 {
             if request.source_intent_id != intent.intent_id {
                 return Err(CanonicalStoreError::Invalid(
                     "prepared AG request does not bind the exact intent".into(),
+                ));
+            }
+        }
+        match (
+            &self.authoring_context_provenance,
+            &self.prepared_ag_request,
+            &self.intent,
+        ) {
+            (None, _, _) => {}
+            (Some(provenance), Some(request), Some(intent)) => {
+                let proposal_input =
+                    request.exact_request.get("proposal_input").ok_or_else(|| {
+                        CanonicalStoreError::Invalid(
+                            "prepared AG request has no exact proposal_input".into(),
+                        )
+                    })?;
+                provenance
+                    .validate_relationship(
+                        &request.campaign_id,
+                        &request.occurrence_id,
+                        &ag_proposal_identity(proposal_input)
+                            .map_err(CanonicalStoreError::Invalid)?,
+                        &exact_work_identity(proposal_input)
+                            .map_err(CanonicalStoreError::Invalid)?,
+                        &intent.intent_id,
+                    )
+                    .map_err(CanonicalStoreError::Invalid)?;
+            }
+            (Some(_), _, _) => {
+                return Err(CanonicalStoreError::Invalid(
+                    "authoring-context provenance exists without its exact prepared request".into(),
+                ));
+            }
+        }
+        match (
+            &self.authoring_context_custody,
+            &self.authoring_context_provenance,
+        ) {
+            (None, _) => {}
+            (Some(custody), Some(provenance)) => custody
+                .validate_for_authoring(provenance)
+                .map_err(CanonicalStoreError::Invalid)?,
+            (Some(_), None) => {
+                return Err(CanonicalStoreError::Invalid(
+                    "authoring custody exists without authoring-context lineage".into(),
                 ));
             }
         }
@@ -1084,6 +1170,51 @@ impl CanonicalStore {
                 PRIMARY KEY(campaign_id, occurrence_id),
                 FOREIGN KEY(cycle_id) REFERENCES canonical_observation_cycles(cycle_id)
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS canonical_authoring_context_provenance (
+                provenance_id TEXT PRIMARY KEY,
+                cycle_id TEXT NOT NULL UNIQUE,
+                campaign_id TEXT NOT NULL,
+                occurrence_id TEXT NOT NULL,
+                proposal_id TEXT NOT NULL,
+                exact_work_id TEXT NOT NULL,
+                source_intent_id TEXT NOT NULL,
+                maude_plan_ref TEXT NOT NULL,
+                maude_session_id TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                UNIQUE(campaign_id, occurrence_id),
+                FOREIGN KEY(cycle_id) REFERENCES canonical_observation_cycles(cycle_id)
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS canonical_authoring_by_proposal
+            ON canonical_authoring_context_provenance(proposal_id);
+            CREATE INDEX IF NOT EXISTS canonical_authoring_by_maude_context
+            ON canonical_authoring_context_provenance(maude_plan_ref, maude_session_id);
+            CREATE TABLE IF NOT EXISTS canonical_authoring_context_custody (
+                custody_id TEXT PRIMARY KEY,
+                cycle_id TEXT NOT NULL UNIQUE,
+                handoff_id TEXT NOT NULL UNIQUE,
+                session_record_id TEXT NOT NULL,
+                authoring_context_provenance_id TEXT NOT NULL UNIQUE,
+                campaign_id TEXT NOT NULL,
+                occurrence_id TEXT NOT NULL,
+                proposal_id TEXT NOT NULL,
+                exact_work_id TEXT NOT NULL,
+                producer_principal_id TEXT NOT NULL,
+                producer_key_id TEXT NOT NULL,
+                session_issuer_principal_id TEXT NOT NULL,
+                session_issuer_key_id TEXT NOT NULL,
+                target_runtime_id TEXT NOT NULL,
+                target_request_id TEXT NOT NULL,
+                maude_plan_ref TEXT NOT NULL,
+                maude_session_id TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                FOREIGN KEY(cycle_id) REFERENCES canonical_observation_cycles(cycle_id),
+                FOREIGN KEY(authoring_context_provenance_id)
+                    REFERENCES canonical_authoring_context_provenance(provenance_id)
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS canonical_authoring_custody_by_maude_context
+            ON canonical_authoring_context_custody(maude_plan_ref, maude_session_id);
             ",
         )?;
         // Narrow migration: older databases predate the queryable
@@ -1161,6 +1292,8 @@ impl CanonicalStore {
             temporal_posture: None,
             intent: None,
             prepared_ag_request: None,
+            authoring_context_provenance: None,
+            authoring_context_custody: None,
             ag: None,
             ag_refusal: None,
             recovery_reason: None,
@@ -1227,6 +1360,8 @@ impl CanonicalStore {
             temporal_posture: None,
             intent: None,
             prepared_ag_request: None,
+            authoring_context_provenance: None,
+            authoring_context_custody: None,
             ag: None,
             ag_refusal: None,
             recovery_reason: Some(reason),
@@ -1293,15 +1428,47 @@ impl CanonicalStore {
         )
     }
 
-    pub fn prepare_ag_occurrence(
+    pub(crate) fn prepare_ag_occurrence(
         &mut self,
         lease: &LiveCycleLeaseV1,
         expected_digest: &str,
         intent: TypedCoarseIntentV2,
         request: PreparedAgRequestV1,
+        authoring: PreparedAuthoringEvidenceV1,
         now: DateTime<Utc>,
     ) -> Result<ObservationCycleV1, CanonicalStoreError> {
+        let PreparedAuthoringEvidenceV1 {
+            lineage: authoring_context_provenance,
+            custody: authoring_context_custody,
+        } = authoring;
         request.validate()?;
+        if let Some(provenance) = &authoring_context_provenance {
+            let proposal_input = request.exact_request.get("proposal_input").ok_or_else(|| {
+                CanonicalStoreError::Invalid(
+                    "prepared AG request has no exact proposal_input".into(),
+                )
+            })?;
+            provenance
+                .validate_relationship(
+                    &request.campaign_id,
+                    &request.occurrence_id,
+                    &ag_proposal_identity(proposal_input).map_err(CanonicalStoreError::Invalid)?,
+                    &exact_work_identity(proposal_input).map_err(CanonicalStoreError::Invalid)?,
+                    &intent.intent_id,
+                )
+                .map_err(CanonicalStoreError::Invalid)?;
+        }
+        match (&authoring_context_custody, &authoring_context_provenance) {
+            (None, _) => {}
+            (Some(custody), Some(provenance)) => custody
+                .validate_for_authoring(provenance)
+                .map_err(CanonicalStoreError::Invalid)?,
+            (Some(_), None) => {
+                return Err(CanonicalStoreError::Invalid(
+                    "authoring custody exists without authoring-context lineage".into(),
+                ));
+            }
+        }
         self.transition(
             &lease.cycle_id,
             Some(lease),
@@ -1332,6 +1499,8 @@ impl CanonicalStore {
                 }
                 cycle.intent = Some(intent);
                 cycle.prepared_ag_request = Some(request);
+                cycle.authoring_context_provenance = authoring_context_provenance;
+                cycle.authoring_context_custody = authoring_context_custody;
                 cycle.status = CycleStatusV1::AwaitingAg;
                 Ok(())
             },
@@ -1626,6 +1795,8 @@ impl CanonicalStore {
         )?;
         cycle.validate()?;
         self.validate_ag_occurrence_claim(&cycle)?;
+        self.validate_authoring_context_claim(&cycle)?;
+        self.validate_authoring_custody_claim(&cycle)?;
         Ok(cycle)
     }
 
@@ -1643,6 +1814,8 @@ impl CanonicalStore {
         drop(statement);
         for cycle in &values {
             self.validate_ag_occurrence_claim(cycle)?;
+            self.validate_authoring_context_claim(cycle)?;
+            self.validate_authoring_custody_claim(cycle)?;
         }
         Ok(values)
     }
@@ -1669,6 +1842,8 @@ impl CanonicalStore {
         drop(statement);
         for cycle in &values {
             self.validate_ag_occurrence_claim(cycle)?;
+            self.validate_authoring_context_claim(cycle)?;
+            self.validate_authoring_custody_claim(cycle)?;
         }
         Ok(values)
     }
@@ -1701,6 +1876,182 @@ impl CanonicalStore {
             }
         }
         Ok(latest)
+    }
+
+    /// Exact immutable authoring-context relations selected by one closed
+    /// identity query. This is a read projection only; absence remains an
+    /// empty match set and never changes proposal validity or authority.
+    pub fn export_authoring_context(
+        &self,
+        query: AuthoringContextQueryV1,
+    ) -> Result<AuthoringContextExportV1, CanonicalStoreError> {
+        query.validate().map_err(CanonicalStoreError::Invalid)?;
+        let has_projection = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='canonical_authoring_context_provenance'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_projection {
+            return Err(CanonicalStoreError::Invalid(
+                "canonical store predates the authoring-context provenance projection".into(),
+            ));
+        }
+        let durable_rows = match &query {
+            AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id,
+                occurrence_id,
+            } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT cycle_id, record_json FROM canonical_authoring_context_provenance
+                     WHERE campaign_id=?1 AND occurrence_id=?2 ORDER BY provenance_id",
+                )?;
+                let rows = statement
+                    .query_map(params![campaign_id, occurrence_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            AuthoringContextQueryV1::Proposal { proposal_id } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT cycle_id, record_json FROM canonical_authoring_context_provenance
+                     WHERE proposal_id=?1 ORDER BY occurrence_id, provenance_id",
+                )?;
+                let rows = statement
+                    .query_map([proposal_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            AuthoringContextQueryV1::MaudeContext {
+                plan_ref,
+                session_id,
+            } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT cycle_id, record_json FROM canonical_authoring_context_provenance
+                     WHERE maude_plan_ref=?1 AND maude_session_id=?2
+                     ORDER BY campaign_id, occurrence_id, provenance_id",
+                )?;
+                let rows = statement
+                    .query_map(params![plan_ref, session_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+        };
+        let matches = durable_rows
+            .into_iter()
+            .map(|(cycle_id, json)| {
+                let record = serde_json::from_str::<AuthoringContextProvenanceV1>(&json)?;
+                let cycle = self.get_cycle(&ObservationCycleId(cycle_id))?;
+                if cycle.authoring_context_provenance.as_ref() != Some(&record) {
+                    return Err(CanonicalStoreError::Replay(
+                        "authoring-context projection differs from its authoritative cycle".into(),
+                    ));
+                }
+                Ok(record)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        AuthoringContextExportV1::new(query, matches).map_err(CanonicalStoreError::Invalid)
+    }
+
+    /// Exact authenticated custody records for one authoring identity query.
+    /// Historical authoring lineage predating custody returns an empty set.
+    pub fn export_authoring_custody(
+        &self,
+        query: AuthoringContextQueryV1,
+    ) -> Result<AuthoringContextCustodyExportV1, CanonicalStoreError> {
+        query.validate().map_err(CanonicalStoreError::Invalid)?;
+        let has_projection = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='canonical_authoring_context_custody'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_projection {
+            return Err(CanonicalStoreError::Invalid(
+                "canonical store predates the authoring-context custody projection".into(),
+            ));
+        }
+        let durable_rows = match &query {
+            AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id,
+                occurrence_id,
+            } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT c.cycle_id, c.record_json
+                     FROM canonical_authoring_context_custody c
+                     JOIN canonical_authoring_context_provenance p
+                       ON p.provenance_id=c.authoring_context_provenance_id
+                     WHERE p.campaign_id=?1 AND p.occurrence_id=?2
+                     ORDER BY c.custody_id",
+                )?;
+                let rows = statement
+                    .query_map(params![campaign_id, occurrence_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            AuthoringContextQueryV1::Proposal { proposal_id } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT c.cycle_id, c.record_json
+                     FROM canonical_authoring_context_custody c
+                     JOIN canonical_authoring_context_provenance p
+                       ON p.provenance_id=c.authoring_context_provenance_id
+                     WHERE p.proposal_id=?1 ORDER BY c.custody_id",
+                )?;
+                let rows = statement
+                    .query_map([proposal_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+            AuthoringContextQueryV1::MaudeContext {
+                plan_ref,
+                session_id,
+            } => {
+                let mut statement = self.connection.prepare(
+                    "SELECT cycle_id, record_json FROM canonical_authoring_context_custody
+                     WHERE maude_plan_ref=?1 AND maude_session_id=?2
+                     ORDER BY custody_id",
+                )?;
+                let rows = statement
+                    .query_map(params![plan_ref, session_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            }
+        };
+        let matches = durable_rows
+            .into_iter()
+            .map(|(cycle_id, json)| {
+                let record = serde_json::from_str::<AuthoringContextCustodyProvenanceV1>(&json)?;
+                let cycle = self.get_cycle(&ObservationCycleId(cycle_id))?;
+                if cycle.authoring_context_custody.as_ref() != Some(&record) {
+                    return Err(CanonicalStoreError::Replay(
+                        "authoring custody projection differs from its authoritative cycle".into(),
+                    ));
+                }
+                Ok(record)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let export = AuthoringContextCustodyExportV1 {
+            schema: CUSTODY_EXPORT_SCHEMA_V1.into(),
+            query,
+            matches,
+        };
+        export.validate().map_err(CanonicalStoreError::Invalid)?;
+        Ok(export)
     }
 
     /// Read-only export of every persisted observation with one exact
@@ -1878,11 +2229,45 @@ impl CanonicalStore {
                 ));
             }
         }
+        let durable_authoring: Option<String> = tx
+            .query_row(
+                "SELECT record_json FROM canonical_authoring_context_provenance
+                 WHERE cycle_id=?1",
+                [cycle_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let durable_authoring = durable_authoring
+            .map(|json| serde_json::from_str::<AuthoringContextProvenanceV1>(&json))
+            .transpose()?;
+        if cycle.authoring_context_provenance != durable_authoring {
+            return Err(CanonicalStoreError::Replay(
+                "authoring-context claim diverged before transition".into(),
+            ));
+        }
+        let durable_custody: Option<String> = tx
+            .query_row(
+                "SELECT record_json FROM canonical_authoring_context_custody
+                 WHERE cycle_id=?1",
+                [cycle_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let durable_custody = durable_custody
+            .map(|json| serde_json::from_str::<AuthoringContextCustodyProvenanceV1>(&json))
+            .transpose()?;
+        if cycle.authoring_context_custody != durable_custody {
+            return Err(CanonicalStoreError::Replay(
+                "authoring-context custody claim diverged before transition".into(),
+            ));
+        }
         if cycle.state_digest != expected_digest {
             return Err(CanonicalStoreError::StalePredecessor);
         }
         let prior = cycle.state_digest.clone();
         let had_prepared_ag_request = cycle.prepared_ag_request.is_some();
+        let had_authoring_context = cycle.authoring_context_provenance.is_some();
+        let had_authoring_custody = cycle.authoring_context_custody.is_some();
         mutate(&mut cycle)?;
         cycle.version = cycle
             .version
@@ -1910,6 +2295,77 @@ impl CanonicalStore {
                     return Err(CanonicalStoreError::DuplicateAgOccurrence(
                         request.campaign_id.clone(),
                         request.occurrence_id.clone(),
+                    ));
+                }
+            }
+        }
+        if !had_authoring_context {
+            if let Some(provenance) = &cycle.authoring_context_provenance {
+                let inserted = tx.execute(
+                    "INSERT OR IGNORE INTO canonical_authoring_context_provenance
+                     (provenance_id, cycle_id, campaign_id, occurrence_id, proposal_id,
+                      exact_work_id, source_intent_id, maude_plan_ref, maude_session_id,
+                      record_json, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        &provenance.provenance_id,
+                        cycle_id.as_str(),
+                        &provenance.campaign_id,
+                        &provenance.occurrence_id,
+                        &provenance.proposal_id,
+                        &provenance.exact_work_id,
+                        &provenance.source_intent_id,
+                        &provenance.maude_plan_ref,
+                        &provenance.maude_session_id,
+                        canonical_json(provenance)?,
+                        timestamp(provenance.recorded_at),
+                    ],
+                )?;
+                if inserted != 1 {
+                    return Err(CanonicalStoreError::Invalid(
+                        "governed occurrence already has a different authoring-context relation"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        if !had_authoring_custody {
+            if let Some(custody) = &cycle.authoring_context_custody {
+                let inserted = tx.execute(
+                    "INSERT OR IGNORE INTO canonical_authoring_context_custody
+                     (custody_id, cycle_id, handoff_id, session_record_id,
+                      authoring_context_provenance_id, campaign_id, occurrence_id,
+                      proposal_id, exact_work_id, producer_principal_id,
+                      producer_key_id, session_issuer_principal_id,
+                      session_issuer_key_id, target_runtime_id, target_request_id,
+                      maude_plan_ref, maude_session_id, record_json, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                             ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                    params![
+                        &custody.custody_id,
+                        cycle_id.as_str(),
+                        &custody.handoff_id,
+                        &custody.session_record_id,
+                        &custody.authoring_context_provenance_id,
+                        &custody.campaign_id,
+                        &custody.occurrence_id,
+                        &custody.proposal_id,
+                        &custody.exact_work_id,
+                        &custody.producer_principal_id,
+                        &custody.producer_key_id,
+                        &custody.session_issuer_principal_id,
+                        &custody.session_issuer_key_id,
+                        &custody.target_runtime_id,
+                        &custody.target_request_id,
+                        &custody.maude_plan_ref,
+                        &custody.maude_session_id,
+                        canonical_json(custody)?,
+                        timestamp(custody.recorded_at),
+                    ],
+                )?;
+                if inserted != 1 {
+                    return Err(CanonicalStoreError::Invalid(
+                        "governed occurrence already has different authoring custody".into(),
                     ));
                 }
             }
@@ -1994,6 +2450,94 @@ impl CanonicalStore {
             }
             _ => Err(CanonicalStoreError::Replay(
                 "AG occurrence claim does not match the authoritative cycle snapshot".into(),
+            )),
+        }
+    }
+
+    fn validate_authoring_context_claim(
+        &self,
+        cycle: &ObservationCycleV1,
+    ) -> Result<(), CanonicalStoreError> {
+        let has_projection = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='canonical_authoring_context_provenance'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_projection {
+            return if cycle.authoring_context_provenance.is_none() {
+                Ok(())
+            } else {
+                Err(CanonicalStoreError::Replay(
+                    "authoring-context snapshot exists without its durable projection".into(),
+                ))
+            };
+        }
+        let claim: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT record_json FROM canonical_authoring_context_provenance
+                 WHERE cycle_id=?1",
+                [cycle.cycle_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let claim = claim
+            .map(|json| serde_json::from_str::<AuthoringContextProvenanceV1>(&json))
+            .transpose()?;
+        match (&cycle.authoring_context_provenance, claim) {
+            (None, None) => Ok(()),
+            (Some(snapshot), Some(durable)) if snapshot == &durable => {
+                durable.validate().map_err(CanonicalStoreError::Invalid)
+            }
+            _ => Err(CanonicalStoreError::Replay(
+                "authoring-context claim does not match the authoritative cycle snapshot".into(),
+            )),
+        }
+    }
+
+    fn validate_authoring_custody_claim(
+        &self,
+        cycle: &ObservationCycleV1,
+    ) -> Result<(), CanonicalStoreError> {
+        let has_projection = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='canonical_authoring_context_custody'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_projection {
+            return if cycle.authoring_context_custody.is_none() {
+                Ok(())
+            } else {
+                Err(CanonicalStoreError::Replay(
+                    "authoring custody snapshot exists without its durable projection".into(),
+                ))
+            };
+        }
+        let claim: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT record_json FROM canonical_authoring_context_custody
+                 WHERE cycle_id=?1",
+                [cycle.cycle_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let claim = claim
+            .map(|json| serde_json::from_str::<AuthoringContextCustodyProvenanceV1>(&json))
+            .transpose()?;
+        match (&cycle.authoring_context_custody, claim) {
+            (None, None) => Ok(()),
+            (Some(snapshot), Some(durable)) if snapshot == &durable => {
+                durable.validate().map_err(CanonicalStoreError::Invalid)
+            }
+            _ => Err(CanonicalStoreError::Replay(
+                "authoring custody claim does not match the authoritative cycle snapshot".into(),
             )),
         }
     }
@@ -2412,6 +2956,7 @@ mod tests {
         ObservationRecordV1 {
             schema: OBSERVATION_RECORD_SCHEMA_V1.into(),
             observation_id: observation_id.into(),
+            source_admissions: Vec::new(),
             support,
             posture,
         }
@@ -2883,5 +3428,30 @@ mod tests {
             .find_cycles_by_observation_id(&digest('a'))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn generic_read_only_open_does_not_require_the_new_authoring_projection() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("nightshift.sqlite");
+        drop(CanonicalStore::open(&database).unwrap());
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch("DROP TABLE canonical_authoring_context_provenance")
+            .unwrap();
+        drop(connection);
+
+        let store = CanonicalStore::open_read_only(&database).unwrap();
+        assert!(store.list_cycles().unwrap().is_empty());
+        let error = store
+            .export_authoring_context(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id: digest('a'),
+                occurrence_id: "00000000-0000-4000-8000-000000000000".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(error, CanonicalStoreError::Invalid(_)));
+        assert!(error
+            .to_string()
+            .contains("predates the authoring-context provenance projection"));
     }
 }

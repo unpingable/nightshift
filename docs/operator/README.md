@@ -19,12 +19,16 @@ required for bundled SQLite.
 One observation cycle requires:
 
 - a sealed `CanonicalCycleRequestV1` produced by the workflow integration;
+- the NQ-NG `nq` executable, its config locator, and the stable expected
+  `nq-store-genesis:<id>` source identity; the service identity needs narrowly
+  read-only access to that source;
 - an executable whose basename is exactly `pulse-support-resolver` and which
   returns an exact query-bound `QualifiedSupportV1`;
 - an operator-owned Nightshift SQLite path.
 
 If the request contains exact work, the cycle additionally requires paths to
-`ag-loopctl`, AG's database, and AG's observation resolver. Those are the only
+`ag-loopctl`, AG's database, AG's observation resolver and expected identity,
+and AG's deployment-owned runtime profile. Those are the only
 consequence-adjacent Nightshift calls. Nightshift never accepts a Docket or
 executor endpoint.
 
@@ -33,19 +37,51 @@ nightshift \
   --store /var/lib/nightshift/nightshift.sqlite \
   cycle run \
   --request /etc/nightshift/cycles/current.json \
+  --nq-program /usr/local/bin/nq \
+  --nq-config /etc/nq/nq.toml \
+  --nq-source-id nq-store-genesis:DEPLOYMENT_GENESIS_ID \
   --present-evidence-resolver /usr/local/bin/pulse-support-resolver
 ```
+
+NQ-NG admission is checked before the recurrence slot is claimed. It makes
+the exact artifact eligible for Nightshift reasoning; it does not establish
+currentness or authorize the optional work proposal.
 
 For exact work, append:
 
 ```sh
   --ag-loopctl /usr/local/bin/ag-loopctl \
   --ag-database /var/lib/ag/campaign.sqlite \
-  --ag-observation-resolver /usr/local/bin/ag-observation-resolver
+  --ag-observation-resolver /usr/local/bin/ag-observation-resolver \
+  --ag-observation-resolver-id nightshift-observation-resolver/v1 \
+  --ag-runtime-profile /etc/ag/governed-loop-profile.json
 ```
 
-AG options are forbidden on posture-only requests, and all three are mandatory
+AG options are forbidden on posture-only requests, and all five are mandatory
 on requests containing a proposal.
+
+## Authenticated Maude authoring context
+
+For a newly Maude-authored proposal, the base request and its separately
+sealed handoff are passed with the two distinct deployment credentials:
+
+```sh
+  --maude-authoring-handoff /run/nightshift/handoff.json \
+  --maude-custody-credential /run/credentials/maude-handoff-producer.key \
+  --maude-producer-principal-id maude-handoff:local \
+  --maude-producer-key-id maude-handoff-key:primary \
+  --maude-session-custody-credential /run/credentials/maude-session-issuer.key \
+  --maude-session-issuer-principal-id maude:supervisor \
+  --maude-session-issuer-key-id maude-session-key:primary \
+  --nightshift-runtime-id nightshift:local-c1
+```
+
+The credential files contain exactly 32 raw bytes, are non-symlink regular
+files, and must not be group-writable/executable or accessible by others.
+Producer and session-issuer credentials must differ. These options are all
+required together when authoring context is present and are refused when it is
+absent. The full transport, replay, restart, and environmental contract is in
+[`../authoring-context-custody.md`](../authoring-context-custody.md).
 
 ## Read local cycle state
 
@@ -66,6 +102,8 @@ nightshift --store /var/lib/nightshift/nightshift.sqlite cycle recover \
   --ag-loopctl /usr/local/bin/ag-loopctl \
   --ag-database /var/lib/ag/campaign.sqlite \
   --ag-observation-resolver /usr/local/bin/ag-observation-resolver \
+  --ag-observation-resolver-id nightshift-observation-resolver/v1 \
+  --ag-runtime-profile /etc/ag/governed-loop-profile.json \
   --observed-at 2026-08-11T12:00:00Z
 ```
 

@@ -1,17 +1,20 @@
 //! Canonical Nightshift runtime CLI. It observes and delegates exact proposals
 //! to AG; it has no standing, authorization, Docket, or executor surface.
 
-use std::fs;
+use std::fs::OpenOptions;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _};
 use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use serde::{de::DeserializeOwned, Serialize};
 
 use nightshiftd::ag_port::{
     parse_ag_refusal, AgLoopCtlPortV1, AgOccurrencePortV1, AgOpenOccurrenceRequestV1,
 };
+use nightshiftd::authoring_context::AuthoringContextQueryV1;
+use nightshiftd::authoring_custody::{MaudeAuthoringContextHandoffV1, MaudeCustodyVerifierV1};
 use nightshiftd::canonical_runtime::{
     CanonicalCycleRequestV1, CanonicalRuntime, CycleRunOutcomeV1,
 };
@@ -21,6 +24,11 @@ use nightshiftd::canonical_store::{
 use nightshiftd::currentness::{
     CommandPresentEvidencePortV1, PresentEvidencePortV1, PresentEvidenceQueryV1, QualifiedSupportV1,
 };
+use nightshiftd::nq_admission::{
+    CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenanceV1, NqAdmissionQueryV1,
+};
+
+const MAX_EXACT_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -46,20 +54,7 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum CycleCommand {
     /// Run the sole production observation-cycle path.
-    Run {
-        #[arg(long)]
-        request: PathBuf,
-        #[arg(long)]
-        present_evidence_resolver: PathBuf,
-        #[arg(long)]
-        ag_loopctl: Option<PathBuf>,
-        #[arg(long)]
-        ag_database: Option<PathBuf>,
-        #[arg(long)]
-        ag_observation_resolver: Option<PathBuf>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
-        format: OutputFormat,
-    },
+    Run(Box<CycleRunArguments>),
     /// Read one exact AG occurrence through AG and record status only.
     SyncAg {
         #[arg(long)]
@@ -70,6 +65,10 @@ enum CycleCommand {
         ag_database: PathBuf,
         #[arg(long)]
         ag_observation_resolver: PathBuf,
+        #[arg(long)]
+        ag_observation_resolver_id: String,
+        #[arg(long)]
+        ag_runtime_profile: PathBuf,
         #[arg(long)]
         observed_at: String,
     },
@@ -92,6 +91,10 @@ enum CycleCommand {
         #[arg(long)]
         ag_observation_resolver: PathBuf,
         #[arg(long)]
+        ag_observation_resolver_id: String,
+        #[arg(long)]
+        ag_runtime_profile: PathBuf,
+        #[arg(long)]
         observed_at: String,
     },
     Show {
@@ -107,11 +110,88 @@ enum CycleCommand {
         #[arg(long)]
         observation_id: String,
     },
+    /// Read-only exact authoring-context lookup. Supply exactly one complete
+    /// identity form: governed occurrence, proposal, or Maude plan/session.
+    ExportAuthoringContext {
+        #[arg(long, requires = "occurrence_id")]
+        campaign_id: Option<String>,
+        #[arg(long, requires = "campaign_id")]
+        occurrence_id: Option<String>,
+        #[arg(long)]
+        proposal_id: Option<String>,
+        #[arg(long, requires = "maude_session_id")]
+        plan_ref: Option<String>,
+        #[arg(long, requires = "plan_ref")]
+        maude_session_id: Option<String>,
+    },
+    /// Read-only authenticated delivery evidence for authoring context.
+    ExportAuthoringCustody {
+        #[arg(long, requires = "occurrence_id")]
+        campaign_id: Option<String>,
+        #[arg(long, requires = "campaign_id")]
+        occurrence_id: Option<String>,
+        #[arg(long)]
+        proposal_id: Option<String>,
+        #[arg(long, requires = "maude_session_id")]
+        plan_ref: Option<String>,
+        #[arg(long, requires = "plan_ref")]
+        maude_session_id: Option<String>,
+    },
     List,
     Replay {
         #[arg(long)]
         cycle_id: String,
     },
+}
+
+#[derive(Debug, ClapArgs)]
+struct CycleRunArguments {
+    #[arg(long)]
+    request: PathBuf,
+    #[arg(long)]
+    present_evidence_resolver: PathBuf,
+    /// Exact NQ-NG CLI used only for read-only admission qualification.
+    #[arg(long)]
+    nq_program: PathBuf,
+    /// Configuration locating the owning NQ-NG store. This path is not
+    /// authority identity.
+    #[arg(long)]
+    nq_config: PathBuf,
+    /// Stable expected NQ-NG store-genesis identity.
+    #[arg(long)]
+    nq_source_id: String,
+    #[arg(long)]
+    ag_loopctl: Option<PathBuf>,
+    #[arg(long)]
+    ag_database: Option<PathBuf>,
+    #[arg(long)]
+    ag_observation_resolver: Option<PathBuf>,
+    /// Resolver identity repeated to AG and checked against its pinned profile.
+    #[arg(long)]
+    ag_observation_resolver_id: Option<String>,
+    /// Deployment-owned AG policy/Docket profile pinned at campaign genesis.
+    #[arg(long)]
+    ag_runtime_profile: Option<PathBuf>,
+    /// Separate exact Maude custody handoff. It is attached in memory to
+    /// the sealed base request and never authorizes AG work.
+    #[arg(long)]
+    maude_authoring_handoff: Option<PathBuf>,
+    #[arg(long)]
+    maude_custody_credential: Option<PathBuf>,
+    #[arg(long)]
+    maude_producer_principal_id: Option<String>,
+    #[arg(long)]
+    maude_producer_key_id: Option<String>,
+    #[arg(long)]
+    maude_session_custody_credential: Option<PathBuf>,
+    #[arg(long)]
+    maude_session_issuer_principal_id: Option<String>,
+    #[arg(long)]
+    maude_session_issuer_key_id: Option<String>,
+    #[arg(long)]
+    nightshift_runtime_id: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+    format: OutputFormat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -144,6 +224,14 @@ impl PresentEvidencePortV1 for NoPresentEvidencePort {
     }
 }
 
+struct NoNqAdmissionPort;
+
+impl NqAdmissionPortV1 for NoNqAdmissionPort {
+    fn qualify(&mut self, _: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenanceV1, String> {
+        Err("status recovery never qualifies new NQ evidence".into())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let arguments = Arguments::parse();
     match arguments.command {
@@ -153,41 +241,162 @@ fn main() -> anyhow::Result<()> {
 
 fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result<()> {
     match command {
-        CycleCommand::Run {
-            request,
-            present_evidence_resolver,
-            ag_loopctl,
-            ag_database,
-            ag_observation_resolver,
-            format,
-        } => {
-            let request: CanonicalCycleRequestV1 = read_exact(&request)?;
+        CycleCommand::Run(arguments) => {
+            let CycleRunArguments {
+                request,
+                present_evidence_resolver,
+                nq_program,
+                nq_config,
+                nq_source_id,
+                ag_loopctl,
+                ag_database,
+                ag_observation_resolver,
+                ag_observation_resolver_id,
+                ag_runtime_profile,
+                maude_authoring_handoff,
+                maude_custody_credential,
+                maude_producer_principal_id,
+                maude_producer_key_id,
+                maude_session_custody_credential,
+                maude_session_issuer_principal_id,
+                maude_session_issuer_key_id,
+                nightshift_runtime_id,
+                format,
+            } = *arguments;
+            let mut request: CanonicalCycleRequestV1 = read_exact(&request)?;
+            if let Some(path) = maude_authoring_handoff {
+                if request.authoring_context.is_some() {
+                    bail!("base cycle request already contains authoring context");
+                }
+                let handoff: MaudeAuthoringContextHandoffV1 = read_exact(&path)?;
+                if handoff.target_request_id != request.request_id {
+                    bail!("Maude handoff does not target the exact sealed base cycle request");
+                }
+                request.authoring_context = Some(handoff);
+                request = request.seal().map_err(anyhow::Error::msg)?;
+            }
+            let custody_verifier = if request.authoring_context.is_some() {
+                let (
+                    credential,
+                    principal,
+                    key_id,
+                    session_credential,
+                    session_issuer,
+                    session_key_id,
+                    runtime_id,
+                ) = match (
+                    maude_custody_credential,
+                    maude_producer_principal_id,
+                    maude_producer_key_id,
+                    maude_session_custody_credential,
+                    maude_session_issuer_principal_id,
+                    maude_session_issuer_key_id,
+                    nightshift_runtime_id,
+                ) {
+                    (
+                        Some(credential),
+                        Some(principal),
+                        Some(key_id),
+                        Some(session_credential),
+                        Some(session_issuer),
+                        Some(session_key_id),
+                        Some(runtime_id),
+                    ) => (
+                        credential,
+                        principal,
+                        key_id,
+                        session_credential,
+                        session_issuer,
+                        session_key_id,
+                        runtime_id,
+                    ),
+                    _ => bail!(
+                        "Maude authoring context requires --maude-custody-credential, \
+                         --maude-producer-principal-id, --maude-producer-key-id, and \
+                         --maude-session-custody-credential, \
+                         --maude-session-issuer-principal-id, \
+                         --maude-session-issuer-key-id, and --nightshift-runtime-id"
+                    ),
+                };
+                Some(
+                    MaudeCustodyVerifierV1::from_key_file(
+                        principal,
+                        key_id,
+                        session_issuer,
+                        session_key_id,
+                        runtime_id,
+                        &credential,
+                        &session_credential,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                )
+            } else {
+                if maude_custody_credential.is_some()
+                    || maude_producer_principal_id.is_some()
+                    || maude_producer_key_id.is_some()
+                    || maude_session_custody_credential.is_some()
+                    || maude_session_issuer_principal_id.is_some()
+                    || maude_session_issuer_key_id.is_some()
+                    || nightshift_runtime_id.is_some()
+                {
+                    bail!("Maude custody configuration supplied without authoring context");
+                }
+                None
+            };
             let has_proposal = request.proposal.is_some();
             let mut store = CanonicalStore::open(store_path)?;
             let mut support = CommandPresentEvidencePortV1::new(present_evidence_resolver)
                 .map_err(anyhow::Error::msg)?;
+            let nq = CommandNqAdmissionPortV1::new(nq_program, nq_config, nq_source_id)
+                .map_err(anyhow::Error::msg)?;
             let outcome = if has_proposal {
-                let (program, database, resolver) =
-                    match (ag_loopctl, ag_database, ag_observation_resolver) {
-                        (Some(program), Some(database), Some(resolver)) => {
-                            (program, database, resolver)
+                let (program, database, resolver, resolver_id, profile) = match (
+                    ag_loopctl,
+                    ag_database,
+                    ag_observation_resolver,
+                    ag_observation_resolver_id,
+                    ag_runtime_profile,
+                ) {
+                        (
+                            Some(program),
+                            Some(database),
+                            Some(resolver),
+                            Some(resolver_id),
+                            Some(profile),
+                        ) => {
+                            (program, database, resolver, resolver_id, profile)
                         }
                         _ => bail!(
-                            "exact work requires --ag-loopctl, --ag-database, and --ag-observation-resolver"
+                            "exact work requires --ag-loopctl, --ag-database, --ag-observation-resolver, --ag-observation-resolver-id, and --ag-runtime-profile"
                         ),
                     };
-                let mut ag = AgLoopCtlPortV1::new(program, database, resolver)
-                    .map_err(anyhow::Error::msg)?;
-                CanonicalRuntime::new(&mut store, &mut support, &mut ag).run_cycle(request)?
+                let mut ag =
+                    AgLoopCtlPortV1::new(program, database, resolver, resolver_id, profile)
+                        .map_err(anyhow::Error::msg)?;
+                let mut runtime = CanonicalRuntime::new(&mut store, nq, &mut support, &mut ag);
+                match custody_verifier.as_ref() {
+                    Some(verifier) => {
+                        runtime.run_cycle_with_authoring_custody(request, verifier)?
+                    }
+                    None => runtime.run_cycle(request)?,
+                }
             } else {
                 if ag_loopctl.is_some()
                     || ag_database.is_some()
                     || ag_observation_resolver.is_some()
+                    || ag_observation_resolver_id.is_some()
+                    || ag_runtime_profile.is_some()
                 {
                     bail!("AG options are forbidden for a posture-only cycle");
                 }
                 let mut ag = NoAgPort;
-                CanonicalRuntime::new(&mut store, &mut support, &mut ag).run_cycle(request)?
+                let mut runtime = CanonicalRuntime::new(&mut store, nq, &mut support, &mut ag);
+                match custody_verifier.as_ref() {
+                    Some(verifier) => {
+                        runtime.run_cycle_with_authoring_custody(request, verifier)?
+                    }
+                    None => runtime.run_cycle(request)?,
+                }
             };
             render_outcome(&outcome, format)
         }
@@ -196,35 +405,53 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
             ag_loopctl,
             ag_database,
             ag_observation_resolver,
+            ag_observation_resolver_id,
+            ag_runtime_profile,
             observed_at,
         } => {
             let id = ObservationCycleId::parse(cycle_id)?;
             let now = parse_time(&observed_at)?;
             let mut store = CanonicalStore::open(store_path)?;
             let mut support = NoPresentEvidencePort;
-            let mut ag = AgLoopCtlPortV1::new(ag_loopctl, ag_database, ag_observation_resolver)
-                .map_err(anyhow::Error::msg)?;
+            let nq = NoNqAdmissionPort;
+            let mut ag = AgLoopCtlPortV1::new(
+                ag_loopctl,
+                ag_database,
+                ag_observation_resolver,
+                ag_observation_resolver_id,
+                ag_runtime_profile,
+            )
+            .map_err(anyhow::Error::msg)?;
             write_exact(
-                &CanonicalRuntime::new(&mut store, &mut support, &mut ag).sync_ag(&id, now)?,
+                &CanonicalRuntime::new(&mut store, nq, &mut support, &mut ag).sync_ag(&id, now)?,
             )
         }
         CycleCommand::Recover {
             ag_loopctl,
             ag_database,
             ag_observation_resolver,
+            ag_observation_resolver_id,
+            ag_runtime_profile,
             observed_at,
         } => {
             let now = parse_time(&observed_at)?;
             let mut store = CanonicalStore::open(store_path)?;
             let candidates = store.recover_after_restart(now)?;
             let mut support = NoPresentEvidencePort;
-            let mut ag = AgLoopCtlPortV1::new(ag_loopctl, ag_database, ag_observation_resolver)
-                .map_err(anyhow::Error::msg)?;
+            let mut ag = AgLoopCtlPortV1::new(
+                ag_loopctl,
+                ag_database,
+                ag_observation_resolver,
+                ag_observation_resolver_id,
+                ag_runtime_profile,
+            )
+            .map_err(anyhow::Error::msg)?;
             let mut recovered = Vec::new();
             for cycle in candidates {
                 if cycle.prepared_ag_request.is_some() {
+                    let nq = NoNqAdmissionPort;
                     recovered.push(
-                        CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+                        CanonicalRuntime::new(&mut store, nq, &mut support, &mut ag)
                             .sync_ag(&cycle.cycle_id, now)
                             .with_context(|| {
                                 format!("AG status failed for {}", cycle.cycle_id.as_str())
@@ -272,10 +499,79 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                     .map_err(anyhow::Error::msg)?,
             )
         }
+        CycleCommand::ExportAuthoringContext {
+            campaign_id,
+            occurrence_id,
+            proposal_id,
+            plan_ref,
+            maude_session_id,
+        } => {
+            let query = authoring_query(
+                campaign_id,
+                occurrence_id,
+                proposal_id,
+                plan_ref,
+                maude_session_id,
+            )?;
+            let store = CanonicalStore::open_read_only(store_path)?;
+            write_exact(&store.export_authoring_context(query)?)
+        }
+        CycleCommand::ExportAuthoringCustody {
+            campaign_id,
+            occurrence_id,
+            proposal_id,
+            plan_ref,
+            maude_session_id,
+        } => {
+            let query = authoring_query(
+                campaign_id,
+                occurrence_id,
+                proposal_id,
+                plan_ref,
+                maude_session_id,
+            )?;
+            let store = CanonicalStore::open_read_only(store_path)?;
+            write_exact(&store.export_authoring_custody(query)?)
+        }
         CycleCommand::Replay { cycle_id } => {
             let store = CanonicalStore::open(store_path)?;
             write_exact(&store.replay(&ObservationCycleId::parse(cycle_id)?)?)
         }
+    }
+}
+
+fn authoring_query(
+    campaign_id: Option<String>,
+    occurrence_id: Option<String>,
+    proposal_id: Option<String>,
+    plan_ref: Option<String>,
+    maude_session_id: Option<String>,
+) -> anyhow::Result<AuthoringContextQueryV1> {
+    match (
+        campaign_id,
+        occurrence_id,
+        proposal_id,
+        plan_ref,
+        maude_session_id,
+    ) {
+        (Some(campaign_id), Some(occurrence_id), None, None, None) => {
+            Ok(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id,
+                occurrence_id,
+            })
+        }
+        (None, None, Some(proposal_id), None, None) => {
+            Ok(AuthoringContextQueryV1::Proposal { proposal_id })
+        }
+        (None, None, None, Some(plan_ref), Some(session_id)) => {
+            Ok(AuthoringContextQueryV1::MaudeContext {
+                plan_ref,
+                session_id,
+            })
+        }
+        _ => bail!(
+            "choose exactly one complete authoring-context query: campaign+occurrence, proposal, or plan-ref+maude-session-id"
+        ),
     }
 }
 
@@ -303,7 +599,32 @@ fn render_cycle_text(cycle: &ObservationCycleV1) -> anyhow::Result<()> {
 }
 
 fn read_exact<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .with_context(|| format!("open exact input {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect exact input {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("exact input is not a regular file: {}", path.display());
+    }
+    if metadata.len() > MAX_EXACT_INPUT_BYTES {
+        bail!("exact input exceeds 16 MiB: {}", path.display());
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    file.take(MAX_EXACT_INPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read exact input {}", path.display()))?;
+    if bytes.len() as u64 > MAX_EXACT_INPUT_BYTES {
+        bail!("exact input exceeds 16 MiB: {}", path.display());
+    }
     let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
     let value = T::deserialize(&mut deserializer)
         .with_context(|| format!("decode exact JSON {}", path.display()))?;
@@ -326,4 +647,37 @@ fn parse_time(value: &str) -> anyhow::Result<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(value)
         .context("observed_at must be RFC3339")?
         .with_timezone(&Utc))
+}
+
+#[cfg(test)]
+mod exact_input_tests {
+    use super::*;
+
+    #[test]
+    fn exact_input_preserves_crlf_and_rejects_trailing_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.json");
+        std::fs::write(&path, br#"{"value":"line\r\n"}"#).unwrap();
+        let value: serde_json::Value = read_exact(&path).unwrap();
+        assert_eq!(value["value"], "line\r\n");
+        std::fs::write(&path, b"{}\n{}\n").unwrap();
+        assert!(read_exact::<serde_json::Value>(&path).is_err());
+    }
+
+    #[test]
+    fn exact_input_rejects_oversize_and_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.json");
+        std::fs::write(&path, vec![b' '; MAX_EXACT_INPUT_BYTES as usize + 1]).unwrap();
+        assert!(read_exact::<serde_json::Value>(&path).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            std::fs::write(&path, b"{}").unwrap();
+            let linked = directory.path().join("linked.json");
+            symlink(&path, &linked).unwrap();
+            assert!(read_exact::<serde_json::Value>(&linked).is_err());
+        }
+    }
 }

@@ -7,6 +7,14 @@ NQ diagnostic artifacts, computes non-authorizing posture/attention, and may
 submit one immutable exact-work proposal to AG. It does not mint standing,
 authorize or execute effects, own AG continuation, or call Docket/executors.
 
+The optional Maude plan/session → exact governed proposal relation is documented
+in [`docs/authoring-context-provenance.md`](docs/authoring-context-provenance.md).
+It establishes lineage only and is never an authorization input.
+New authoring handoffs are authenticated under the separate operational
+custody contract in
+[`docs/authoring-context-custody.md`](docs/authoring-context-custody.md);
+producer authentication establishes custody, not permission.
+
 ## Runtime status
 
 The production executable surface is two binaries: `nightshift` (the
@@ -16,6 +24,7 @@ The sole production cycle is:
 
 ```text
 exact recurrence slot
+  -> exact local NQ-NG admission provenance
   -> exact observation cycle
   -> qualified present-support result
   -> complete NQ diagnostic posture
@@ -54,6 +63,9 @@ Nightshift has no sibling Wicket or WLP source dependency.
   --store /var/lib/nightshift/nightshift.sqlite \
   cycle run \
   --request /etc/nightshift/cycles/current.json \
+  --nq-program /usr/local/bin/nq \
+  --nq-config /etc/nq/nq.toml \
+  --nq-source-id nq-store-genesis:DEPLOYMENT_GENESIS_ID \
   --present-evidence-resolver /usr/local/bin/pulse-support-resolver
 ```
 
@@ -61,13 +73,24 @@ The request is a sealed `CanonicalCycleRequestV1` that binds the exact
 recurrence slot, observation identity, closed diagnostic policy, complete NQ
 input set, recurrence evidence, and optional temporal policy.
 
+Before claiming the slot, Nightshift asks the configured NQ-NG source to
+qualify every delivered artifact. NQ-NG reopens verified local v2 history and
+returns `nq.diagnostic_admission_provenance.v1`; Nightshift independently
+binds that carrier to the exact canonical bytes, run, profile generation, and
+configured source identity, then persists it in the v2 observation record.
+Imported custody and unadmitted or substituted artifacts refuse the cycle.
+Admission makes evidence eligible for posture reasoning only. It does not
+make the observation current or authorize work.
+
 If—and only if—the request carries an immutable precompiled exact-work
-proposal, all three AG coordinates are required:
+proposal, all five AG coordinates are required:
 
 ```sh
   --ag-loopctl /usr/local/bin/ag-loopctl \
   --ag-database /var/lib/ag/campaign.sqlite \
-  --ag-observation-resolver /usr/local/bin/ag-observation-resolver
+  --ag-observation-resolver /usr/local/bin/ag-observation-resolver \
+  --ag-observation-resolver-id nightshift-observation-resolver/v1 \
+  --ag-runtime-profile /etc/ag/governed-loop-profile.json
 ```
 
 Nightshift sends AG campaign/occurrence and exact observation/proposal basis.
@@ -97,9 +120,12 @@ bash scripts/check_no_actuation_surface.sh
 bash scripts/check_no_actuation_surface.sh --self-test-inject
 ```
 
-The structural gate pins one binary, the exact two external process ports
-(`pulse-support-resolver` and `ag-loopctl`), and absence of the retired
-authority/execution surfaces.
+The structural gate pins the two binaries, the exact three external process
+ports (`nq` qualification, `pulse-support-resolver`, and `ag-loopctl`), and
+absence of the retired authority/execution surfaces. It also requires
+Nightshift to provide AG's deployment-owned runtime profile at campaign
+genesis. The NQ port is pinned to the read-only `diagnostics qualify`
+operation.
 
 See [the canonical runtime record](docs/CANONICAL_RUNTIME_C1.md), the
 [operator quick start](docs/operator/README.md), and the

@@ -12,6 +12,13 @@ use sha2::{Digest as _, Sha256};
 use crate::ag_port::{
     AgOccurrencePortV1, AgOpenModeV1, AgOpenOccurrenceRequestV1, AG_OPEN_REQUEST_SCHEMA_V1,
 };
+use crate::authoring_context::{
+    ag_proposal_identity, exact_work_identity, AuthoringContextProvenanceV1,
+};
+use crate::authoring_custody::{
+    AuthoringContextCustodyProvenanceV1, MaudeAuthoringContextHandoffV1, MaudeCustodyVerifierV1,
+    VerifiedMaudeHandoffV1,
+};
 use crate::canonical_store::{
     AttentionClassV1, AttentionRecordV1, CanonicalStore, CanonicalStoreError, CycleStatusV1,
     ObservationCycleId, ObservationCycleV1, ObservationRecordV1, RecurrenceSlotV1, SlotTimingV1,
@@ -25,6 +32,7 @@ use crate::diagnostic_posture::{
     evaluate_posture_with_support, ConditionAxis, DiagnosticInputs, PosturePolicy,
     RecurrenceEvidence,
 };
+use crate::nq_admission::{qualify_delivered_inputs, NqAdmissionPortV1};
 
 pub const CYCLE_REQUEST_SCHEMA_V1: &str = "nightshift.canonical_cycle_request.v1";
 pub const PRECOMPILED_PROPOSAL_SCHEMA_V2: &str = "nightshift.precompiled_workflow_proposal.v2";
@@ -95,6 +103,8 @@ pub enum CanonicalRuntimeError {
     Invalid(String),
     #[error("present-evidence authority refused or was unavailable: {0}")]
     PresentEvidence(String),
+    #[error("NQ-NG admission provenance refused or was unavailable: {0}")]
+    NqAdmission(String),
     #[error("diagnostic posture evaluation refused: {0}")]
     Diagnostic(String),
     #[error("AG boundary refused or was unavailable: {0}")]
@@ -237,6 +247,11 @@ pub struct CanonicalCycleRequestV1 {
     pub temporal_policy: Option<TemporalPolicyRequestV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<PrecompiledWorkflowProposalV2>,
+    /// Optional exact authoring context presented at the real proposal
+    /// handoff. It is lineage input only and is not sent to AG or consulted by
+    /// any currentness, standing, admissibility, or authorization gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_context: Option<MaudeAuthoringContextHandoffV1>,
 }
 
 impl CanonicalCycleRequestV1 {
@@ -274,6 +289,20 @@ impl CanonicalCycleRequestV1 {
         if let Some(proposal) = &self.proposal {
             proposal.validate()?;
         }
+        if let Some(authoring_context) = &self.authoring_context {
+            authoring_context.validate_untrusted()?;
+            if self.proposal.is_none() {
+                return Err(
+                    "Maude authoring context cannot exist without an exact governed proposal"
+                        .into(),
+                );
+            }
+            if authoring_context.target_request_id != self.authoring_custody_target_request_id()? {
+                return Err(
+                    "Maude authoring-context handoff targets a different cycle request".into(),
+                );
+            }
+        }
         let mut value = serde_json::to_value(self).map_err(|error| error.to_string())?;
         value
             .as_object_mut()
@@ -283,6 +312,19 @@ impl CanonicalCycleRequestV1 {
             return Err("request_id does not match exact cycle preimage".into());
         }
         Ok(())
+    }
+
+    /// Identity of the exact request before custody material is attached.
+    /// This avoids a recursive self-hash while binding every governed input,
+    /// including campaign, occurrence, proposal, evidence, and exact work.
+    pub fn authoring_custody_target_request_id(&self) -> Result<String, String> {
+        let mut value = serde_json::to_value(self).map_err(|error| error.to_string())?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "cycle request is not an object".to_owned())?;
+        object.remove("request_id");
+        object.remove("authoring_context");
+        digest_value(&value)
     }
 }
 
@@ -294,24 +336,33 @@ pub enum CycleRunOutcomeV1 {
     AgOccurrenceOpened { cycle: ObservationCycleV1 },
 }
 
-pub struct CanonicalRuntime<'a, P, A>
+pub struct CanonicalRuntime<'a, N, P, A>
 where
+    N: NqAdmissionPortV1,
     P: PresentEvidencePortV1,
     A: AgOccurrencePortV1,
 {
     store: &'a mut CanonicalStore,
+    nq_admission: N,
     present_evidence: &'a mut P,
     ag: &'a mut A,
 }
 
-impl<'a, P, A> CanonicalRuntime<'a, P, A>
+impl<'a, N, P, A> CanonicalRuntime<'a, N, P, A>
 where
+    N: NqAdmissionPortV1,
     P: PresentEvidencePortV1,
     A: AgOccurrencePortV1,
 {
-    pub fn new(store: &'a mut CanonicalStore, present_evidence: &'a mut P, ag: &'a mut A) -> Self {
+    pub fn new(
+        store: &'a mut CanonicalStore,
+        nq_admission: N,
+        present_evidence: &'a mut P,
+        ag: &'a mut A,
+    ) -> Self {
         Self {
             store,
+            nq_admission,
             present_evidence,
             ag,
         }
@@ -321,7 +372,55 @@ where
         &mut self,
         request: CanonicalCycleRequestV1,
     ) -> Result<CycleRunOutcomeV1, CanonicalRuntimeError> {
+        self.run_cycle_inner(request, None)
+    }
+
+    /// Production authoring-context ingress. Authentication occurs before NQ
+    /// qualification, slot claim, observation persistence, or AG contact.
+    pub fn run_cycle_with_authoring_custody(
+        &mut self,
+        request: CanonicalCycleRequestV1,
+        verifier: &MaudeCustodyVerifierV1,
+    ) -> Result<CycleRunOutcomeV1, CanonicalRuntimeError> {
+        let expected = request
+            .authoring_custody_target_request_id()
+            .map_err(CanonicalRuntimeError::Invalid)?;
+        let verified = request
+            .authoring_context
+            .as_ref()
+            .ok_or_else(|| {
+                CanonicalRuntimeError::Invalid(
+                    "authenticated authoring-context ingress requires a handoff".into(),
+                )
+            })
+            .and_then(|handoff| {
+                verifier
+                    .verify(handoff, &expected)
+                    .map_err(CanonicalRuntimeError::Invalid)
+            })?;
+        self.run_cycle_inner(request, Some(verified))
+    }
+
+    fn run_cycle_inner(
+        &mut self,
+        request: CanonicalCycleRequestV1,
+        verified_handoff: Option<VerifiedMaudeHandoffV1>,
+    ) -> Result<CycleRunOutcomeV1, CanonicalRuntimeError> {
         request.validate().map_err(CanonicalRuntimeError::Invalid)?;
+        match (&request.authoring_context, &verified_handoff) {
+            (None, None) => {}
+            (Some(_), Some(_)) => {}
+            (Some(_), None) => {
+                return Err(CanonicalRuntimeError::Invalid(
+                    "Maude authoring context requires authenticated custody ingress".into(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(CanonicalRuntimeError::Invalid(
+                    "verified Maude custody has no authoring-context handoff".into(),
+                ));
+            }
+        }
         if request
             .slot
             .timing_at(&request.scheduler_clock_id, request.evaluated_at)?
@@ -335,6 +434,8 @@ where
             )?;
             return Ok(CycleRunOutcomeV1::Missed { cycle });
         }
+        let source_admissions = qualify_delivered_inputs(&mut self.nq_admission, &request.inputs)
+            .map_err(CanonicalRuntimeError::NqAdmission)?;
         let (claimed, lease) = self.store.claim_slot(
             request.slot,
             &request.scheduler_clock_id,
@@ -384,8 +485,9 @@ where
             }
         };
         let observation = ObservationRecordV1 {
-            schema: crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V1.into(),
+            schema: crate::canonical_store::OBSERVATION_RECORD_SCHEMA.into(),
             observation_id: request.observation_id,
+            source_admissions,
             support,
             posture,
         };
@@ -413,6 +515,7 @@ where
             temporal,
             request.evaluated_at,
         )?;
+        let authoring_handoff = verified_handoff;
         let Some(precompiled) = request.proposal else {
             let cycle = self.store.close_without_proposal(
                 &lease,
@@ -435,12 +538,43 @@ where
         let (intent, ag_request) = precompiled
             .compile(&observation)
             .map_err(CanonicalRuntimeError::Invalid)?;
+        let authoring_context = authoring_handoff
+            .as_ref()
+            .map(|verified| {
+                AuthoringContextProvenanceV1::mint(
+                    &verified.handoff().authoring_context,
+                    ag_request.campaign_id.clone(),
+                    ag_request.occurrence_id.clone(),
+                    ag_proposal_identity(&ag_request.proposal_input)?,
+                    exact_work_identity(&ag_request.proposal_input)?,
+                    intent.intent_id.clone(),
+                    request.evaluated_at,
+                )
+            })
+            .transpose()
+            .map_err(CanonicalRuntimeError::Invalid)?;
+        let authoring_custody = authoring_handoff
+            .as_ref()
+            .zip(authoring_context.as_ref())
+            .map(|(verified, provenance)| {
+                AuthoringContextCustodyProvenanceV1::mint(
+                    verified,
+                    provenance,
+                    request.evaluated_at,
+                )
+            })
+            .transpose()
+            .map_err(CanonicalRuntimeError::Invalid)?;
         let prepared = ag_request.prepared()?;
         let pending = self.store.prepare_ag_occurrence(
             &lease,
             &recorded.state_digest,
             intent,
             prepared,
+            crate::canonical_store::PreparedAuthoringEvidenceV1 {
+                lineage: authoring_context,
+                custody: authoring_custody,
+            },
             request.evaluated_at,
         )?;
         let ag = match self.ag.open_occurrence(&ag_request) {
@@ -534,8 +668,16 @@ fn attention_for(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use super::*;
     use crate::ag_port::parse_ag_refusal;
+    use crate::authoring_context::{
+        AuthoringContextQueryV1, MaudeAuthoringContextInputV1, AUTHORING_CONTEXT_INPUT_SCHEMA_V1,
+    };
+    use crate::authoring_custody::{
+        sign_handoff_for_test, sign_session_for_test, MaudeCustodyVerifierV1,
+    };
     use crate::canonical_store::{
         AgOccurrenceReferenceV1, AgProgramCounterV1, AttentionClassV1, RecurrenceTriggerV1,
         AG_REFERENCE_SCHEMA_V1,
@@ -548,6 +690,11 @@ mod tests {
         ConditionV1, DeliveryStanding, DiagnosticExecutionV1, DiagnosticInputStatus, Headline,
         RunSlotEvidence,
     };
+    use crate::nq_admission::{
+        NqAdmissionArtifactV1, NqAdmissionJudgmentV1, NqAdmissionOriginV1, NqAdmissionPortV1,
+        NqAdmissionProvenanceV1, NqAdmissionProviderV1, NqAdmissionQueryV1, NqAdmissionSourceV1,
+        NqSourceDispositionV1,
+    };
 
     fn digest(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
@@ -557,6 +704,56 @@ mod tests {
         DateTime::parse_from_rfc3339(value)
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[derive(Clone, Copy)]
+    struct TestNqAdmissionPort;
+
+    impl NqAdmissionPortV1 for TestNqAdmissionPort {
+        fn qualify(
+            &mut self,
+            query: &NqAdmissionQueryV1,
+        ) -> Result<NqAdmissionProvenanceV1, String> {
+            NqAdmissionProvenanceV1 {
+                schema: String::new(),
+                provenance_id: String::new(),
+                source: NqAdmissionSourceV1 {
+                    kind: "local_nq_store".into(),
+                    source_id: query.source_id.clone(),
+                },
+                artifact: NqAdmissionArtifactV1 {
+                    artifact_id: query.artifact_id.clone(),
+                    contract_schema: query.contract_schema.clone(),
+                    canonical_bytes_sha256: query.canonical_bytes_sha256.clone(),
+                    canonical_bytes_length: query.canonical_bytes_length,
+                },
+                origin: NqAdmissionOriginV1 {
+                    run_id: query.run_id.clone(),
+                    evaluation_id: Some("evaluation:test".into()),
+                    completed_at: query.completed_at.clone(),
+                    committed_at: query.completed_at.clone(),
+                },
+                provider: NqAdmissionProviderV1 {
+                    provider_intake_id: "provider-intake:test".into(),
+                    raw_sha256: digest('1'),
+                    provider_admission_id: digest('2'),
+                    source_admission_id: "source-admission:test".into(),
+                    admission_context_digest: digest('3'),
+                    profile_semantic_id: query
+                        .profile_semantic_id
+                        .clone()
+                        .unwrap_or_else(|| digest('4')),
+                },
+                disposition: NqSourceDispositionV1::AdmittedReport,
+                judgment: Some(NqAdmissionJudgmentV1 {
+                    report_id: "report:test".into(),
+                    judgment_schema: "nq-ng.judgment.v1".into(),
+                    judgment_digest: digest('5'),
+                }),
+                nonclaims: Vec::new(),
+            }
+            .seal()
+        }
     }
 
     fn policy_inputs_recurrence() -> (PosturePolicy, DiagnosticInputs, RecurrenceEvidence) {
@@ -620,6 +817,86 @@ mod tests {
         sealed_cycle_request(policy, inputs, recurrence, occurrence, proposal)
     }
 
+    fn with_authoring_context(
+        request: CanonicalCycleRequestV1,
+        plan: &str,
+        session: &str,
+    ) -> CanonicalCycleRequestV1 {
+        with_authoring_context_credentials(
+            request,
+            plan,
+            session,
+            "maude-handoff:local",
+            "maude-handoff-key:primary",
+            &[7_u8; 32],
+        )
+    }
+
+    fn with_authoring_context_credentials(
+        mut request: CanonicalCycleRequestV1,
+        plan: &str,
+        session: &str,
+        producer_principal: &str,
+        producer_key_id: &str,
+        producer_key: &[u8; 32],
+    ) -> CanonicalCycleRequestV1 {
+        const SESSION_ISSUER_KEY: [u8; 32] = [3_u8; 32];
+        request.authoring_context = None;
+        request = request.seal().unwrap();
+        let input = MaudeAuthoringContextInputV1 {
+            schema: AUTHORING_CONTEXT_INPUT_SCHEMA_V1.into(),
+            plan_ref: format!("sha256:{:x}", Sha256::digest(plan.as_bytes())),
+            session_id: session.into(),
+            plan_text: plan.into(),
+        };
+        let session_custody = sign_session_for_test(
+            &SESSION_ISSUER_KEY,
+            "maude:supervisor",
+            "maude-session-key:primary",
+            session,
+            &input.plan_ref,
+            plan.len() as u64,
+            request.evaluated_at,
+        );
+        request.authoring_context = Some(sign_handoff_for_test(
+            producer_key,
+            crate::authoring_custody::TestHandoffInput {
+                principal: producer_principal,
+                key_id: producer_key_id,
+                runtime_id: "nightshift:local-c1",
+                target_request_id: &request.request_id,
+                session_custody,
+                authoring_context: input,
+                created_at: request.evaluated_at,
+            },
+        ));
+        request.seal().unwrap()
+    }
+
+    fn test_custody_verifier() -> MaudeCustodyVerifierV1 {
+        custody_verifier_for(
+            "maude-handoff:local",
+            "maude-handoff-key:primary",
+            [7_u8; 32],
+        )
+    }
+
+    fn custody_verifier_for(
+        producer_principal: &str,
+        producer_key_id: &str,
+        producer_key: [u8; 32],
+    ) -> MaudeCustodyVerifierV1 {
+        MaudeCustodyVerifierV1::for_test(
+            producer_principal,
+            producer_key_id,
+            "maude:supervisor",
+            "maude-session-key:primary",
+            "nightshift:local-c1",
+            producer_key,
+            [3_u8; 32],
+        )
+    }
+
     fn sealed_cycle_request(
         policy: PosturePolicy,
         inputs: DiagnosticInputs,
@@ -673,6 +950,7 @@ mod tests {
                         "campaign": campaign.clone(),
                         "occurrence": occurrence_id,
                         "program": digest('2'),
+                        "expected_ag_work": work.clone(),
                         "residuals": [],
                         "budget": {"retry_limit":1,"retries_used":0,"probe_limit":1,"probes_used":0,"escalation_limit":1,"escalations_used":0}
                     }),
@@ -691,6 +969,7 @@ mod tests {
                     "class":"initial"
                 }),
             }),
+            authoring_context: None,
         }
         .seal()
         .unwrap()
@@ -743,10 +1022,33 @@ mod tests {
 
     struct UnavailableSupportPort;
 
+    struct RefusingNqAdmissionPort;
+
+    impl NqAdmissionPortV1 for RefusingNqAdmissionPort {
+        fn qualify(&mut self, _: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenanceV1, String> {
+            Err("artifact has no local NQ-NG admission history".into())
+        }
+    }
+
     impl PresentEvidencePortV1 for UnavailableSupportPort {
         fn resolve(&mut self, _: &PresentEvidenceQueryV1) -> Result<QualifiedSupportV1, String> {
             Err("qualified currentness unavailable".into())
         }
+    }
+
+    #[test]
+    fn unadmitted_artifact_is_refused_before_a_cycle_is_claimed() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("nightshift.sqlite")).unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let error =
+            CanonicalRuntime::new(&mut store, RefusingNqAdmissionPort, &mut support, &mut ag)
+                .run_cycle(cycle_request(0, false))
+                .expect_err("unadmitted artifact must never enter canonical observation custody");
+        assert!(matches!(error, CanonicalRuntimeError::NqAdmission(_)));
+        assert!(store.list_cycles().unwrap().is_empty());
+        assert_eq!(ag.open_count, 0);
     }
 
     impl Default for CurrentSupportPort {
@@ -878,14 +1180,563 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(cycle_request(0, false))
             .unwrap();
         let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
             panic!("expected posture-only cycle")
         };
         assert_eq!(cycle.status, CycleStatusV1::Closed);
-        assert!(cycle.observation.unwrap().posture.present_support.is_some());
+        let observation = cycle.observation.unwrap();
+        assert_eq!(
+            observation.schema,
+            crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V2
+        );
+        assert_eq!(observation.source_admissions.len(), 1);
+        assert!(observation.posture.present_support.is_some());
+        assert_eq!(ag.open_count, 0);
+    }
+
+    #[test]
+    fn exact_authoring_context_is_minted_persisted_and_reopened() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("ns.sqlite");
+        let request = with_authoring_context(
+            cycle_request(0, true),
+            "---\nplan_version: 1\n---\nexact governed plan\n",
+            "sess_0123456789ab",
+        );
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let cycle = {
+            let mut store = CanonicalStore::open(&database).unwrap();
+            let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } =
+                CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+                    .run_cycle_with_authoring_custody(request, &test_custody_verifier())
+                    .unwrap()
+            else {
+                panic!("expected exact AG occurrence")
+            };
+            cycle
+        };
+        let provenance = cycle.authoring_context_provenance.as_ref().unwrap();
+        let custody = cycle.authoring_context_custody.as_ref().unwrap();
+        custody.validate_for_authoring(provenance).unwrap();
+        let durable_wire = serde_json::to_string(&cycle).unwrap();
+        assert!(!durable_wire.contains("hmac-sha256:"));
+        assert!(!durable_wire.contains("authentication\""));
+        assert_eq!(provenance.maude_session_id, "sess_0123456789ab");
+        assert_eq!(provenance.campaign_id, digest('a'));
+        assert_eq!(
+            provenance.occurrence_id,
+            "00000000-0000-4000-8000-000000000000"
+        );
+        assert_eq!(
+            provenance.exact_work_id,
+            cycle.intent.as_ref().unwrap().expected_ag_work
+        );
+        assert_eq!(ag.open_count, 1);
+
+        let reopened = CanonicalStore::open_read_only(&database).unwrap();
+        let export = reopened
+            .export_authoring_context(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id: provenance.campaign_id.clone(),
+                occurrence_id: provenance.occurrence_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(export.matches, vec![provenance.clone()]);
+        let by_proposal = reopened
+            .export_authoring_context(AuthoringContextQueryV1::Proposal {
+                proposal_id: provenance.proposal_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(by_proposal.matches, vec![provenance.clone()]);
+        let by_maude = reopened
+            .export_authoring_context(AuthoringContextQueryV1::MaudeContext {
+                plan_ref: provenance.maude_plan_ref.clone(),
+                session_id: provenance.maude_session_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(by_maude.matches, vec![provenance.clone()]);
+        let custody_export = reopened
+            .export_authoring_custody(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id: provenance.campaign_id.clone(),
+                occurrence_id: provenance.occurrence_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(custody_export.matches, vec![custody.clone()]);
+        assert_eq!(
+            reopened.replay(&cycle.cycle_id).unwrap().last(),
+            Some(&cycle)
+        );
+
+        // Recomputing the record's outer self-digest cannot conceal a
+        // substituted work relationship: export compares it to the
+        // authoritative cycle and prepared AG request.
+        drop(reopened);
+        let mut substituted = provenance.clone();
+        substituted.exact_work_id = digest('f');
+        let mut preimage = serde_json::to_value(&substituted).unwrap();
+        preimage.as_object_mut().unwrap().remove("provenance_id");
+        substituted.provenance_id = digest_value(&preimage).unwrap();
+        assert!(substituted.validate().is_ok());
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        connection
+            .execute(
+                "UPDATE canonical_authoring_context_provenance
+                 SET exact_work_id=?1, provenance_id=?2, record_json=?3
+                 WHERE cycle_id=?4",
+                rusqlite::params![
+                    &substituted.exact_work_id,
+                    &substituted.provenance_id,
+                    String::from_utf8(serde_jcs::to_vec(&substituted).unwrap()).unwrap(),
+                    cycle.cycle_id.as_str(),
+                ],
+            )
+            .unwrap();
+        drop(connection);
+        let reopened = CanonicalStore::open_read_only(&database).unwrap();
+        assert!(matches!(
+            reopened.export_authoring_context(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id: provenance.campaign_id.clone(),
+                occurrence_id: provenance.occurrence_id.clone(),
+            }),
+            Err(CanonicalStoreError::Replay(_)) | Err(CanonicalStoreError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn conflicting_contexts_cannot_claim_one_governed_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let first_request = with_authoring_context(
+            cycle_request(0, true),
+            "exact plan A\n",
+            "sess_0123456789ab",
+        );
+        let exact_duplicate = first_request.clone();
+        CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(first_request, &test_custody_verifier())
+            .unwrap();
+        let duplicate_error =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+                .run_cycle_with_authoring_custody(exact_duplicate, &test_custody_verifier())
+                .unwrap_err();
+        assert!(matches!(
+            duplicate_error,
+            CanonicalRuntimeError::Store(CanonicalStoreError::DuplicateSlot(_))
+        ));
+
+        let mut second_request = cycle_request(0, true);
+        second_request.slot = RecurrenceSlotV1::new(
+            second_request.slot.policy_id.clone(),
+            "config-conflicting-authoring".into(),
+            second_request.slot.subject_id.clone(),
+            second_request.slot.scope_id.clone(),
+            second_request.slot.scheduler_clock_id.clone(),
+            second_request.slot.nominal_due_at,
+            second_request.slot.latest_admissible.at,
+            second_request.slot.occurrence,
+            second_request.slot.trigger,
+            second_request.slot.catch_up_of.clone(),
+        )
+        .unwrap();
+        second_request =
+            with_authoring_context(second_request, "substituted plan B\n", "sess_bbbbbbbbbbbb");
+        let error = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(second_request, &test_custody_verifier())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            CanonicalRuntimeError::Store(CanonicalStoreError::DuplicateAgOccurrence(_, _))
+        ));
+        let export = store
+            .export_authoring_context(AuthoringContextQueryV1::MaudeContext {
+                plan_ref: format!("sha256:{:x}", Sha256::digest(b"substituted plan B\n")),
+                session_id: "sess_bbbbbbbbbbbb".into(),
+            })
+            .unwrap();
+        assert!(export.matches.is_empty());
+    }
+
+    #[test]
+    fn concurrent_conflicting_contexts_produce_at_most_one_canonical_relation() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("ns.sqlite");
+        drop(CanonicalStore::open(&database).unwrap());
+        let first = with_authoring_context(
+            cycle_request(0, true),
+            "concurrent plan A\n",
+            "sess_aaaaaaaaaaaa",
+        );
+        let mut second = cycle_request(0, true);
+        second.slot = RecurrenceSlotV1::new(
+            second.slot.policy_id.clone(),
+            "config-concurrent-authoring".into(),
+            second.slot.subject_id.clone(),
+            second.slot.scope_id.clone(),
+            second.slot.scheduler_clock_id.clone(),
+            second.slot.nominal_due_at,
+            second.slot.latest_admissible.at,
+            second.slot.occurrence,
+            second.slot.trigger,
+            second.slot.catch_up_of.clone(),
+        )
+        .unwrap();
+        let second = with_authoring_context(second, "concurrent plan B\n", "sess_bbbbbbbbbbbb");
+        let barrier = Arc::new(Barrier::new(2));
+        let workers = [first, second]
+            .into_iter()
+            .map(|request| {
+                let database = database.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut store = CanonicalStore::open(&database).unwrap();
+                    let mut support = CurrentSupportPort::default();
+                    let mut ag = FakeAg::default();
+                    barrier.wait();
+                    match CanonicalRuntime::new(
+                        &mut store,
+                        TestNqAdmissionPort,
+                        &mut support,
+                        &mut ag,
+                    )
+                    .run_cycle_with_authoring_custody(request, &test_custody_verifier())
+                    {
+                        Ok(_) => "won",
+                        Err(CanonicalRuntimeError::Store(
+                            CanonicalStoreError::DuplicateAgOccurrence(_, _),
+                        )) => "conflict",
+                        Err(error) => panic!("unexpected concurrent result: {error}"),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| **result == "won").count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == "conflict")
+                .count(),
+            1
+        );
+
+        let store = CanonicalStore::open_read_only(&database).unwrap();
+        let relations = [
+            ("concurrent plan A\n", "sess_aaaaaaaaaaaa"),
+            ("concurrent plan B\n", "sess_bbbbbbbbbbbb"),
+        ]
+        .into_iter()
+        .map(|(plan, session_id)| {
+            store
+                .export_authoring_context(AuthoringContextQueryV1::MaudeContext {
+                    plan_ref: format!("sha256:{:x}", Sha256::digest(plan.as_bytes())),
+                    session_id: session_id.into(),
+                })
+                .unwrap()
+                .matches
+                .len()
+        })
+        .sum::<usize>();
+        assert_eq!(relations, 1);
+    }
+
+    #[test]
+    fn authoring_context_is_authority_neutral_and_never_inherited() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("linked.sqlite")).unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut first_ag = FakeAg::default();
+        let first_request = with_authoring_context(
+            cycle_request(0, true),
+            "exact plan A\n",
+            "sess_0123456789ab",
+        );
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle: first } =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut first_ag)
+                .run_cycle_with_authoring_custody(first_request, &test_custody_verifier())
+                .unwrap()
+        else {
+            panic!("expected first occurrence")
+        };
+
+        // A separately created governed occurrence without Maude context stays
+        // unlinked. There is no predecessor-copy operation in the canonical
+        // runtime or store.
+        let mut unlinked_store =
+            CanonicalStore::open(directory.path().join("unlinked.sqlite")).unwrap();
+        let mut second_ag = FakeAg::default();
+        let second_outcome = CanonicalRuntime::new(
+            &mut unlinked_store,
+            TestNqAdmissionPort,
+            &mut support,
+            &mut second_ag,
+        )
+        .run_cycle(cycle_request(0, true))
+        .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle: second } = second_outcome else {
+            panic!("expected runtime-generated successor: {second_outcome:?}")
+        };
+
+        assert_eq!(
+            first_ag.request.as_ref().unwrap().proposal_input["proposal"],
+            second_ag.request.as_ref().unwrap().proposal_input["proposal"]
+        );
+        assert!(serde_json::to_value(first_ag.request.as_ref().unwrap())
+            .unwrap()
+            .get("authoring_context")
+            .is_none());
+        assert!(first.authoring_context_provenance.is_some());
+        assert!(first.authoring_context_custody.is_some());
+        assert!(second.authoring_context_provenance.is_none());
+        assert!(second.authoring_context_custody.is_none());
+        assert_eq!(second.status, CycleStatusV1::AwaitingAg);
+        let empty = unlinked_store
+            .export_authoring_context(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id: digest('a'),
+                occurrence_id: "00000000-0000-4000-8000-000000000000".into(),
+            })
+            .unwrap();
+        assert!(empty.matches.is_empty());
+    }
+
+    #[test]
+    fn producer_credential_choice_does_not_change_governed_proposal_or_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = cycle_request(0, true);
+        let first = with_authoring_context_credentials(
+            base.clone(),
+            "exact neutral plan\n",
+            "sess_0123456789ab",
+            "maude-handoff:first",
+            "maude-handoff-key:first",
+            &[7_u8; 32],
+        );
+        let second = with_authoring_context_credentials(
+            base,
+            "exact neutral plan\n",
+            "sess_0123456789ab",
+            "maude-handoff:second",
+            "maude-handoff-key:second",
+            &[8_u8; 32],
+        );
+        let mut first_support = CurrentSupportPort::default();
+        let mut first_store = CanonicalStore::open(directory.path().join("first.sqlite")).unwrap();
+        let mut first_ag = FakeAg::default();
+        CanonicalRuntime::new(
+            &mut first_store,
+            TestNqAdmissionPort,
+            &mut first_support,
+            &mut first_ag,
+        )
+        .run_cycle_with_authoring_custody(
+            first,
+            &custody_verifier_for("maude-handoff:first", "maude-handoff-key:first", [7_u8; 32]),
+        )
+        .unwrap();
+
+        let mut second_store =
+            CanonicalStore::open(directory.path().join("second.sqlite")).unwrap();
+        let mut second_ag = FakeAg::default();
+        let mut second_support = CurrentSupportPort::default();
+        CanonicalRuntime::new(
+            &mut second_store,
+            TestNqAdmissionPort,
+            &mut second_support,
+            &mut second_ag,
+        )
+        .run_cycle_with_authoring_custody(
+            second,
+            &custody_verifier_for(
+                "maude-handoff:second",
+                "maude-handoff-key:second",
+                [8_u8; 32],
+            ),
+        )
+        .unwrap();
+
+        let first_ag_request = first_ag.request.as_ref().unwrap();
+        let second_ag_request = second_ag.request.as_ref().unwrap();
+        assert_eq!(first_ag_request.campaign_id, second_ag_request.campaign_id);
+        assert_eq!(
+            first_ag_request.occurrence_id,
+            second_ag_request.occurrence_id
+        );
+        assert_eq!(
+            first_ag_request.subject_digest,
+            second_ag_request.subject_digest
+        );
+        assert_eq!(
+            first_ag_request.scope_digest,
+            second_ag_request.scope_digest
+        );
+        assert_eq!(first_ag_request.mode, second_ag_request.mode);
+        assert_eq!(
+            first_ag_request.proposal_input,
+            second_ag_request.proposal_input
+        );
+        let ag_wire = serde_json::to_string(first_ag_request).unwrap();
+        for forbidden in [
+            "maude-handoff",
+            "session_issuer",
+            "authoring_context",
+            "custody",
+        ] {
+            assert!(!ag_wire.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn lost_ag_response_preserves_custody_and_exact_resend_cannot_remint() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("ns.sqlite");
+        let request = with_authoring_context(
+            cycle_request(0, true),
+            "restart-stable plan\n",
+            "sess_0123456789ab",
+        );
+        let exact_resend = request.clone();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg {
+            lose_open_response: true,
+            ..FakeAg::default()
+        };
+        {
+            let mut store = CanonicalStore::open(&database).unwrap();
+            let error =
+                CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+                    .run_cycle_with_authoring_custody(request, &test_custody_verifier())
+                    .unwrap_err();
+            assert!(matches!(error, CanonicalRuntimeError::Ag(_)));
+        }
+
+        let mut reopened = CanonicalStore::open(&database).unwrap();
+        let cycles = reopened.list_cycles().unwrap();
+        let [cycle] = cycles.as_slice() else {
+            panic!("expected one durable cycle after lost AG response")
+        };
+        assert_eq!(cycle.status, CycleStatusV1::RecoveryRequired);
+        let custody = cycle.authoring_context_custody.as_ref().unwrap();
+        let export = reopened
+            .export_authoring_custody(AuthoringContextQueryV1::GovernedOccurrence {
+                campaign_id: custody.campaign_id.clone(),
+                occurrence_id: custody.occurrence_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(export.matches, vec![custody.clone()]);
+
+        let mut restarted_ag = FakeAg::default();
+        let error = CanonicalRuntime::new(
+            &mut reopened,
+            TestNqAdmissionPort,
+            &mut support,
+            &mut restarted_ag,
+        )
+        .run_cycle_with_authoring_custody(exact_resend, &test_custody_verifier())
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CanonicalRuntimeError::Store(CanonicalStoreError::DuplicateSlot(_))
+        ));
+        assert_eq!(restarted_ag.open_count, 0);
+    }
+
+    #[test]
+    fn malformed_or_substituted_authoring_input_refuses_before_custody() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let mut request = with_authoring_context(
+            cycle_request(0, true),
+            "exact plan A\n",
+            "sess_0123456789ab",
+        );
+        request
+            .authoring_context
+            .as_mut()
+            .unwrap()
+            .authoring_context
+            .plan_text = "plan B\n".into();
+        request.request_id.clear();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let error = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(request, &test_custody_verifier())
+            .unwrap_err();
+        assert!(matches!(error, CanonicalRuntimeError::Invalid(_)));
+        assert!(store.list_cycles().unwrap().is_empty());
+        assert_eq!(ag.open_count, 0);
+    }
+
+    #[test]
+    fn custody_cannot_bypass_the_authenticated_runtime_entrypoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let request = with_authoring_context(
+            cycle_request(0, true),
+            "exact plan A\n",
+            "sess_0123456789ab",
+        );
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let error = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle(request)
+            .unwrap_err();
+        assert!(matches!(error, CanonicalRuntimeError::Invalid(_)));
+        assert!(store.list_cycles().unwrap().is_empty());
+        assert_eq!(ag.open_count, 0);
+    }
+
+    #[test]
+    fn wrong_custody_tag_refuses_before_any_cycle_fact() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let mut request = with_authoring_context(
+            cycle_request(0, true),
+            "exact plan A\n",
+            "sess_0123456789ab",
+        );
+        request
+            .authoring_context
+            .as_mut()
+            .unwrap()
+            .authentication
+            .tag = format!("hmac-sha256:{}", "0".repeat(64));
+        request = request.seal().unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let error = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(request, &test_custody_verifier())
+            .unwrap_err();
+        assert!(matches!(error, CanonicalRuntimeError::Invalid(_)));
+        assert!(store.list_cycles().unwrap().is_empty());
+        assert_eq!(ag.open_count, 0);
+    }
+
+    #[test]
+    fn unsupported_custody_schema_refuses_before_any_cycle_fact() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let mut request = with_authoring_context(
+            cycle_request(0, true),
+            "exact plan A\n",
+            "sess_0123456789ab",
+        );
+        request.authoring_context.as_mut().unwrap().schema =
+            "nightshift.maude_authoring_context_handoff.v2".into();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg::default();
+        let error = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(request, &test_custody_verifier())
+            .unwrap_err();
+        assert!(matches!(error, CanonicalRuntimeError::Invalid(_)));
+        assert!(store.list_cycles().unwrap().is_empty());
         assert_eq!(ag.open_count, 0);
     }
 
@@ -904,7 +1755,7 @@ mod tests {
         let (inputs, recurrence) = condition_present_inputs_recurrence();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(sealed_cycle_request(policy, inputs, recurrence, 0, true))
             .unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
@@ -943,7 +1794,7 @@ mod tests {
         recurrence.recurrence_id = recurrence.computed_recurrence_id().unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(sealed_cycle_request(policy, inputs, recurrence, 0, true))
             .unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
@@ -970,7 +1821,8 @@ mod tests {
         let (policy, inputs, recurrence) = policy_inputs_recurrence();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
 
         let mut missed_request =
             sealed_cycle_request(policy.clone(), inputs.clone(), recurrence.clone(), 1, true);
@@ -997,7 +1849,6 @@ mod tests {
         admitted_request.evaluated_at = time("2026-07-27T20:02:30Z");
         let outcome = runtime.run_cycle(admitted_request.seal().unwrap()).unwrap();
         assert!(matches!(outcome, CycleRunOutcomeV1::PostureOnly { .. }));
-        drop(runtime);
         assert_eq!(ag.open_count, 0);
     }
 
@@ -1011,7 +1862,8 @@ mod tests {
         let (policy, inputs, recurrence) = policy_inputs_recurrence();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
 
         let observed_outcome = runtime
             .run_cycle(sealed_cycle_request(
@@ -1049,7 +1901,8 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
         runtime.run_cycle(cycle_request(0, false)).unwrap();
         runtime.run_cycle(cycle_request(1, false)).unwrap();
         assert_eq!(runtime.store.list_cycles().unwrap().len(), 2);
@@ -1061,7 +1914,8 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
         runtime.run_cycle(cycle_request(0, true)).unwrap();
 
         let mut second = cycle_request(1, true);
@@ -1081,12 +1935,14 @@ mod tests {
         second.evaluated_at = time("2026-07-27T20:00:10Z");
         let first_occurrence = "00000000-0000-4000-8000-000000000000";
         let proposal = second.proposal.as_mut().unwrap();
+        let expected_ag_work = proposal.proposal_input["proposal"]["work"].clone();
         proposal.occurrence_id = first_occurrence.into();
         proposal.mode = AgOpenModeV1::Genesis {
             genesis: serde_json::json!({
                 "campaign": proposal.campaign_id,
                 "occurrence": first_occurrence,
                 "program": digest('2'),
+                "expected_ag_work": expected_ag_work,
                 "residuals": [],
                 "budget": {"retry_limit":1,"retries_used":0,"probe_limit":1,"probes_used":0,"escalation_limit":1,"escalations_used":0}
             }),
@@ -1103,7 +1959,8 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
         let outcome = runtime.run_cycle(cycle_request(0, true)).unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
             panic!("expected AG occurrence")
@@ -1137,7 +1994,8 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
         let outcome = runtime.run_cycle(cycle_request(0, true)).unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
             panic!("expected AG occurrence")
@@ -1160,7 +2018,8 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
         let outcome = runtime.run_cycle(cycle_request(0, true)).unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
             panic!("expected AG occurrence")
@@ -1186,9 +2045,11 @@ mod tests {
                 lose_open_response: true,
                 ..FakeAg::default()
             };
-            assert!(CanonicalRuntime::new(&mut store, &mut support, &mut ag)
-                .run_cycle(cycle_request(0, true))
-                .is_err());
+            assert!(
+                CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag,)
+                    .run_cycle(cycle_request(0, true))
+                    .is_err()
+            );
             assert_eq!(ag.open_count, 1);
             let cycle = store.list_cycles().unwrap().pop().unwrap();
             assert_eq!(cycle.status, CycleStatusV1::RecoveryRequired);
@@ -1205,9 +2066,10 @@ mod tests {
         assert_eq!(candidates[0].cycle_id, cycle_id);
         let mut support = UnavailableSupportPort;
         let mut ag = FakeAg::default();
-        let recovered = CanonicalRuntime::new(&mut restarted, &mut support, &mut ag)
-            .sync_ag(&cycle_id, time("2026-07-27T20:00:21Z"))
-            .unwrap();
+        let recovered =
+            CanonicalRuntime::new(&mut restarted, TestNqAdmissionPort, &mut support, &mut ag)
+                .sync_ag(&cycle_id, time("2026-07-27T20:00:21Z"))
+                .unwrap();
         assert_eq!(recovered.status, CycleStatusV1::AwaitingAg);
         assert!(recovered.ag.is_some());
         assert_eq!(ag.open_count, 0);
@@ -1254,6 +2116,7 @@ mod tests {
             let observation = ObservationRecordV1 {
                 schema: crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V1.into(),
                 observation_id: request.observation_id,
+                source_admissions: Vec::new(),
                 support,
                 posture,
             };
@@ -1290,7 +2153,8 @@ mod tests {
             let mut store = CanonicalStore::open(&database).unwrap();
             let mut support = CurrentSupportPort::default();
             let mut ag = FakeAg::default();
-            let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+            let mut runtime =
+                CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
             let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } =
                 runtime.run_cycle(cycle_request(0, true)).unwrap()
             else {
@@ -1321,9 +2185,10 @@ mod tests {
             status_pc: AgProgramCounterV1::ReconciliationRequired,
             ..FakeAg::default()
         };
-        let unchanged = CanonicalRuntime::new(&mut restarted, &mut support, &mut ag)
-            .sync_ag(&cycle_id, time("2026-07-27T20:00:22Z"))
-            .unwrap();
+        let unchanged =
+            CanonicalRuntime::new(&mut restarted, TestNqAdmissionPort, &mut support, &mut ag)
+                .sync_ag(&cycle_id, time("2026-07-27T20:00:22Z"))
+                .unwrap();
         assert_eq!(unchanged.status, CycleStatusV1::AwaitingAgReconciliation);
         assert_eq!(ag.open_count, 0);
     }
@@ -1336,7 +2201,8 @@ mod tests {
             let mut store = CanonicalStore::open(&database).unwrap();
             let mut support = CurrentSupportPort::default();
             let mut ag = FakeAg::default();
-            let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+            let mut runtime =
+                CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
             let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } =
                 runtime.run_cycle(cycle_request(0, true)).unwrap()
             else {
@@ -1365,7 +2231,8 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let mut runtime = CanonicalRuntime::new(&mut store, &mut support, &mut ag);
+        let mut runtime =
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag);
         let outcome = runtime.run_cycle(cycle_request(0, true)).unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
             panic!("expected AG occurrence")
@@ -1394,7 +2261,7 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(cycle_request(0, true))
             .unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
@@ -1452,7 +2319,7 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = CurrentSupportPort::default();
         let mut ag = FakeAg::default();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(cycle_request(0, false))
             .unwrap();
         let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
@@ -1537,7 +2404,7 @@ mod tests {
             }),
         });
         request = request.seal().unwrap();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(request)
             .unwrap();
         let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
@@ -1559,7 +2426,7 @@ mod tests {
             standing: SupportStandingV1::Unknown,
         };
         let mut ag = FakeAg::default();
-        let outcome = CanonicalRuntime::new(&mut store, &mut support, &mut ag)
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
             .run_cycle(cycle_request(0, true))
             .unwrap();
         let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
@@ -1577,9 +2444,11 @@ mod tests {
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
         let mut support = UnavailableSupportPort;
         let mut ag = FakeAg::default();
-        assert!(CanonicalRuntime::new(&mut store, &mut support, &mut ag)
-            .run_cycle(cycle_request(0, true))
-            .is_err());
+        assert!(
+            CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag,)
+                .run_cycle(cycle_request(0, true))
+                .is_err()
+        );
         let cycles = store.list_cycles().unwrap();
         assert_eq!(cycles.len(), 1);
         assert_eq!(cycles[0].status, CycleStatusV1::RecoveryRequired);

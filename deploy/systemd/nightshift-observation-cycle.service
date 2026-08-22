@@ -14,6 +14,9 @@ ExecStart=/usr/local/bin/nightshift \
     --store ${NIGHTSHIFT_STORE} \
     cycle run \
     --request ${NIGHTSHIFT_CYCLE_REQUEST} \
+    --nq-program ${NIGHTSHIFT_NQ_PROGRAM} \
+    --nq-config ${NIGHTSHIFT_NQ_CONFIG} \
+    --nq-source-id ${NIGHTSHIFT_NQ_SOURCE_ID} \
     --present-evidence-resolver ${NIGHTSHIFT_PRESENT_EVIDENCE_RESOLVER} \
     $NIGHTSHIFT_AG_FLAGS
 

@@ -24,20 +24,25 @@
 //! The always-on `condition_present_fixture_is_real_and_resealed` test needs
 //! no external binary and runs in the default suite.
 
+mod common;
+
 use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use chrono::{DateTime, Utc};
-use nightshiftd::ag_port::{AgOccurrencePortV1, AgOpenModeV1, AgOpenOccurrenceRequestV1};
+use nightshiftd::ag_port::{
+    AgLoopCtlPortV1, AgOccurrencePortV1, AgOpenModeV1, AgOpenOccurrenceRequestV1,
+};
+use nightshiftd::authoring_custody::{MaudeAuthoringContextHandoffV1, MaudeCustodyVerifierV1};
 use nightshiftd::canonical_runtime::{
-    ag_executor_plan_identity, CanonicalCycleRequestV1, CanonicalRuntime, CycleRunOutcomeV1,
-    PrecompiledWorkflowProposalV2,
+    ag_executor_plan_identity, CanonicalCycleRequestV1, CanonicalRuntime, CanonicalRuntimeError,
+    CycleRunOutcomeV1, PrecompiledWorkflowProposalV2,
 };
 use nightshiftd::canonical_store::{
-    AgOccurrenceReferenceV1, AgProgramCounterV1, CanonicalStore, RecurrenceSlotV1,
-    RecurrenceTriggerV1,
+    AgOccurrenceReferenceV1, AgProgramCounterV1, CanonicalStore, CanonicalStoreError,
+    RecurrenceSlotV1, RecurrenceTriggerV1,
 };
 use nightshiftd::currentness::{
     PresentEvidencePortV1, PresentEvidenceQueryV1, QualifiedSupportV1, SupportExpiryV1,
@@ -48,6 +53,8 @@ use nightshiftd::diagnostic_posture::{
     ConditionAxis, DiagnosticInputs, PosturePolicy, RecurrenceEvidence,
 };
 use sha2::{Digest as _, Sha256};
+
+use common::TestNqAdmissionPort;
 
 /// The identity AG is configured to expect from the observation resolver.
 const OBSERVATION_RESOLVER_ID: &str = "nightshift-observation-resolver/v1";
@@ -206,6 +213,70 @@ fn condition_present_inputs_recurrence() -> (DiagnosticInputs, RecurrenceEvidenc
     (inputs, recurrence)
 }
 
+/// A second independently sealed clean execution for diagnostic occurrence 1.
+/// The new AG occurrence is therefore driven by genuinely fresh source and
+/// recurrence evidence, not by relabelling the first observation.
+fn next_clean_inputs_recurrence() -> (DiagnosticInputs, RecurrenceEvidence) {
+    let mut inputs_value: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/operator/examples/diagnostic-posture-v1/inputs.json"
+    ))
+    .unwrap();
+    let artifact = &mut inputs_value["inputs"][0]["artifact"];
+    artifact["request_id"] = serde_json::json!("request:002");
+    artifact["run_id"] = serde_json::json!("run:002");
+    artifact["started_at"] = serde_json::json!("2026-07-27T20:01:03Z");
+    artifact["completed_at"] = serde_json::json!("2026-07-27T20:01:04Z");
+    artifact["attempt_interval"]["started_at"] = serde_json::json!("2026-07-27T20:01:03Z");
+    artifact["attempt_interval"]["ended_at"] = serde_json::json!("2026-07-27T20:01:04Z");
+    artifact["inputs"]["received"][0]["acquisition"]["started_at"] =
+        serde_json::json!("2026-07-27T20:01:01Z");
+    artifact["inputs"]["received"][0]["acquisition"]["ended_at"] =
+        serde_json::json!("2026-07-27T20:01:02Z");
+    artifact["inputs"]["received"][0]["received_at"] = serde_json::json!("2026-07-27T20:01:03Z");
+    let mut artifact_preimage = artifact.clone();
+    artifact_preimage
+        .as_object_mut()
+        .unwrap()
+        .remove("artifact_id");
+    let artifact_id = digest_value(&artifact_preimage);
+    artifact["artifact_id"] = serde_json::json!(artifact_id);
+    let artifact_snapshot = artifact.clone();
+    let mut inputs: DiagnosticInputs = serde_json::from_value(inputs_value).unwrap();
+    inputs.inputs_id = inputs.computed_inputs_id().unwrap();
+
+    let mut recurrence_value: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/operator/examples/diagnostic-posture-v1/recurrence.json"
+    ))
+    .unwrap();
+    let base: RecurrenceEvidence = serde_json::from_value(recurrence_value.clone()).unwrap();
+    let slot = nightshiftd::diagnostic_posture::make_run_slot(
+        &base.records[0].policy,
+        &base.records[0].key,
+        1,
+    )
+    .unwrap();
+    recurrence_value["records"][0]["slot"] = serde_json::to_value(&slot).unwrap();
+    let evidence = &mut recurrence_value["records"][0]["evidence"];
+    evidence["attempt"]["attempt_id"] = serde_json::json!("attempt:fixture-2");
+    evidence["attempt"]["request_id"] = serde_json::json!("request:002");
+    evidence["attempt"]["slot_id"] = serde_json::json!(slot.slot_id);
+    evidence["attempt"]["started_at"] = serde_json::json!("2026-07-27T20:01:00Z");
+    evidence["completed_at"] = serde_json::json!("2026-07-27T20:01:04Z");
+    let reference = &mut evidence["artifact"];
+    reference["artifact_id"] = artifact_snapshot["artifact_id"].clone();
+    reference["request_id"] = artifact_snapshot["request_id"].clone();
+    reference["run_id"] = artifact_snapshot["run_id"].clone();
+    reference["attempt_interval"] = artifact_snapshot["attempt_interval"].clone();
+    reference["dependency_acquisitions"] =
+        serde_json::json!([artifact_snapshot["inputs"]["received"][0]["acquisition"].clone()]);
+    reference["claim"] = artifact_snapshot["claims"][0].clone();
+    let mut recurrence: RecurrenceEvidence = serde_json::from_value(recurrence_value).unwrap();
+    recurrence.recurrence_id = recurrence.computed_recurrence_id().unwrap();
+    inputs.validate().unwrap();
+    recurrence.validate().unwrap();
+    (inputs, recurrence)
+}
+
 struct SupportPort;
 
 impl PresentEvidencePortV1 for SupportPort {
@@ -346,15 +417,49 @@ fn cycle_request(
                 }),
             }
         }),
+        authoring_context: None,
     }
     .seal()
     .unwrap()
 }
 
+fn successor_cycle_request(
+    policy: &PosturePolicy,
+    inputs: &DiagnosticInputs,
+    recurrence: &RecurrenceEvidence,
+    occurrence: u64,
+    observation_id: &str,
+    plan: &serde_json::Value,
+) -> CanonicalCycleRequestV1 {
+    let mut request = cycle_request(
+        policy,
+        inputs,
+        recurrence,
+        occurrence,
+        observation_id,
+        true,
+        plan,
+    );
+    request.schema.clear();
+    request.request_id.clear();
+    let proposal = request.proposal.as_mut().unwrap();
+    let occurrence_id = occurrence_uuid(occurrence);
+    let expected_ag_work = ag_executor_plan_identity(plan).unwrap();
+    proposal.occurrence_id.clone_from(&occurrence_id);
+    proposal.mode = AgOpenModeV1::Continuation {
+        continuation: serde_json::json!({
+            "occurrence": occurrence_id,
+            "expected_ag_work": expected_ag_work,
+        }),
+    };
+    proposal.proposal_input["class"] = serde_json::Value::String("successor".into());
+    request.seal().unwrap()
+}
+
 fn run_cycle(store: &mut CanonicalStore, request: CanonicalCycleRequestV1) -> CycleRunOutcomeV1 {
     let mut support = SupportPort;
     let mut ag = FakeAg;
-    CanonicalRuntime::new(store, &mut support, &mut ag)
+    CanonicalRuntime::new(store, TestNqAdmissionPort, &mut support, &mut ag)
         .run_cycle(request)
         .unwrap()
 }
@@ -373,14 +478,24 @@ fn genesis_json(expected_ag_work: &str) -> serde_json::Value {
 }
 
 fn proposal_input_json(observation_id: &str, scope: &str, work: &str) -> serde_json::Value {
+    proposal_input_json_for(WORK_SCHEMA, SUBJECT_DIGEST, observation_id, scope, work)
+}
+
+fn proposal_input_json_for(
+    work_schema: &str,
+    subject: &str,
+    observation_id: &str,
+    scope: &str,
+    work: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "observation": observation_id,
         "proposal": {
             "schema": PROPOSAL_SCHEMA,
             "campaign": campaign(),
-            "subject": SUBJECT_DIGEST,
+            "subject": subject,
             "scope": scope,
-            "work_schema": WORK_SCHEMA,
+            "work_schema": work_schema,
             "work": work,
             "repair": null
         },
@@ -389,12 +504,21 @@ fn proposal_input_json(observation_id: &str, scope: &str, work: &str) -> serde_j
 }
 
 fn catalog_json(scope: &str, required: &[&str]) -> serde_json::Value {
+    catalog_json_for(WORK_SCHEMA, SUBJECT_DIGEST, scope, required)
+}
+
+fn catalog_json_for(
+    work_schema: &str,
+    subject: &str,
+    scope: &str,
+    required: &[&str],
+) -> serde_json::Value {
     serde_json::json!({
         "schema": CATALOG_SCHEMA,
         "entries": {
-            WORK_SCHEMA: {
-                "work_schema": WORK_SCHEMA,
-                "subject": SUBJECT_DIGEST,
+            (work_schema): {
+                "work_schema": work_schema,
+                "subject": subject,
                 "scope": scope,
                 "precondition": {"required": required, "forbidden": []}
             }
@@ -403,8 +527,18 @@ fn catalog_json(scope: &str, required: &[&str]) -> serde_json::Value {
 }
 
 fn mandate_json(scope: &str, generation: u64, status: &str, valid_until: u64) -> serde_json::Value {
+    mandate_json_for(SUBJECT_DIGEST, scope, generation, status, valid_until)
+}
+
+fn mandate_json_for(
+    subject: &str,
+    scope: &str,
+    generation: u64,
+    status: &str,
+    valid_until: u64,
+) -> serde_json::Value {
     serde_json::json!({
-        "subject": SUBJECT_DIGEST,
+        "subject": subject,
         "scope": scope,
         "generation": generation,
         "status": status,
@@ -592,6 +726,26 @@ fn docket_args(
     issuer_key: &Path,
     bins: &Bins,
 ) -> Vec<String> {
+    docket_args_for_executor(
+        root,
+        trust,
+        docket_standing,
+        plan,
+        issuer_key,
+        &bins.effectd,
+        bins,
+    )
+}
+
+fn docket_args_for_executor(
+    root: &Path,
+    trust: &Path,
+    docket_standing: &Path,
+    plan: &Path,
+    issuer_key: &Path,
+    executor: &Path,
+    bins: &Bins,
+) -> Vec<String> {
     vec![
         "--docket".to_owned(),
         bins.docket.display().to_string(),
@@ -602,7 +756,7 @@ fn docket_args(
         "--docket-standing-resolver".to_owned(),
         docket_standing.display().to_string(),
         "--executor".to_owned(),
-        bins.effectd.display().to_string(),
+        executor.display().to_string(),
         "--executor-config".to_owned(),
         plan.display().to_string(),
         "--issuer-principal".to_owned(),
@@ -709,11 +863,47 @@ fn docket_rig(root: &Path, scope: &str) -> DocketRig {
     }
 }
 
+/// Docket trust material around an externally compiled, closed executor plan.
+/// The plan bytes remain owned by the Maude compiler output; this helper adds
+/// no work semantics and merely pins the existing test issuer to those bytes.
+fn external_docket_rig(root: &Path, plan_path: &Path) -> DocketRig {
+    let plan_bytes = std::fs::read(plan_path).unwrap();
+    let plan_value: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+    assert_eq!(serde_jcs::to_vec(&plan_value).unwrap(), plan_bytes);
+    let plan_identity = ag_digest_value(PLAN_DIGEST_DOMAIN, &plan_value);
+    let issuer_key = root.join("issuer.pk8");
+    let key_bytes: Vec<u8> = (0..ISSUER_PKCS8_HEX.len())
+        .step_by(2)
+        .map(|offset| u8::from_str_radix(&ISSUER_PKCS8_HEX[offset..offset + 2], 16).unwrap())
+        .collect();
+    std::fs::write(&issuer_key, key_bytes).unwrap();
+    std::fs::set_permissions(&issuer_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let trust = root.join("docket-trust.json");
+    write_jcs(
+        &trust,
+        &serde_json::json!({"issuers":[{
+            "issuer_principal": ISSUER_PRINCIPAL,
+            "key_id": ISSUER_KEY_ID,
+            "public_key": ISSUER_PUBLIC_KEY_B64URL
+        }]}),
+    );
+    DocketRig {
+        trust,
+        issuer_key,
+        target: root.join("no-managed-file-target"),
+        plan: plan_path.to_owned(),
+        plan_value,
+        plan_identity,
+    }
+}
+
 /// The controlled Docket execution-standing fixture (unchanged from the
 /// existing governed-Docket harness; Docket's own production standing
 /// authority is out of scope for WO-9).
 fn docket_standing_script(root: &Path, status: &str) -> PathBuf {
-    let script = root.join(format!("docket-standing-{status}.py"));
+    let status_path = root.join("docket-standing-status");
+    std::fs::write(&status_path, status).unwrap();
+    let script = root.join("docket-standing.py");
     write_wrapper(
         &script,
         &format!(
@@ -721,12 +911,95 @@ fn docket_standing_script(root: &Path, status: &str) -> PathBuf {
 import hashlib,json,sys
 r=json.load(sys.stdin); i=r["issuance"]
 def d(label): return "sha256:"+hashlib.sha256(label.encode()).hexdigest()
-o={{"schema":"docket.governed-loop.execution-standing-resolution/v1","resolution":d("resolution"),"currentness":d("currentness"),"execution_standing":d("execution-standing"),"issuance":i["issuance"],"campaign":i["key"]["campaign"],"occurrence":i["key"]["occurrence"],"subject":i["subject"],"scope":i["scope"],"status":"{status}","resolved_at_unix_ms":r["now_unix_ms"],"expires_at_unix_ms":r["now_unix_ms"]+60000}}
+status=open({status_path:?},encoding="utf-8").read().strip()
+o={{"schema":"docket.governed-loop.execution-standing-resolution/v1","resolution":d("resolution:"+i["issuance"]),"currentness":d("currentness:"+i["issuance"]),"execution_standing":d("execution-standing:"+i["issuance"]),"issuance":i["issuance"],"campaign":i["key"]["campaign"],"occurrence":i["key"]["occurrence"],"subject":i["subject"],"scope":i["scope"],"status":status,"resolved_at_unix_ms":r["now_unix_ms"],"expires_at_unix_ms":r["now_unix_ms"]+60000}}
 sys.stdout.write(json.dumps(o,sort_keys=True,separators=(",",":")))
-"#
+"#,
+            status_path = status_path.display().to_string()
         ),
     );
     script
+}
+
+fn pinned_file(path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "path": path.display().to_string(),
+        "identity": sha256_digest(&std::fs::read(path).unwrap()),
+    })
+}
+
+/// Seals the deployment-owned resolver, policy, and Docket coordinates that
+/// later CLI arguments may repeat but may not select or alter.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cross-process fixture keeps every independently owned boundary visible"
+)]
+fn runtime_profile(
+    root: &Path,
+    label: &str,
+    observation: &Path,
+    standing: &Path,
+    catalog: &Path,
+    docket_standing: &Path,
+    rig: &DocketRig,
+    bins: &Bins,
+) -> PathBuf {
+    runtime_profile_for_executor(
+        root,
+        label,
+        observation,
+        standing,
+        catalog,
+        docket_standing,
+        rig,
+        &bins.effectd,
+        bins,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cross-process fixture keeps every independently owned boundary visible"
+)]
+fn runtime_profile_for_executor(
+    root: &Path,
+    label: &str,
+    observation: &Path,
+    standing: &Path,
+    catalog: &Path,
+    docket_standing: &Path,
+    rig: &DocketRig,
+    executor: &Path,
+    bins: &Bins,
+) -> PathBuf {
+    let profile = root.join(format!("runtime-profile-{label}.json"));
+    write_jcs(
+        &profile,
+        &serde_json::json!({
+            "schema": "ag.governed-loop.runtime-profile/v1",
+            "profile_label": label,
+            "observation_resolver": pinned_file(observation),
+            "observation_resolver_id": OBSERVATION_RESOLVER_ID,
+            "standing_resolver": pinned_file(standing),
+            "standing_resolver_id": STANDING_RESOLVER_ID,
+            "max_standing_ttl_ms": STANDING_TTL_MS,
+            "exact_work_catalog": pinned_file(catalog),
+            "controlling_review": null,
+            "docket": {
+                "schema": "ag.governed-loop.docket-root/v1",
+                "docket_program": pinned_file(&bins.docket),
+                "state_directory": root.join("docket-state").display().to_string(),
+                "trust_config": pinned_file(&rig.trust),
+                "standing_resolver": pinned_file(docket_standing),
+                "executor_adapter": pinned_file(executor),
+                "issuer_principal": ISSUER_PRINCIPAL,
+                "issuer_key_id": ISSUER_KEY_ID,
+                "issuer_key": pinned_file(&rig.issuer_key),
+            },
+            "human_verifier": null,
+        }),
+    );
+    profile
 }
 
 /// A minimal exact executor-plan document for store-only fixture tests: any
@@ -781,6 +1054,7 @@ fn init_and_record_proposal(
     root: &Path,
     ag_database: &Path,
     observation_wrapper_path: &Path,
+    runtime_profile_path: &Path,
     scope: &str,
     work: &str,
 ) -> serde_json::Value {
@@ -797,6 +1071,8 @@ fn init_and_record_proposal(
             &ag_database.display().to_string(),
             "--genesis",
             &genesis.display().to_string(),
+            "--runtime-profile",
+            &runtime_profile_path.display().to_string(),
         ]),
     );
     let proposal_input = root.join("proposal-input.json");
@@ -832,6 +1108,127 @@ fn require_standing(bins: &Bins, ag_database: &Path) {
         ]),
     );
     assert_eq!(program_counter(&snapshot), "standing_required");
+}
+
+fn request_for_precompiled(
+    policy: &PosturePolicy,
+    inputs: &DiagnosticInputs,
+    recurrence: &RecurrenceEvidence,
+    occurrence: u64,
+    observation_id: &str,
+    proposal: PrecompiledWorkflowProposalV2,
+) -> CanonicalCycleRequestV1 {
+    let mut request = cycle_request(
+        policy,
+        inputs,
+        recurrence,
+        occurrence,
+        observation_id,
+        false,
+        &fixture_plan(),
+    );
+    request.schema.clear();
+    request.request_id.clear();
+    request.proposal = Some(proposal);
+    request.seal().unwrap()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "qualification keeps the two custody principals and exact inputs visible"
+)]
+fn attach_synthetic_maude_handoff(
+    root: &Path,
+    label: &str,
+    mut request: CanonicalCycleRequestV1,
+    locked_plan: &Path,
+    custody_store: &Path,
+    session_key: &Path,
+    producer_key: &Path,
+    session_id: &str,
+) -> CanonicalCycleRequestV1 {
+    let request_path = root.join(format!("cycle-request-{label}-base.json"));
+    let handoff_path = root.join(format!("maude-handoff-{label}.json"));
+    write_jcs(&request_path, &serde_json::to_value(&request).unwrap());
+    let output = Command::new(std::env::var_os("MAUDE_PYTHON").expect("MAUDE_PYTHON"))
+        .arg(
+            std::env::var_os("MAUDE_SYNTHETIC_HANDOFF_HELPER")
+                .expect("MAUDE_SYNTHETIC_HANDOFF_HELPER"),
+        )
+        .arg("--store")
+        .arg(custody_store)
+        .arg("--session-key")
+        .arg(session_key)
+        .arg("--producer-key")
+        .arg(producer_key)
+        .arg("--plan")
+        .arg(locked_plan)
+        .arg("--base-request")
+        .arg(&request_path)
+        .arg("--output")
+        .arg(&handoff_path)
+        .arg("--session-id")
+        .arg(session_id)
+        .arg("--runtime-id")
+        .arg("nightshift:synthetic-local-v1")
+        .env(
+            "PYTHONPATH",
+            std::env::var_os("MAUDE_SRC").expect("MAUDE_SRC"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Maude custody helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let handoff: MaudeAuthoringContextHandoffV1 =
+        serde_json::from_slice(&std::fs::read(handoff_path).unwrap()).unwrap();
+    assert_eq!(handoff.target_request_id, request.request_id);
+    request.authoring_context = Some(handoff);
+    request.seal().unwrap()
+}
+
+fn init_and_record_precompiled(
+    bins: &Bins,
+    root: &Path,
+    ag_database: &Path,
+    observation: &Path,
+    profile: &Path,
+    handoff: &serde_json::Value,
+) -> serde_json::Value {
+    let genesis = root.join("synthetic-genesis.json");
+    write_jcs(&genesis, &handoff["mode"]["genesis"]["genesis"]);
+    loopctl_ok(
+        bins,
+        &str_args(&[
+            "init",
+            "--database",
+            &ag_database.display().to_string(),
+            "--genesis",
+            &genesis.display().to_string(),
+            "--runtime-profile",
+            &profile.display().to_string(),
+        ]),
+    );
+    let proposal_input = root.join("synthetic-proposal-input.json");
+    write_jcs(&proposal_input, &handoff["proposal_input"]);
+    let recorded = loopctl_ok(
+        bins,
+        &str_args(&[
+            "record-proposal",
+            "--database",
+            &ag_database.display().to_string(),
+            "--input",
+            &proposal_input.display().to_string(),
+            "--observation-resolver",
+            &observation.display().to_string(),
+            "--expected-observation-resolver-id",
+            OBSERVATION_RESOLVER_ID,
+        ]),
+    );
+    assert_eq!(program_counter(&recorded), "proposal_recorded");
+    recorded
 }
 
 // --- Tests ---
@@ -889,6 +1286,20 @@ fn healthy_chain_reaches_docket_and_executes_exactly_once() {
     let mandate = mandate_json(&scope, 1, "active", wall_now_ms() + 3_600_000);
     write_jcs(&mandate_store, &mandate_store_json(vec![mandate.clone()]));
     let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let catalog = root.path().join("catalog.json");
+    let rollout = catalog_json(&scope, &["condition.clean"]);
+    write_jcs(&catalog, &rollout);
+    let docket_standing = docket_standing_script(root.path(), "current");
+    let profile = runtime_profile(
+        root.path(),
+        "healthy",
+        &observation,
+        &standing,
+        &catalog,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
 
     let ag_database = root.path().join("ag.sqlite");
     let recorded = init_and_record_proposal(
@@ -896,6 +1307,7 @@ fn healthy_chain_reaches_docket_and_executes_exactly_once() {
         root.path(),
         &ag_database,
         &observation,
+        &profile,
         &scope,
         &rig.plan_identity,
     );
@@ -916,9 +1328,6 @@ fn healthy_chain_reaches_docket_and_executes_exactly_once() {
         .to_owned();
 
     require_standing(&bins, &ag_database);
-    let catalog = root.path().join("catalog.json");
-    let rollout = catalog_json(&scope, &["condition.clean"]);
-    write_jcs(&catalog, &rollout);
     let gate = gate_args(&catalog, &observation, &standing);
     let mut decide_args = str_args(&["decide", "--database", &ag_database.display().to_string()]);
     decide_args.extend(gate.clone());
@@ -1040,7 +1449,6 @@ fn healthy_chain_reaches_docket_and_executes_exactly_once() {
     assert_eq!(report["ag_spends"], 1);
 
     // Docket custody and the safe executor: exactly one effect.
-    let docket_standing = docket_standing_script(root.path(), "current");
     let docket = docket_args(
         root.path(),
         &rig.trust,
@@ -1072,6 +1480,51 @@ fn healthy_chain_reaches_docket_and_executes_exactly_once() {
     let repolled = loopctl_ok(&bins, &poll_args);
     assert_eq!(program_counter(&repolled), "settled_observation_required");
     assert_eq!(std::fs::read(&rig.target).unwrap(), b"must-not-run-again\n");
+
+    // A receipt does not authorize continuation. Only a distinct fresh
+    // Nightshift cycle can open occurrence 1 and record its successor
+    // proposal; no second spend or Docket attempt exists at that point.
+    let (inputs, recurrence) = next_clean_inputs_recurrence();
+    let mut successor_plan = rig.plan_value.clone();
+    successor_plan["effect_index"] = serde_json::json!(1);
+    assert_ne!(
+        ag_executor_plan_identity(&successor_plan).unwrap(),
+        rig.plan_identity,
+        "a successor proposal must name genuinely new exact work"
+    );
+    let successor_request = successor_cycle_request(
+        &policy,
+        &inputs,
+        &recurrence,
+        1,
+        &digest('e'),
+        &successor_plan,
+    );
+    let mut store = CanonicalStore::open(&ns_database).unwrap();
+    let mut support = SupportPort;
+    let mut ag = AgLoopCtlPortV1::new(
+        &bins.loopctl,
+        &ag_database,
+        &observation,
+        OBSERVATION_RESOLVER_ID,
+        &profile,
+    )
+    .unwrap();
+    let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+        .run_cycle(successor_request)
+        .unwrap();
+    let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+        panic!("fresh successor observation must open an AG occurrence");
+    };
+    let successor = cycle.ag.unwrap();
+    assert_eq!(successor.occurrence_id, occurrence_uuid(1));
+    assert_eq!(
+        successor.program_counter,
+        AgProgramCounterV1::ProposalRecorded
+    );
+    let report = replay(&bins, &ag_database);
+    assert_eq!(report["ag_spends"], 1);
+    assert_eq!(report["docket_attempts"], 1);
 }
 
 /// Scenarios B and C over literally the same persisted Nightshift
@@ -1101,6 +1554,7 @@ fn rollout_refuses_and_remediation_admits_identical_condition_present_evidence()
         )]),
     );
     let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let docket_standing = docket_standing_script(root.path(), "current");
 
     // The honest basis of the persisted record, computed Nightshift-side.
     let store = CanonicalStore::open(&ns_database).unwrap();
@@ -1115,11 +1569,25 @@ fn rollout_refuses_and_remediation_admits_identical_condition_present_evidence()
     // evidence. The failure is catalog policy refusal, not evidence-health
     // failure: the observation resolved Current at record time.
     let rollout_database = root.path().join("ag-rollout.sqlite");
+    let rollout_catalog = root.path().join("catalog-rollout.json");
+    let rollout = catalog_json(&scope, &["condition.clean"]);
+    write_jcs(&rollout_catalog, &rollout);
+    let rollout_profile = runtime_profile(
+        root.path(),
+        "rollout",
+        &observation,
+        &standing,
+        &rollout_catalog,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
     let recorded = init_and_record_proposal(
         &bins,
         root.path(),
         &rollout_database,
         &observation,
+        &rollout_profile,
         &scope,
         &rig.plan_identity,
     );
@@ -1132,9 +1600,6 @@ fn rollout_refuses_and_remediation_admits_identical_condition_present_evidence()
         expected_basis_digest
     );
     require_standing(&bins, &rollout_database);
-    let rollout_catalog = root.path().join("catalog-rollout.json");
-    let rollout = catalog_json(&scope, &["condition.clean"]);
-    write_jcs(&rollout_catalog, &rollout);
     let mut decide_args = str_args(&[
         "decide",
         "--database",
@@ -1157,18 +1622,29 @@ fn rollout_refuses_and_remediation_admits_identical_condition_present_evidence()
     // admits exactly the same persisted evidence through a second independent
     // campaign. There is no universal Clean rule anywhere in the chain.
     let remediation_database = root.path().join("ag-remediation.sqlite");
+    let remediation_catalog = root.path().join("catalog-remediation.json");
+    let remediation = catalog_json(&scope, &["condition.condition_present"]);
+    write_jcs(&remediation_catalog, &remediation);
+    let remediation_profile = runtime_profile(
+        root.path(),
+        "remediation",
+        &observation,
+        &standing,
+        &remediation_catalog,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
     init_and_record_proposal(
         &bins,
         root.path(),
         &remediation_database,
         &observation,
+        &remediation_profile,
         &scope,
         &rig.plan_identity,
     );
     require_standing(&bins, &remediation_database);
-    let remediation_catalog = root.path().join("catalog-remediation.json");
-    let remediation = catalog_json(&scope, &["condition.condition_present"]);
-    write_jcs(&remediation_catalog, &remediation);
     let gate = gate_args(&remediation_catalog, &observation, &standing);
     let mut decide_args = str_args(&[
         "decide",
@@ -1212,7 +1688,6 @@ fn rollout_refuses_and_remediation_admits_identical_condition_present_evidence()
     assert_eq!(report["ag_spends"], 1);
 
     // The admitted remediation work crosses Docket and executes once.
-    let docket_standing = docket_standing_script(root.path(), "current");
     let docket = docket_args(
         root.path(),
         &rig.trust,
@@ -1267,6 +1742,19 @@ fn newer_same_family_evidence_supersedes_before_spend() {
         )]),
     );
     let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let catalog_path = root.path().join("catalog.json");
+    write_jcs(&catalog_path, &catalog_json(&scope, &["condition.clean"]));
+    let docket_standing = docket_standing_script(root.path(), "current");
+    let profile = runtime_profile(
+        root.path(),
+        "supersession",
+        &observation,
+        &standing,
+        &catalog_path,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
 
     let ag_database = root.path().join("ag.sqlite");
     init_and_record_proposal(
@@ -1274,12 +1762,11 @@ fn newer_same_family_evidence_supersedes_before_spend() {
         root.path(),
         &ag_database,
         &observation,
+        &profile,
         &scope,
         &rig.plan_identity,
     );
     require_standing(&bins, &ag_database);
-    let catalog_path = root.path().join("catalog.json");
-    write_jcs(&catalog_path, &catalog_json(&scope, &["condition.clean"]));
     let gate = gate_args(&catalog_path, &observation, &standing);
     let mut decide_args = str_args(&["decide", "--database", &ag_database.display().to_string()]);
     decide_args.extend(gate.clone());
@@ -1379,6 +1866,19 @@ fn standing_revocation_and_recovery_across_authorize() {
         &mandate_store_json(vec![generation_one.clone()]),
     );
     let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let catalog_path = root.path().join("catalog.json");
+    write_jcs(&catalog_path, &catalog_json(&scope, &["condition.clean"]));
+    let docket_standing = docket_standing_script(root.path(), "current");
+    let profile = runtime_profile(
+        root.path(),
+        "standing-revalidation",
+        &observation,
+        &standing,
+        &catalog_path,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
 
     let ag_database = root.path().join("ag.sqlite");
     let recorded = init_and_record_proposal(
@@ -1386,6 +1886,7 @@ fn standing_revocation_and_recovery_across_authorize() {
         root.path(),
         &ag_database,
         &observation,
+        &profile,
         &scope,
         &rig.plan_identity,
     );
@@ -1394,8 +1895,6 @@ fn standing_revocation_and_recovery_across_authorize() {
         .unwrap()
         .to_owned();
     require_standing(&bins, &ag_database);
-    let catalog_path = root.path().join("catalog.json");
-    write_jcs(&catalog_path, &catalog_json(&scope, &["condition.clean"]));
     let gate = gate_args(&catalog_path, &observation, &standing);
     let mut decide_args = str_args(&["decide", "--database", &ag_database.display().to_string()]);
     decide_args.extend(gate.clone());
@@ -1487,6 +1986,19 @@ fn docket_refusal_after_spend_prevents_effect() {
         )]),
     );
     let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let catalog_path = root.path().join("catalog.json");
+    write_jcs(&catalog_path, &catalog_json(&scope, &["condition.clean"]));
+    let docket_standing = docket_standing_script(root.path(), "revoked");
+    let profile = runtime_profile(
+        root.path(),
+        "docket-standing",
+        &observation,
+        &standing,
+        &catalog_path,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
 
     let ag_database = root.path().join("ag.sqlite");
     init_and_record_proposal(
@@ -1494,12 +2006,11 @@ fn docket_refusal_after_spend_prevents_effect() {
         root.path(),
         &ag_database,
         &observation,
+        &profile,
         &scope,
         &rig.plan_identity,
     );
     require_standing(&bins, &ag_database);
-    let catalog_path = root.path().join("catalog.json");
-    write_jcs(&catalog_path, &catalog_json(&scope, &["condition.clean"]));
     let gate = gate_args(&catalog_path, &observation, &standing);
     let mut decide_args = str_args(&["decide", "--database", &ag_database.display().to_string()]);
     decide_args.extend(gate.clone());
@@ -1515,11 +2026,10 @@ fn docket_refusal_after_spend_prevents_effect() {
 
     // Docket's execution-standing resolver says revoked: custody is refused
     // and the executor never runs, though the AG spend is durable history.
-    let revoked = docket_standing_script(root.path(), "revoked");
     let docket = docket_args(
         root.path(),
         &rig.trust,
-        &revoked,
+        &docket_standing,
         &rig.plan,
         &rig.issuer_key,
         &bins,
@@ -1592,6 +2102,22 @@ fn ag_refusal_cannot_be_resurrected_by_docket() {
         )]),
     );
     let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let rollout_catalog = root.path().join("catalog-rollout.json");
+    write_jcs(
+        &rollout_catalog,
+        &catalog_json(&scope, &["condition.clean"]),
+    );
+    let docket_standing = docket_standing_script(root.path(), "current");
+    let profile = runtime_profile(
+        root.path(),
+        "ag-refusal",
+        &observation,
+        &standing,
+        &rollout_catalog,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
 
     let ag_database = root.path().join("ag.sqlite");
     init_and_record_proposal(
@@ -1599,15 +2125,11 @@ fn ag_refusal_cannot_be_resurrected_by_docket() {
         root.path(),
         &ag_database,
         &observation,
+        &profile,
         &scope,
         &rig.plan_identity,
     );
     require_standing(&bins, &ag_database);
-    let rollout_catalog = root.path().join("catalog-rollout.json");
-    write_jcs(
-        &rollout_catalog,
-        &catalog_json(&scope, &["condition.clean"]),
-    );
     let mut decide_args = str_args(&["decide", "--database", &ag_database.display().to_string()]);
     decide_args.extend(gate_args(&rollout_catalog, &observation, &standing));
     loopctl_fail(&bins, &decide_args);
@@ -1616,11 +2138,10 @@ fn ag_refusal_cannot_be_resurrected_by_docket() {
 
     // A permissive Docket cannot manufacture an execution: there is no
     // issuance to present, and dispatch from a pre-spend state fails.
-    let current = docket_standing_script(root.path(), "current");
     let docket = docket_args(
         root.path(),
         &rig.trust,
-        &current,
+        &docket_standing,
         &rig.plan,
         &rig.issuer_key,
         &bins,
@@ -1634,6 +2155,149 @@ fn ag_refusal_cannot_be_resurrected_by_docket() {
     assert_eq!(report["ag_spends"], 0);
     assert_eq!(report["docket_attempts"], 0);
     assert_eq!(report["settlements"], 0);
+}
+
+/// A campaign's deployment inputs are genesis facts, not later CLI choices.
+/// Equal bytes at a different locator cannot replace the observation resolver
+/// or catalog, and a post-spend caller cannot select a different Docket.
+#[test]
+#[ignore = "requires adjacent AG and Docket binaries; see module documentation"]
+fn genesis_profile_rejects_authority_and_execution_substitution() {
+    let bins = bins();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let (policy, _, _) = example_policy_inputs_recurrence();
+    let scope = policy.subject.scope.digest.clone();
+    let rig = docket_rig(root.path(), &scope);
+    let (ns_database, _) = build_store(root.path(), false, &[(0, 'd', true)], &rig.plan_value);
+    let observation = observation_wrapper(root.path(), &ns_database);
+    let mandate_store = root.path().join("mandates.json");
+    write_jcs(
+        &mandate_store,
+        &mandate_store_json(vec![mandate_json(
+            &scope,
+            1,
+            "active",
+            wall_now_ms() + 3_600_000,
+        )]),
+    );
+    let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let catalog = root.path().join("catalog.json");
+    write_jcs(&catalog, &catalog_json(&scope, &["condition.clean"]));
+    let docket_standing = docket_standing_script(root.path(), "current");
+    let profile = runtime_profile(
+        root.path(),
+        "substitution-attack",
+        &observation,
+        &standing,
+        &catalog,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
+
+    let database = root.path().join("ag.sqlite");
+    let genesis = root.path().join("genesis.json");
+    write_jcs(&genesis, &genesis_json(&rig.plan_identity));
+    loopctl_ok(
+        &bins,
+        &str_args(&[
+            "init",
+            "--database",
+            &database.display().to_string(),
+            "--genesis",
+            &genesis.display().to_string(),
+            "--runtime-profile",
+            &profile.display().to_string(),
+        ]),
+    );
+    let proposal_input = root.path().join("proposal-input.json");
+    write_jcs(
+        &proposal_input,
+        &proposal_input_json(&digest('d'), &scope, &rig.plan_identity),
+    );
+    let foreign_observation = root.path().join("foreign-observation-resolver");
+    std::fs::copy(&observation, &foreign_observation).unwrap();
+    std::fs::set_permissions(&foreign_observation, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let refused = loopctl_fail(
+        &bins,
+        &str_args(&[
+            "record-proposal",
+            "--database",
+            &database.display().to_string(),
+            "--input",
+            &proposal_input.display().to_string(),
+            "--observation-resolver",
+            &foreign_observation.display().to_string(),
+            "--expected-observation-resolver-id",
+            OBSERVATION_RESOLVER_ID,
+        ]),
+    );
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("substituted pinned path"));
+    assert_eq!(
+        program_counter(&status(&bins, &database)),
+        "observation_required"
+    );
+
+    loopctl_ok(
+        &bins,
+        &str_args(&[
+            "record-proposal",
+            "--database",
+            &database.display().to_string(),
+            "--input",
+            &proposal_input.display().to_string(),
+            "--observation-resolver",
+            &observation.display().to_string(),
+            "--expected-observation-resolver-id",
+            OBSERVATION_RESOLVER_ID,
+        ]),
+    );
+    require_standing(&bins, &database);
+
+    let foreign_catalog = root.path().join("foreign-catalog.json");
+    std::fs::copy(&catalog, &foreign_catalog).unwrap();
+    let mut foreign_decide = str_args(&["decide", "--database", &database.display().to_string()]);
+    foreign_decide.extend(gate_args(&foreign_catalog, &observation, &standing));
+    let refused = loopctl_fail(&bins, &foreign_decide);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("substituted pinned path"));
+    assert_eq!(
+        program_counter(&status(&bins, &database)),
+        "standing_required"
+    );
+
+    let gate = gate_args(&catalog, &observation, &standing);
+    let mut decide = str_args(&["decide", "--database", &database.display().to_string()]);
+    decide.extend(gate.clone());
+    loopctl_ok(&bins, &decide);
+    let mut authorize = str_args(&["authorize", "--database", &database.display().to_string()]);
+    authorize.extend(gate);
+    loopctl_ok(&bins, &authorize);
+
+    let mut docket = docket_args(
+        root.path(),
+        &rig.trust,
+        &docket_standing,
+        &rig.plan,
+        &rig.issuer_key,
+        &bins,
+    );
+    let docket_value = docket
+        .iter()
+        .position(|argument| argument == "--docket")
+        .unwrap()
+        + 1;
+    docket[docket_value] = root.path().join("foreign-docket").display().to_string();
+    let mut dispatch = str_args(&["dispatch", "--database", &database.display().to_string()]);
+    dispatch.extend(docket);
+    let refused = loopctl_fail(&bins, &dispatch);
+    assert!(String::from_utf8_lossy(&refused.stderr)
+        .contains("substituted the genesis-pinned Docket boundary"));
+    assert!(!rig.target.exists());
+    let report = replay(&bins, &database);
+    assert_eq!(report["ag_spends"], 1);
+    assert_eq!(report["docket_attempts"], 0);
 }
 
 /// The WO-9.1 attack test: Nightshift prepared plan P and AG's occurrence was
@@ -1651,6 +2315,30 @@ fn submitted_work_other_than_the_prepared_binding_is_rejected() {
     let rig = docket_rig(root.path(), &scope);
     let (ns_database, _) = build_store(root.path(), false, &[(0, 'd', true)], &rig.plan_value);
     let observation = observation_wrapper(root.path(), &ns_database);
+    let mandate_store = root.path().join("mandates.json");
+    write_jcs(
+        &mandate_store,
+        &mandate_store_json(vec![mandate_json(
+            &scope,
+            1,
+            "active",
+            wall_now_ms() + 3_600_000,
+        )]),
+    );
+    let standing = standing_wrapper(&bins, root.path(), &mandate_store);
+    let catalog = root.path().join("catalog.json");
+    write_jcs(&catalog, &catalog_json(&scope, &["condition.clean"]));
+    let docket_standing = docket_standing_script(root.path(), "current");
+    let profile = runtime_profile(
+        root.path(),
+        "work-binding",
+        &observation,
+        &standing,
+        &catalog,
+        &docket_standing,
+        &rig,
+        &bins,
+    );
 
     let ag_database = root.path().join("ag.sqlite");
     let genesis = root.path().join("genesis.json");
@@ -1663,6 +2351,8 @@ fn submitted_work_other_than_the_prepared_binding_is_rejected() {
             &ag_database.display().to_string(),
             "--genesis",
             &genesis.display().to_string(),
+            "--runtime-profile",
+            &profile.display().to_string(),
         ]),
     );
 
@@ -1702,4 +2392,339 @@ fn submitted_work_other_than_the_prepared_binding_is_rejected() {
     );
     let recorded = loopctl_ok(&bins, &record_args);
     assert_eq!(program_counter(&recorded), "proposal_recorded");
+}
+
+/// The disposable cache design crosses Maude custody, Nightshift lineage, AG
+/// authorization, Docket custody, exact execution, successor authority, and
+/// governed teardown. Exact compiler artifacts arrive through environment
+/// coordinates; this test never interprets PlanDocument prose.
+#[test]
+#[ignore = "requires adjacent AG/Docket binaries, Maude exact artifacts, and local Docker"]
+fn synthetic_cache_design_qualifies_and_tears_down_through_governed_runtime() {
+    let bins = bins();
+    let root = PathBuf::from(
+        std::env::var_os("SYNTHETIC_CACHE_GOVERNED_ROOT").expect("SYNTHETIC_CACHE_GOVERNED_ROOT"),
+    );
+    assert!(root.is_absolute());
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        !root.join("ag.sqlite").exists(),
+        "governed root must be fresh"
+    );
+
+    let exact_path = |name: &str| {
+        let path = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")));
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "missing exact input: {path:?}"
+        );
+        path
+    };
+    let qualify_plan_path = exact_path("SYNTHETIC_CACHE_QUALIFY_PLAN");
+    let teardown_plan_path = exact_path("SYNTHETIC_CACHE_TEARDOWN_PLAN");
+    let qualify_handoff_path = exact_path("SYNTHETIC_CACHE_QUALIFY_HANDOFF");
+    let teardown_handoff_path = exact_path("SYNTHETIC_CACHE_TEARDOWN_HANDOFF");
+    let locked_plan = exact_path("SYNTHETIC_CACHE_LOCKED_PLAN");
+    let executor = exact_path("SYNTHETIC_CACHE_EXECUTOR");
+
+    let qualify_handoff_bytes = std::fs::read(&qualify_handoff_path).unwrap();
+    let qualify_handoff: serde_json::Value =
+        serde_json::from_slice(&qualify_handoff_bytes).unwrap();
+    assert_eq!(
+        serde_jcs::to_vec(&qualify_handoff).unwrap(),
+        qualify_handoff_bytes
+    );
+    let teardown_handoff_bytes = std::fs::read(&teardown_handoff_path).unwrap();
+    let teardown_handoff: serde_json::Value =
+        serde_json::from_slice(&teardown_handoff_bytes).unwrap();
+    assert_eq!(
+        serde_jcs::to_vec(&teardown_handoff).unwrap(),
+        teardown_handoff_bytes
+    );
+    let qualify_proposal: PrecompiledWorkflowProposalV2 =
+        serde_json::from_value(qualify_handoff.clone()).unwrap();
+    let teardown_proposal: PrecompiledWorkflowProposalV2 =
+        serde_json::from_value(teardown_handoff.clone()).unwrap();
+    let qualify_rig = external_docket_rig(&root, &qualify_plan_path);
+    let teardown_plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&teardown_plan_path).unwrap()).unwrap();
+    let teardown_work = ag_executor_plan_identity(&teardown_plan).unwrap();
+    assert_eq!(
+        qualify_rig.plan_identity,
+        ag_executor_plan_identity(&qualify_proposal.ag_executor_plan).unwrap()
+    );
+    assert_eq!(
+        teardown_work,
+        ag_executor_plan_identity(&teardown_proposal.ag_executor_plan).unwrap()
+    );
+    assert_ne!(qualify_rig.plan_identity, teardown_work);
+
+    let session_key = root.join("maude-session.key");
+    let producer_key = root.join("maude-producer.key");
+    std::fs::write(&session_key, [0x31_u8; 32]).unwrap();
+    std::fs::write(&producer_key, [0x62_u8; 32]).unwrap();
+    std::fs::set_permissions(&session_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::set_permissions(&producer_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let custody_store = root.join("maude-custody.sqlite");
+    let verifier = MaudeCustodyVerifierV1::from_key_file(
+        "maude-handoff:synthetic-local".into(),
+        "maude-handoff-key:synthetic-v1".into(),
+        "maude:synthetic-supervisor".into(),
+        "maude-session-key:synthetic-v1".into(),
+        "nightshift:synthetic-local-v1".into(),
+        &producer_key,
+        &session_key,
+    )
+    .unwrap();
+
+    let (policy, clean_inputs, clean_recurrence) = example_policy_inputs_recurrence();
+    let scope = policy.subject.scope.digest.clone();
+    assert_eq!(qualify_proposal.subject_digest, SUBJECT_DIGEST);
+    assert_eq!(
+        qualify_handoff["proposal_input"]["proposal"]["scope"],
+        scope
+    );
+    let base = request_for_precompiled(
+        &policy,
+        &clean_inputs,
+        &clean_recurrence,
+        0,
+        &digest('d'),
+        qualify_proposal,
+    );
+    let initial_request = attach_synthetic_maude_handoff(
+        &root,
+        "qualify",
+        base,
+        &locked_plan,
+        &custody_store,
+        &session_key,
+        &producer_key,
+        "sess_synthetic_cache_qualify",
+    );
+    let ns_database = root.join("nightshift.sqlite");
+    let first_cycle_id = {
+        let mut store = CanonicalStore::open(&ns_database).unwrap();
+        let mut support = SupportPort;
+        let mut ag = FakeAg;
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(initial_request.clone(), &verifier)
+            .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!("exact initial synthetic cycle did not open an occurrence");
+        };
+        assert!(cycle.authoring_context_provenance.is_some());
+        assert!(cycle.authoring_context_custody.is_some());
+        cycle.cycle_id
+    };
+    {
+        let mut reopened = CanonicalStore::open(&ns_database).unwrap();
+        let mut support = SupportPort;
+        let mut ag = FakeAg;
+        let replayed =
+            CanonicalRuntime::new(&mut reopened, TestNqAdmissionPort, &mut support, &mut ag)
+                .run_cycle_with_authoring_custody(initial_request, &verifier)
+                .unwrap_err();
+        assert!(matches!(
+            replayed,
+            CanonicalRuntimeError::Store(CanonicalStoreError::DuplicateSlot(_))
+        ));
+        let cycles = reopened.list_cycles().unwrap();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].cycle_id, first_cycle_id);
+    }
+
+    let observation = observation_wrapper(&root, &ns_database);
+    let subject = qualify_handoff["subject_digest"].as_str().unwrap();
+    let work_schema = qualify_handoff["proposal_input"]["proposal"]["work_schema"]
+        .as_str()
+        .unwrap();
+    let mandate_store = root.join("mandates.json");
+    write_jcs(
+        &mandate_store,
+        &mandate_store_json(vec![mandate_json_for(
+            subject,
+            &scope,
+            1,
+            "active",
+            wall_now_ms() + 3_600_000,
+        )]),
+    );
+    let standing = standing_wrapper(&bins, &root, &mandate_store);
+    let catalog = root.join("catalog.json");
+    write_jcs(
+        &catalog,
+        &catalog_json_for(work_schema, subject, &scope, &["condition.clean"]),
+    );
+    let docket_standing = docket_standing_script(&root, "current");
+    let profile = runtime_profile_for_executor(
+        &root,
+        "synthetic-cache",
+        &observation,
+        &standing,
+        &catalog,
+        &docket_standing,
+        &qualify_rig,
+        &executor,
+        &bins,
+    );
+    let ag_database = root.join("ag.sqlite");
+    let recorded = init_and_record_precompiled(
+        &bins,
+        &root,
+        &ag_database,
+        &observation,
+        &profile,
+        &qualify_handoff,
+    );
+    assert_eq!(
+        recorded["state"]["proposal_recorded"]["observation"]["status"],
+        "current"
+    );
+    require_standing(&bins, &ag_database);
+    let gate = gate_args(&catalog, &observation, &standing);
+    let mut decide = str_args(&["decide", "--database", &ag_database.display().to_string()]);
+    decide.extend(gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &decide)),
+        "admissible_pending_authorization"
+    );
+    let mut authorize = str_args(&[
+        "authorize",
+        "--database",
+        &ag_database.display().to_string(),
+    ]);
+    authorize.extend(gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &authorize)),
+        "authorization_consumed"
+    );
+    let qualify_docket = docket_args_for_executor(
+        &root,
+        &qualify_rig.trust,
+        &docket_standing,
+        &qualify_plan_path,
+        &qualify_rig.issuer_key,
+        &executor,
+        &bins,
+    );
+    let mut dispatch = str_args(&["dispatch", "--database", &ag_database.display().to_string()]);
+    dispatch.extend(qualify_docket.clone());
+    assert_eq!(program_counter(&loopctl_ok(&bins, &dispatch)), "dispatched");
+    let mut poll = str_args(&["poll", "--database", &ag_database.display().to_string()]);
+    poll.extend(qualify_docket);
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &poll)),
+        "settled_observation_required"
+    );
+
+    let (next_inputs, next_recurrence) = next_clean_inputs_recurrence();
+    let successor_base = request_for_precompiled(
+        &policy,
+        &next_inputs,
+        &next_recurrence,
+        1,
+        &digest('e'),
+        teardown_proposal,
+    );
+    let successor_request = attach_synthetic_maude_handoff(
+        &root,
+        "teardown",
+        successor_base,
+        &locked_plan,
+        &custody_store,
+        &session_key,
+        &producer_key,
+        "sess_synthetic_cache_teardown",
+    );
+    {
+        let mut store = CanonicalStore::open(&ns_database).unwrap();
+        let mut support = SupportPort;
+        let mut ag = AgLoopCtlPortV1::new(
+            &bins.loopctl,
+            &ag_database,
+            &observation,
+            OBSERVATION_RESOLVER_ID,
+            &profile,
+        )
+        .unwrap();
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(successor_request, &verifier)
+            .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!("fresh teardown successor did not enter AG");
+        };
+        assert_eq!(cycle.ag.unwrap().occurrence_id, occurrence_uuid(1));
+    }
+    require_standing(&bins, &ag_database);
+    let mut decide = str_args(&["decide", "--database", &ag_database.display().to_string()]);
+    decide.extend(gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &decide)),
+        "admissible_pending_authorization"
+    );
+    let mut authorize = str_args(&[
+        "authorize",
+        "--database",
+        &ag_database.display().to_string(),
+    ]);
+    authorize.extend(gate);
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &authorize)),
+        "authorization_consumed"
+    );
+    let teardown_docket = docket_args_for_executor(
+        &root,
+        &qualify_rig.trust,
+        &docket_standing,
+        &teardown_plan_path,
+        &qualify_rig.issuer_key,
+        &executor,
+        &bins,
+    );
+    let mut dispatch = str_args(&["dispatch", "--database", &ag_database.display().to_string()]);
+    dispatch.extend(teardown_docket.clone());
+    assert_eq!(program_counter(&loopctl_ok(&bins, &dispatch)), "dispatched");
+    let mut poll = str_args(&["poll", "--database", &ag_database.display().to_string()]);
+    poll.extend(teardown_docket);
+    let final_state = loopctl_ok(&bins, &poll);
+    assert_eq!(
+        program_counter(&final_state),
+        "settled_observation_required"
+    );
+    let report = replay(&bins, &ag_database);
+    assert_eq!(report["ag_spends"], 2);
+    assert_eq!(report["docket_attempts"], 2);
+    assert_eq!(report["settlements"], 2);
+
+    let store = CanonicalStore::open(&ns_database).unwrap();
+    let cycles = store.list_cycles().unwrap();
+    let lineage: Vec<_> = cycles
+        .iter()
+        .filter_map(|cycle| cycle.authoring_context_provenance.as_ref())
+        .collect();
+    let custody: Vec<_> = cycles
+        .iter()
+        .filter_map(|cycle| cycle.authoring_context_custody.as_ref())
+        .collect();
+    assert_eq!(lineage.len(), 2);
+    assert_eq!(custody.len(), 2);
+    assert_eq!(lineage[0].maude_plan_ref, lineage[1].maude_plan_ref);
+    assert_ne!(lineage[0].provenance_id, lineage[1].provenance_id);
+    assert_ne!(custody[0].handoff_id, custody[1].handoff_id);
+    write_jcs(
+        &root.join("synthetic-governed-qualification.json"),
+        &serde_json::json!({
+            "schema": "nightshift.synthetic-cache-governed-qualification/v1",
+            "ag_database": ag_database,
+            "nightshift_database": ns_database,
+            "qualify_exact_work": qualify_rig.plan_identity,
+            "teardown_exact_work": teardown_work,
+            "ag_replay": report,
+            "authoring_lineage": lineage,
+            "authoring_custody": custody,
+            "final_state": final_state,
+        }),
+    );
 }

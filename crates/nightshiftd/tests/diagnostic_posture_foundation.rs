@@ -382,4 +382,14 @@ fn production_cli_exposes_only_the_canonical_cycle_surface() {
     for retired in ["watchbill", "governor", "wicket", "wlp", "drill"] {
         assert!(!help.to_ascii_lowercase().contains(retired), "{help}");
     }
+
+    let run_help = Command::new(env!("CARGO_BIN_EXE_nightshift"))
+        .args(["cycle", "run", "--help"])
+        .output()
+        .unwrap();
+    assert!(run_help.status.success());
+    let run_help = String::from_utf8(run_help.stdout).unwrap();
+    for required in ["--nq-program", "--nq-config", "--nq-source-id"] {
+        assert!(run_help.contains(required), "{run_help}");
+    }
 }
