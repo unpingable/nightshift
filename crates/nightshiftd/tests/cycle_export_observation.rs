@@ -123,6 +123,8 @@ fn posture_only_request(observation_id: &str) -> CanonicalCycleRequestV1 {
         policy,
         inputs,
         recurrence,
+        external_evidence: None,
+        decision_external_evidence: None,
         temporal_policy: None,
         proposal: None,
         authoring_context: None,

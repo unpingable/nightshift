@@ -37,8 +37,9 @@ use nightshiftd::ag_port::{
 };
 use nightshiftd::authoring_custody::{MaudeAuthoringContextHandoffV1, MaudeCustodyVerifierV1};
 use nightshiftd::canonical_runtime::{
-    ag_executor_plan_identity, CanonicalCycleRequestV1, CanonicalRuntime, CanonicalRuntimeError,
-    CycleRunOutcomeV1, PrecompiledWorkflowProposalV2,
+    ag_executor_plan_identity, prepare_decision_evidence_cycle_request,
+    prepare_external_evidence_cycle_request, CanonicalCycleRequestV1, CanonicalRuntime,
+    CanonicalRuntimeError, CycleRunOutcomeV1, PrecompiledWorkflowProposalV2,
 };
 use nightshiftd::canonical_store::{
     AgOccurrenceReferenceV1, AgProgramCounterV1, CanonicalStore, CanonicalStoreError,
@@ -51,6 +52,18 @@ use nightshiftd::currentness::{
 use nightshiftd::decision_basis::normalize_posture;
 use nightshiftd::diagnostic_posture::{
     ConditionAxis, DiagnosticInputs, PosturePolicy, RecurrenceEvidence,
+};
+use nightshiftd::external_evidence_composition::{
+    ExternalEvidenceProfileV1, ExternalEvidencePurposeV1, ExternalEvidenceReferenceV1,
+    EXTERNAL_EVIDENCE_PROFILE_SCHEMA_V1, EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1,
+};
+use nightshiftd::external_observation::{
+    ExternalObservationHandoffV1, ExternalObservationQueryV1, ExternalObservationVerifierV1,
+    LocalComposeActionV1, LocalComposeClaimKindV1,
+};
+use nightshiftd::steady_state_evidence::{
+    DecisionRelativeEvidenceReferenceV1, SteadyStateClaimKindV1, SteadyStateEvidenceProfileV1,
+    SteadyStateEvidencePurposeV1, DECISION_EVIDENCE_REFERENCE_SCHEMA_V1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -277,6 +290,136 @@ fn next_clean_inputs_recurrence() -> (DiagnosticInputs, RecurrenceEvidence) {
     (inputs, recurrence)
 }
 
+/// Fresh deterministic diagnostic evidence for the real wall-clock synthetic
+/// feedback run. The schedule's first due time is shared by both calls, so
+/// the two cycles remain one exact Nightshift lineage.
+fn fresh_policy_inputs_recurrence(
+    first_due: DateTime<Utc>,
+    occurrence: u64,
+    completed_at: DateTime<Utc>,
+) -> (PosturePolicy, DiagnosticInputs, RecurrenceEvidence) {
+    let canonical_time =
+        |value: DateTime<Utc>| value.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+    let first_due_text = canonical_time(first_due);
+    let policy_value: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/operator/examples/diagnostic-posture-v1/policy.json"
+    ))
+    .unwrap();
+    let mut policy: PosturePolicy = serde_json::from_value(policy_value).unwrap();
+    policy.policy_id = policy.computed_policy_id().unwrap();
+
+    let started_at = completed_at - chrono::Duration::seconds(1);
+    let acquired_at = completed_at - chrono::Duration::seconds(3);
+    let acquired_end = completed_at - chrono::Duration::seconds(2);
+    let request_id = format!("request:synthetic-feedback-{occurrence}");
+    let run_id = format!("run:synthetic-feedback-{occurrence}");
+    let attempt_id = format!("attempt:synthetic-feedback-{occurrence}");
+    let mut inputs_value: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/operator/examples/diagnostic-posture-v1/inputs.json"
+    ))
+    .unwrap();
+    let artifact = &mut inputs_value["inputs"][0]["artifact"];
+    artifact["request_id"] = serde_json::json!(request_id);
+    artifact["run_id"] = serde_json::json!(run_id);
+    artifact["started_at"] = serde_json::json!(canonical_time(started_at));
+    artifact["completed_at"] = serde_json::json!(canonical_time(completed_at));
+    artifact["attempt_interval"]["started_at"] = serde_json::json!(canonical_time(started_at));
+    artifact["attempt_interval"]["ended_at"] = serde_json::json!(canonical_time(completed_at));
+    artifact["inputs"]["received"][0]["acquisition"]["started_at"] =
+        serde_json::json!(canonical_time(acquired_at));
+    artifact["inputs"]["received"][0]["acquisition"]["ended_at"] =
+        serde_json::json!(canonical_time(acquired_end));
+    artifact["inputs"]["received"][0]["received_at"] =
+        serde_json::json!(canonical_time(started_at));
+    let mut artifact_preimage = artifact.clone();
+    artifact_preimage
+        .as_object_mut()
+        .unwrap()
+        .remove("artifact_id");
+    let artifact_id = digest_value(&artifact_preimage);
+    artifact["artifact_id"] = serde_json::json!(artifact_id);
+    let artifact_snapshot = artifact.clone();
+    let mut inputs: DiagnosticInputs = serde_json::from_value(inputs_value).unwrap();
+    inputs.inputs_id = inputs.computed_inputs_id().unwrap();
+
+    let mut recurrence_value: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/operator/examples/diagnostic-posture-v1/recurrence.json"
+    ))
+    .unwrap();
+    recurrence_value["obligations"][0]["policy"]["first_due_at"] =
+        serde_json::json!(first_due_text);
+    recurrence_value["records"][0]["policy"] = recurrence_value["obligations"][0]["policy"].clone();
+    let schedule_policy: nightshiftd::diagnostic_posture::SchedulePolicy =
+        serde_json::from_value(recurrence_value["records"][0]["policy"].clone()).unwrap();
+    let key: nightshiftd::diagnostic_posture::DiagnosticKey =
+        serde_json::from_value(recurrence_value["records"][0]["key"].clone()).unwrap();
+    let slot =
+        nightshiftd::diagnostic_posture::make_run_slot(&schedule_policy, &key, occurrence).unwrap();
+    recurrence_value["records"][0]["slot"] = serde_json::to_value(&slot).unwrap();
+    let evidence = &mut recurrence_value["records"][0]["evidence"];
+    evidence["attempt"]["attempt_id"] = serde_json::json!(attempt_id);
+    evidence["attempt"]["request_id"] = artifact_snapshot["request_id"].clone();
+    evidence["attempt"]["slot_id"] = serde_json::json!(slot.slot_id);
+    evidence["attempt"]["started_at"] = serde_json::json!(canonical_time(started_at));
+    evidence["completed_at"] = serde_json::json!(canonical_time(completed_at));
+    let reference = &mut evidence["artifact"];
+    reference["artifact_id"] = artifact_snapshot["artifact_id"].clone();
+    reference["request_id"] = artifact_snapshot["request_id"].clone();
+    reference["run_id"] = artifact_snapshot["run_id"].clone();
+    reference["attempt_interval"] = artifact_snapshot["attempt_interval"].clone();
+    reference["dependency_acquisitions"] =
+        serde_json::json!([artifact_snapshot["inputs"]["received"][0]["acquisition"].clone()]);
+    reference["claim"] = artifact_snapshot["claims"][0].clone();
+    let mut recurrence: RecurrenceEvidence = serde_json::from_value(recurrence_value).unwrap();
+    recurrence.recurrence_id = recurrence.computed_recurrence_id().unwrap();
+    policy.validate().unwrap();
+    inputs.validate().unwrap();
+    recurrence.validate().unwrap();
+    (policy, inputs, recurrence)
+}
+
+fn scheduled_occurrence_at(
+    first_due: DateTime<Utc>,
+    evaluated_at: DateTime<Utc>,
+    cadence_seconds: u64,
+) -> u64 {
+    assert!(evaluated_at >= first_due);
+    let elapsed_ms = (evaluated_at - first_due).num_milliseconds();
+    let cadence_ms = i64::try_from(cadence_seconds).unwrap() * 1_000;
+    u64::try_from(elapsed_ms / cadence_ms).unwrap()
+}
+
+fn next_unused_scheduled_occurrence(
+    store: &CanonicalStore,
+    first_due: DateTime<Utc>,
+    cadence_seconds: u64,
+) -> (u64, DateTime<Utc>) {
+    let last_persisted = store
+        .list_cycles()
+        .unwrap()
+        .into_iter()
+        .map(|cycle| cycle.slot.occurrence)
+        .max();
+    loop {
+        let evaluated_at = Utc::now() + chrono::Duration::milliseconds(20);
+        let wall_clock_occurrence =
+            scheduled_occurrence_at(first_due, evaluated_at, cadence_seconds);
+        if last_persisted.is_none_or(|persisted| wall_clock_occurrence > persisted) {
+            return (wall_clock_occurrence, evaluated_at);
+        }
+        let next_occurrence = last_persisted.unwrap() + 1;
+        let next_due = first_due
+            + chrono::Duration::seconds(i64::try_from(next_occurrence * cadence_seconds).unwrap());
+        // The retained diagnostic completion starts two seconds before the
+        // evaluation instant. Enter the new slot far enough past its exact
+        // due boundary that the whole retained attempt remains in-slot.
+        let wait_ms = (next_due - Utc::now()).num_milliseconds().max(0) + 2_025;
+        std::thread::sleep(std::time::Duration::from_millis(
+            u64::try_from(wait_ms).unwrap(),
+        ));
+    }
+}
+
 struct SupportPort;
 
 impl PresentEvidencePortV1 for SupportPort {
@@ -380,6 +523,8 @@ fn cycle_request(
         policy: policy.clone(),
         inputs: inputs.clone(),
         recurrence: recurrence.clone(),
+        external_evidence: None,
+        decision_external_evidence: None,
         temporal_policy: None,
         proposal: with_proposal.then(|| {
             let expected_ag_work = ag_executor_plan_identity(plan).unwrap();
@@ -562,6 +707,20 @@ fn mandate_ref(mandate: &serde_json::Value) -> String {
 
 fn write_jcs(path: &Path, value: &serde_json::Value) {
     std::fs::write(path, serde_jcs::to_vec(value).unwrap()).unwrap();
+}
+
+fn write_jcs_convergent(path: &Path, value: &serde_json::Value) {
+    let bytes = serde_jcs::to_vec(value).unwrap();
+    if path.exists() {
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            bytes,
+            "exact replay substituted {}",
+            path.display()
+        );
+    } else {
+        std::fs::write(path, bytes).unwrap();
+    }
 }
 
 fn write_wrapper(path: &Path, body: &str) {
@@ -1130,6 +1289,47 @@ fn request_for_precompiled(
     request.schema.clear();
     request.request_id.clear();
     request.proposal = Some(proposal);
+    request.seal().unwrap()
+}
+
+fn request_for_precompiled_fresh(
+    policy: &PosturePolicy,
+    inputs: &DiagnosticInputs,
+    recurrence: &RecurrenceEvidence,
+    occurrence: u64,
+    evaluated_at: DateTime<Utc>,
+    observation_id: &str,
+    proposal: PrecompiledWorkflowProposalV2,
+) -> CanonicalCycleRequestV1 {
+    let due_at = DateTime::parse_from_rfc3339(&recurrence.records[0].slot.due_at)
+        .unwrap()
+        .with_timezone(&Utc);
+    let latest = due_at
+        + chrono::Duration::seconds(
+            i64::try_from(recurrence.records[0].policy.standing_window_seconds).unwrap(),
+        );
+    let mut request = request_for_precompiled(
+        policy,
+        inputs,
+        recurrence,
+        occurrence,
+        observation_id,
+        proposal,
+    );
+    request.slot = RecurrenceSlotV1::new(
+        policy.policy_id.clone(),
+        "config-v1".into(),
+        policy.subject.id.clone(),
+        policy.subject.scope.digest.clone(),
+        "nightshift-scheduler-1".into(),
+        due_at,
+        latest,
+        occurrence,
+        RecurrenceTriggerV1::Scheduled,
+        None,
+    )
+    .unwrap();
+    request.evaluated_at = evaluated_at;
     request.seal().unwrap()
 }
 
@@ -2425,7 +2625,14 @@ fn synthetic_cache_design_qualifies_and_tears_down_through_governed_runtime() {
     let teardown_plan_path = exact_path("SYNTHETIC_CACHE_TEARDOWN_PLAN");
     let qualify_handoff_path = exact_path("SYNTHETIC_CACHE_QUALIFY_HANDOFF");
     let teardown_handoff_path = exact_path("SYNTHETIC_CACHE_TEARDOWN_HANDOFF");
+    let qualify_compilation_path = exact_path("SYNTHETIC_CACHE_QUALIFY_COMPILATION_RECEIPT");
     let locked_plan = exact_path("SYNTHETIC_CACHE_LOCKED_PLAN");
+    let c2_qualify_plan_path = exact_path("SYNTHETIC_CACHE_C2_QUALIFY_PLAN");
+    let c2_teardown_plan_path = exact_path("SYNTHETIC_CACHE_C2_TEARDOWN_PLAN");
+    let c2_qualify_handoff_path = exact_path("SYNTHETIC_CACHE_C2_QUALIFY_HANDOFF");
+    let c2_teardown_handoff_path = exact_path("SYNTHETIC_CACHE_C2_TEARDOWN_HANDOFF");
+    let c2_qualify_compilation_path = exact_path("SYNTHETIC_CACHE_C2_QUALIFY_COMPILATION_RECEIPT");
+    let c2_locked_plan = exact_path("SYNTHETIC_CACHE_C2_LOCKED_PLAN");
     let executor = exact_path("SYNTHETIC_CACHE_EXECUTOR");
 
     let qualify_handoff_bytes = std::fs::read(&qualify_handoff_path).unwrap();
@@ -2478,18 +2685,24 @@ fn synthetic_cache_design_qualifies_and_tears_down_through_governed_runtime() {
     )
     .unwrap();
 
-    let (policy, clean_inputs, clean_recurrence) = example_policy_inputs_recurrence();
+    let feedback_first_due = Utc::now() - chrono::Duration::seconds(60);
+    let (policy, clean_inputs, clean_recurrence) = fresh_policy_inputs_recurrence(
+        feedback_first_due,
+        0,
+        feedback_first_due + chrono::Duration::seconds(4),
+    );
     let scope = policy.subject.scope.digest.clone();
     assert_eq!(qualify_proposal.subject_digest, SUBJECT_DIGEST);
     assert_eq!(
         qualify_handoff["proposal_input"]["proposal"]["scope"],
         scope
     );
-    let base = request_for_precompiled(
+    let base = request_for_precompiled_fresh(
         &policy,
         &clean_inputs,
         &clean_recurrence,
         0,
+        feedback_first_due + chrono::Duration::seconds(10),
         &digest('d'),
         qualify_proposal,
     );
@@ -2614,31 +2827,415 @@ fn synthetic_cache_design_qualifies_and_tears_down_through_governed_runtime() {
     assert_eq!(program_counter(&loopctl_ok(&bins, &dispatch)), "dispatched");
     let mut poll = str_args(&["poll", "--database", &ag_database.display().to_string()]);
     poll.extend(qualify_docket);
+    let qualify_settled = loopctl_ok(&bins, &poll);
     assert_eq!(
-        program_counter(&loopctl_ok(&bins, &poll)),
+        program_counter(&qualify_settled),
         "settled_observation_required"
     );
 
-    let (next_inputs, next_recurrence) = next_clean_inputs_recurrence();
-    let successor_base = request_for_precompiled(
-        &policy,
-        &next_inputs,
-        &next_recurrence,
-        1,
-        &digest('e'),
-        teardown_proposal,
+    // Build the exact PlanNode -> governed execution projection needed by the
+    // Maude workflow observation adapter. Every coordinate is taken from an
+    // owner record; no description, timestamp, or list position is joined.
+    let compilation: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&qualify_compilation_path).unwrap()).unwrap();
+    let issuance = qualify_settled
+        .pointer("/state/settled_observation_required/dispatch/authorized/issuance")
+        .unwrap();
+    let docket_custody = qualify_settled
+        .pointer("/state/settled_observation_required/dispatch/custody")
+        .unwrap();
+    let settlement = qualify_settled
+        .pointer("/state/settled_observation_required/settlement")
+        .unwrap();
+    let first_cycle = CanonicalStore::open(&ns_database)
+        .unwrap()
+        .list_cycles()
+        .unwrap()
+        .into_iter()
+        .find(|cycle| cycle.cycle_id == first_cycle_id)
+        .unwrap();
+    let lineage = first_cycle.authoring_context_provenance.as_ref().unwrap();
+    let authoring_custody = first_cycle.authoring_context_custody.as_ref().unwrap();
+    let campaign_id = issuance["key"]["campaign"].as_str().unwrap();
+    let occurrence_id = issuance["key"]["occurrence"].as_str().unwrap();
+    let proposal_id = issuance["proposal"].as_str().unwrap();
+    let exact_work_id = issuance["work"].as_str().unwrap();
+    let attempt_id = docket_custody["attempt"].as_str().unwrap();
+    let settlement_id = settlement["settlement"].as_str().unwrap();
+    assert_eq!(lineage.campaign_id, campaign_id);
+    assert_eq!(lineage.occurrence_id, occurrence_id);
+    assert_eq!(lineage.proposal_id, proposal_id);
+    assert_eq!(lineage.exact_work_id, exact_work_id);
+    let inspector_path = format!(
+        "/phosphor-ng/campaigns/{}/occurrences/{}/proposals/{}",
+        campaign_id.replace(':', "%3A"),
+        occurrence_id,
+        proposal_id.replace(':', "%3A")
     );
-    let successor_request = attach_synthetic_maude_handoff(
-        &root,
-        "teardown",
-        successor_base,
-        &locked_plan,
-        &custody_store,
-        &session_key,
-        &producer_key,
-        "sess_synthetic_cache_teardown",
+    let bindings = compilation["node_bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| {
+            let mut binding = serde_json::json!({
+                "schema": "maude.plan-node-governed-binding/v1",
+                "binding_id": "",
+                "draft_id": compilation["draft_id"],
+                "node_id": node["node_id"],
+                "plan_digest": compilation["plan_digest"],
+                "compilation_id": compilation["compilation_id"],
+                "compiled_output_identity": node["output_identity"],
+                "exact_work_identity": exact_work_id,
+                "authoring_provenance_id": lineage.provenance_id,
+                "handoff_id": authoring_custody.handoff_id,
+                "campaign_id": campaign_id,
+                "occurrence_id": occurrence_id,
+                "proposal_id": proposal_id,
+                "issuance_id": issuance["issuance"],
+                "docket_attempt_id": attempt_id,
+                "settlement_id": settlement_id,
+                "outcome": settlement["outcome"],
+                "inspector_path": inspector_path,
+            });
+            let mut preimage = binding.clone();
+            preimage.as_object_mut().unwrap().remove("binding_id");
+            binding["binding_id"] = serde_json::json!(digest_value(&preimage));
+            binding
+        })
+        .collect::<Vec<_>>();
+    let governed_bindings_path = root.join("qualify-governed-cross-probe.json");
+    write_jcs(
+        &governed_bindings_path,
+        &serde_json::json!({
+            "schema": "maude.plan-governed-cross-probe/v1",
+            "bindings": bindings,
+        }),
     );
-    {
+
+    let observed_at_unix_ms = {
+        let evidence_path = PathBuf::from(
+            qualify_handoff["ag_executor_plan"]["workspace"]
+                .as_str()
+                .unwrap(),
+        )
+        .join("evidence/attempts")
+        .join(format!("{}.json", attempt_id.trim_start_matches("sha256:")));
+        let evidence: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&evidence_path).unwrap()).unwrap();
+        let observed_at = evidence["observed_at_unix_ms"].as_i64().unwrap();
+        let observer_key = root.join("maude-observer.key");
+        std::fs::write(&observer_key, [0x43_u8; 32]).unwrap();
+        std::fs::set_permissions(&observer_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let external_profile = ExternalEvidenceProfileV1 {
+            schema: EXTERNAL_EVIDENCE_PROFILE_SCHEMA_V1.into(),
+            profile_id: String::new(),
+            purpose: ExternalEvidencePurposeV1::PostSettlementSuccessor,
+            expected_adapter_id: "maude.local-compose-observation-adapter".into(),
+            expected_adapter_version: "1".into(),
+            expected_producer_principal_id: "maude-observer:synthetic-local".into(),
+            expected_producer_key_id: "maude-observer-key:synthetic-v1".into(),
+            expected_runtime_id: "nightshift:synthetic-local-v1".into(),
+            required_action: LocalComposeActionV1::Qualify,
+            required_claims: vec![
+                LocalComposeClaimKindV1::FrontDoorReachable,
+                LocalComposeClaimKindV1::CacheMissThenHit,
+                LocalComposeClaimKindV1::SingleCacheFailureSurvived,
+                LocalComposeClaimKindV1::CacheTopologyRestored,
+            ],
+            max_age_ms: 120_000,
+        }
+        .seal()
+        .unwrap();
+        let external_profile_path = root.join("external-evidence-profile.json");
+        write_jcs(
+            &external_profile_path,
+            &serde_json::to_value(&external_profile).unwrap(),
+        );
+        let acquisition_ledger = root.join("observation-acquisition.sqlite");
+        let docket_state = root.join("docket-state");
+        let output = Command::new(std::env::var_os("MAUDE_PYTHON").expect("MAUDE_PYTHON"))
+            .args([
+                "-m",
+                "maude.plan.observation_acquisition",
+                "orchestrate-post-settlement",
+            ])
+            .args(["--ledger", acquisition_ledger.to_str().unwrap()])
+            .args(["--docket-program", bins.docket.to_str().unwrap()])
+            .args(["--docket-state", docket_state.to_str().unwrap()])
+            .args(["--issuance", issuance["issuance"].as_str().unwrap()])
+            .args(["--executor-evidence", evidence_path.to_str().unwrap()])
+            .args(["--executor-plan", qualify_plan_path.to_str().unwrap()])
+            .args([
+                "--compilation-receipt",
+                qualify_compilation_path.to_str().unwrap(),
+            ])
+            .args([
+                "--governed-bindings",
+                governed_bindings_path.to_str().unwrap(),
+            ])
+            .args([
+                "--external-profile",
+                external_profile_path.to_str().unwrap(),
+            ])
+            .args(["--target-runtime-id", "nightshift:synthetic-local-v1"])
+            .args(["--producer-key", observer_key.to_str().unwrap()])
+            .args(["--producer-principal-id", "maude-observer:synthetic-local"])
+            .args(["--producer-key-id", "maude-observer-key:synthetic-v1"])
+            .args(["--nightshift-program", env!("CARGO_BIN_EXE_nightshift")])
+            .args(["--nightshift-store", ns_database.to_str().unwrap()])
+            .args(["--nightshift-credential", observer_key.to_str().unwrap()])
+            .args(["--nightshift-runtime-id", "nightshift:synthetic-local-v1"])
+            .env(
+                "PYTHONPATH",
+                std::env::var_os("MAUDE_SRC").expect("MAUDE_SRC"),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Maude observation acquisition orchestration failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let acquisition: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            acquisition["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "trigger_recorded",
+                "acquisition_scheduled",
+                "adapter_invocation_started",
+                "adapter_returned_evidence",
+                "custody_accepted",
+            ]
+        );
+        write_jcs(&root.join("observation-acquisition.json"), &acquisition);
+        let handoff_value = acquisition
+            .pointer("/evidence/handoff")
+            .expect("orchestration retained exact handoff")
+            .clone();
+        write_jcs(
+            &root.join("external-observation-qualify.json"),
+            &handoff_value,
+        );
+        let handoff: ExternalObservationHandoffV1 = serde_json::from_value(handoff_value).unwrap();
+        let external_verifier = ExternalObservationVerifierV1::from_key_file(
+            "maude-observer:synthetic-local".into(),
+            "maude-observer-key:synthetic-v1".into(),
+            "nightshift:synthetic-local-v1".into(),
+            &observer_key,
+        )
+        .unwrap();
+        external_verifier.verify(&handoff).unwrap();
+        let store = CanonicalStore::open(&ns_database).unwrap();
+        let external_export = store
+            .export_external_observation(
+                ExternalObservationQueryV1::Observation {
+                    observation_id: handoff.observation.observation_id.clone(),
+                },
+                observed_at + 120_000,
+                120_000,
+            )
+            .unwrap();
+        assert_eq!(external_export.matches.len(), 1);
+        let external_custody = &external_export.matches[0].custody;
+
+        // The strong effectful evidence remains Q. A separate passive adapter
+        // first establishes S1 from an owner-produced `absent` basis, then S2
+        // from the exact exclusive stale boundary. Neither acquisition can
+        // represent or repeat the failure test.
+        let steady_profile = SteadyStateEvidenceProfileV1 {
+            schema: String::new(),
+            profile_id: String::new(),
+            purpose: SteadyStateEvidencePurposeV1::RoutineContinuation,
+            qualification_profile: external_profile.clone(),
+            expected_adapter_id: "maude.local-compose-steady-state-observation-adapter".into(),
+            expected_adapter_version: "1".into(),
+            expected_producer_principal_id: "maude-observer:synthetic-local".into(),
+            expected_producer_key_id: "maude-observer-key:synthetic-v1".into(),
+            expected_runtime_id: "nightshift:synthetic-local-v1".into(),
+            required_qualification_claims: vec![
+                LocalComposeClaimKindV1::FrontDoorReachable,
+                LocalComposeClaimKindV1::CacheMissThenHit,
+                LocalComposeClaimKindV1::SingleCacheFailureSurvived,
+                LocalComposeClaimKindV1::CacheTopologyRestored,
+            ],
+            required_steady_state_claims: vec![
+                SteadyStateClaimKindV1::FrontDoorReachable,
+                SteadyStateClaimKindV1::CacheAPresent,
+                SteadyStateClaimKindV1::CacheBPresent,
+                SteadyStateClaimKindV1::OrdinaryCacheBehaviorObserved,
+            ],
+            max_age_ms: 5_000,
+        }
+        .seal()
+        .unwrap();
+        let steady_profile_path = root.join("steady-state-evidence-profile.json");
+        write_jcs(
+            &steady_profile_path,
+            &serde_json::to_value(&steady_profile).unwrap(),
+        );
+        let absent_basis = store
+            .steady_state_reobservation_basis(
+                &handoff.observation.observation_id,
+                &steady_profile,
+                u64::try_from(external_custody.received_at.timestamp_millis()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&absent_basis).unwrap()["requirement"],
+            "absent"
+        );
+        let absent_basis_path = root.join("steady-state-basis-absent.json");
+        write_jcs(
+            &absent_basis_path,
+            &serde_json::to_value(&absent_basis).unwrap(),
+        );
+
+        let run_passive = |command: &str, basis: &Path| {
+            let output = Command::new(std::env::var_os("MAUDE_PYTHON").unwrap())
+                .args(["-m", "maude.plan.observation_acquisition", command])
+                .args(["--ledger", acquisition_ledger.to_str().unwrap()])
+                .args(["--docket-program", bins.docket.to_str().unwrap()])
+                .args(["--docket-state", docket_state.to_str().unwrap()])
+                .args(["--issuance", issuance["issuance"].as_str().unwrap()])
+                .args(["--executor-evidence", evidence_path.to_str().unwrap()])
+                .args(["--executor-plan", qualify_plan_path.to_str().unwrap()])
+                .args([
+                    "--compilation-receipt",
+                    qualify_compilation_path.to_str().unwrap(),
+                ])
+                .args([
+                    "--governed-bindings",
+                    governed_bindings_path.to_str().unwrap(),
+                ])
+                .args(["--external-profile", steady_profile_path.to_str().unwrap()])
+                .args(["--reobservation-basis", basis.to_str().unwrap()])
+                .args(["--target-runtime-id", "nightshift:synthetic-local-v1"])
+                .args(["--producer-key", observer_key.to_str().unwrap()])
+                .args(["--producer-principal-id", "maude-observer:synthetic-local"])
+                .args(["--producer-key-id", "maude-observer-key:synthetic-v1"])
+                .args(["--nightshift-program", env!("CARGO_BIN_EXE_nightshift")])
+                .args(["--nightshift-store", ns_database.to_str().unwrap()])
+                .args(["--nightshift-credential", observer_key.to_str().unwrap()])
+                .args(["--nightshift-runtime-id", "nightshift:synthetic-local-v1"])
+                .env("PYTHONPATH", std::env::var_os("MAUDE_SRC").unwrap())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "passive acquisition failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+        let passive_s1 = run_passive("orchestrate-reobserve-for-successor", &absent_basis_path);
+        let s1_observed_at = passive_s1
+            .pointer("/evidence/handoff/observation/observed_at_unix_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap();
+        let s1_observation_id = passive_s1
+            .pointer("/evidence/handoff/observation/observation_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .to_owned();
+        assert!(!passive_s1
+            .pointer("/evidence/handoff/observation")
+            .unwrap()
+            .to_string()
+            .contains("single_cache_failure_survived"));
+        let stale_at = s1_observed_at + steady_profile.max_age_ms;
+        let wall_now = u64::try_from(Utc::now().timestamp_millis()).unwrap();
+        if wall_now < stale_at {
+            std::thread::sleep(std::time::Duration::from_millis(stale_at - wall_now + 1));
+        }
+        let stale_basis = CanonicalStore::open(&ns_database)
+            .unwrap()
+            .steady_state_reobservation_basis(
+                &handoff.observation.observation_id,
+                &steady_profile,
+                stale_at,
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&stale_basis).unwrap()["requirement"],
+            "stale"
+        );
+        assert_eq!(
+            stale_basis.qualification_observation_id,
+            absent_basis.qualification_observation_id
+        );
+        let stale_basis_path = root.join("steady-state-basis-stale.json");
+        write_jcs(
+            &stale_basis_path,
+            &serde_json::to_value(&stale_basis).unwrap(),
+        );
+        let passive_s2 = run_passive("orchestrate-reobserve-after-stale", &stale_basis_path);
+        let s2_observation_id = passive_s2
+            .pointer("/evidence/handoff/observation/observation_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .to_owned();
+        let s2_custody_id = passive_s2
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|events| events.last())
+            .and_then(|event| event.get("custody_id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .to_owned();
+        assert_ne!(s1_observation_id, s2_observation_id);
+        write_jcs(&root.join("passive-acquisition-s1.json"), &passive_s1);
+        write_jcs(&root.join("passive-acquisition-s2.json"), &passive_s2);
+
+        let successor_evaluated_at = Utc::now() + chrono::Duration::milliseconds(10);
+        let diagnostic_occurrence = scheduled_occurrence_at(
+            feedback_first_due,
+            successor_evaluated_at,
+            clean_recurrence.obligations[0].policy.cadence_seconds,
+        );
+        let (next_policy, next_inputs, next_recurrence) = fresh_policy_inputs_recurrence(
+            feedback_first_due,
+            diagnostic_occurrence,
+            successor_evaluated_at - chrono::Duration::seconds(1),
+        );
+        assert_eq!(next_policy.policy_id, policy.policy_id);
+        let mut successor_base = request_for_precompiled_fresh(
+            &next_policy,
+            &next_inputs,
+            &next_recurrence,
+            diagnostic_occurrence,
+            successor_evaluated_at,
+            &digest('e'),
+            teardown_proposal.clone(),
+        );
+        successor_base.decision_external_evidence = Some(DecisionRelativeEvidenceReferenceV1 {
+            schema: DECISION_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+            qualification_observation_id: handoff.observation.observation_id.clone(),
+            qualification_custody_id: external_custody.custody_id.clone(),
+            steady_state_observation_id: s2_observation_id,
+            steady_state_custody_id: s2_custody_id,
+            profile_id: steady_profile.profile_id.clone(),
+        });
+        successor_base = successor_base.seal().unwrap();
+        let successor_base =
+            prepare_decision_evidence_cycle_request(&store, successor_base, &steady_profile)
+                .unwrap();
+        let successor_request = attach_synthetic_maude_handoff(
+            &root,
+            "teardown",
+            successor_base,
+            &locked_plan,
+            &custody_store,
+            &session_key,
+            &producer_key,
+            "sess_synthetic_cache_teardown",
+        );
+        drop(store);
+
         let mut store = CanonicalStore::open(&ns_database).unwrap();
         let mut support = SupportPort;
         let mut ag = AgLoopCtlPortV1::new(
@@ -2649,14 +3246,43 @@ fn synthetic_cache_design_qualifies_and_tears_down_through_governed_runtime() {
             &profile,
         )
         .unwrap();
-        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
-            .run_cycle_with_authoring_custody(successor_request, &verifier)
-            .unwrap();
+        let outcome = CanonicalRuntime::new_with_decision_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut support,
+            &mut ag,
+            steady_profile,
+        )
+        .unwrap()
+        .run_cycle_with_authoring_custody(successor_request, &verifier)
+        .unwrap();
         let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
-            panic!("fresh teardown successor did not enter AG");
+            panic!("fresh composed teardown successor did not enter AG");
         };
-        assert_eq!(cycle.ag.unwrap().occurrence_id, occurrence_uuid(1));
-    }
+        let composed = cycle
+            .observation
+            .as_ref()
+            .unwrap()
+            .decision_external_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(composed.qualification.occurrence_id, occurrence_uuid(0));
+        assert_eq!(composed.target_occurrence_id, occurrence_uuid(1));
+        assert_eq!(
+            composed.qualification.acquired_at_unix_ms,
+            u64::try_from(observed_at).unwrap()
+        );
+        assert!(composed.steady_state_claims.iter().all(|claim| claim.kind
+            != SteadyStateClaimKindV1::FrontDoorReachable
+            || claim.plan_node_id == "pn_health"));
+        assert_eq!(cycle.ag.as_ref().unwrap().occurrence_id, occurrence_uuid(1));
+        write_jcs(
+            &root.join("external-composition.json"),
+            &serde_json::to_value(composed).unwrap(),
+        );
+        observed_at
+    };
+    assert!(observed_at_unix_ms > 0);
     require_standing(&bins, &ag_database);
     let mut decide = str_args(&["decide", "--database", &ag_database.display().to_string()]);
     decide.extend(gate.clone());
@@ -2724,6 +3350,1093 @@ fn synthetic_cache_design_qualifies_and_tears_down_through_governed_runtime() {
             "ag_replay": report,
             "authoring_lineage": lineage,
             "authoring_custody": custody,
+            "final_state": final_state,
+        }),
+    );
+
+    // C2 is an ordinary locked PlanDocument successor compiled for a distinct
+    // exact Compose project. Stable node IDs survive, but plan, compilation,
+    // work, handoff, and runtime project identities do not.
+    let c2_qualify_handoff_bytes = std::fs::read(&c2_qualify_handoff_path).unwrap();
+    let c2_qualify_handoff: serde_json::Value =
+        serde_json::from_slice(&c2_qualify_handoff_bytes).unwrap();
+    assert_eq!(
+        serde_jcs::to_vec(&c2_qualify_handoff).unwrap(),
+        c2_qualify_handoff_bytes
+    );
+    let c2_teardown_handoff: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c2_teardown_handoff_path).unwrap()).unwrap();
+    let c2_qualify_proposal: PrecompiledWorkflowProposalV2 =
+        serde_json::from_value(c2_qualify_handoff.clone()).unwrap();
+    let c2_teardown_proposal: PrecompiledWorkflowProposalV2 =
+        serde_json::from_value(c2_teardown_handoff.clone()).unwrap();
+    let c2_qualify_plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c2_qualify_plan_path).unwrap()).unwrap();
+    let c2_teardown_plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c2_teardown_plan_path).unwrap()).unwrap();
+    let c2_qualify_work = ag_executor_plan_identity(&c2_qualify_plan).unwrap();
+    let c2_teardown_work = ag_executor_plan_identity(&c2_teardown_plan).unwrap();
+    let c1_plan_digest = qualify_handoff["immutable_parameters"]["plan_document"]
+        .as_str()
+        .unwrap();
+    let c2_plan_digest = c2_qualify_handoff["immutable_parameters"]["plan_document"]
+        .as_str()
+        .unwrap();
+    assert_ne!(c1_plan_digest, c2_plan_digest);
+    assert_ne!(qualify_rig.plan_identity, c2_qualify_work);
+    assert_ne!(teardown_work, c2_teardown_work);
+    assert_eq!(c2_qualify_plan["project_name"], "maude-cache-birthday-c2");
+
+    // Reusing Q1/S2 with the C2 exact handoff refuses by the target artifact
+    // digest before an AG occurrence or spend can be created.
+    let q1_handoff: ExternalObservationHandoffV1 = serde_json::from_slice(
+        &std::fs::read(root.join("external-observation-qualify.json")).unwrap(),
+    )
+    .unwrap();
+    let c1_profile: ExternalEvidenceProfileV1 = serde_json::from_slice(
+        &std::fs::read(root.join("external-evidence-profile.json")).unwrap(),
+    )
+    .unwrap();
+    let c1_steady_profile: SteadyStateEvidenceProfileV1 = serde_json::from_slice(
+        &std::fs::read(root.join("steady-state-evidence-profile.json")).unwrap(),
+    )
+    .unwrap();
+    let passive_s2: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("passive-acquisition-s2.json")).unwrap())
+            .unwrap();
+    let s2_observation_id = passive_s2
+        .pointer("/evidence/handoff/observation/observation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    let s2_custody_id = passive_s2
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.last())
+        .and_then(|event| event.get("custody_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    let c2_refusal_evaluated_at = Utc::now() + chrono::Duration::milliseconds(10);
+    let c2_refusal_occurrence = scheduled_occurrence_at(
+        feedback_first_due,
+        c2_refusal_evaluated_at,
+        clean_recurrence.obligations[0].policy.cadence_seconds,
+    );
+    let (refusal_policy, refusal_inputs, refusal_recurrence) = fresh_policy_inputs_recurrence(
+        feedback_first_due,
+        c2_refusal_occurrence,
+        c2_refusal_evaluated_at - chrono::Duration::seconds(1),
+    );
+    let mut c2_with_q1 = request_for_precompiled_fresh(
+        &refusal_policy,
+        &refusal_inputs,
+        &refusal_recurrence,
+        c2_refusal_occurrence,
+        c2_refusal_evaluated_at,
+        &digest('6'),
+        c2_qualify_proposal.clone(),
+    );
+    let c1_store = CanonicalStore::open(&ns_database).unwrap();
+    let q1_export = c1_store
+        .export_external_observation(
+            ExternalObservationQueryV1::Observation {
+                observation_id: q1_handoff.observation.observation_id.clone(),
+            },
+            Utc::now().timestamp_millis(),
+            120_000,
+        )
+        .unwrap()
+        .matches;
+    assert_eq!(q1_export.len(), 1);
+    let q1_custody = q1_export[0].custody.clone();
+    c2_with_q1.decision_external_evidence = Some(DecisionRelativeEvidenceReferenceV1 {
+        schema: DECISION_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+        qualification_observation_id: q1_handoff.observation.observation_id.clone(),
+        qualification_custody_id: q1_custody.custody_id,
+        steady_state_observation_id: s2_observation_id,
+        steady_state_custody_id: s2_custody_id,
+        profile_id: c1_steady_profile.profile_id.clone(),
+    });
+    let q1_refusal =
+        prepare_decision_evidence_cycle_request(&c1_store, c2_with_q1, &c1_steady_profile)
+            .unwrap_err();
+    assert!(q1_refusal
+        .to_string()
+        .contains("qualification does not apply to the target PlanDocument"));
+    drop(c1_store);
+    assert_eq!(replay(&bins, &ag_database)["ag_spends"], 2);
+
+    // The qualification request originates as a new exact C2 PlanDocument
+    // handoff and an ordinary fresh Nightshift proposal. Missing Q never calls
+    // the effectful adapter or creates this occurrence.
+    let c2_slot_store = CanonicalStore::open(&ns_database).unwrap();
+    let (c2_diagnostic_occurrence, c2_evaluated_at) = next_unused_scheduled_occurrence(
+        &c2_slot_store,
+        feedback_first_due,
+        clean_recurrence.obligations[0].policy.cadence_seconds,
+    );
+    drop(c2_slot_store);
+    let (c2_policy, c2_inputs, c2_recurrence) = fresh_policy_inputs_recurrence(
+        feedback_first_due,
+        c2_diagnostic_occurrence,
+        c2_evaluated_at - chrono::Duration::seconds(1),
+    );
+    let c2_base = request_for_precompiled_fresh(
+        &c2_policy,
+        &c2_inputs,
+        &c2_recurrence,
+        c2_diagnostic_occurrence,
+        c2_evaluated_at,
+        &digest('6'),
+        c2_qualify_proposal.clone(),
+    );
+    let c2_request = attach_synthetic_maude_handoff(
+        &root,
+        "c2-qualify",
+        c2_base,
+        &c2_locked_plan,
+        &custody_store,
+        &session_key,
+        &producer_key,
+        "sess_synthetic_cache_c2_qualify",
+    );
+    let c2_cycle_id = {
+        let mut store = CanonicalStore::open(&ns_database).unwrap();
+        let mut support = SupportPort;
+        let mut ag = AgLoopCtlPortV1::new(
+            &bins.loopctl,
+            &ag_database,
+            &observation,
+            OBSERVATION_RESOLVER_ID,
+            &profile,
+        )
+        .unwrap();
+        let outcome = CanonicalRuntime::new(&mut store, TestNqAdmissionPort, &mut support, &mut ag)
+            .run_cycle_with_authoring_custody(c2_request, &verifier)
+            .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!("ordinary C2 qualification work did not enter AG");
+        };
+        assert!(cycle
+            .observation
+            .as_ref()
+            .unwrap()
+            .decision_external_evidence
+            .is_none());
+        assert_eq!(cycle.ag.as_ref().unwrap().occurrence_id, occurrence_uuid(2));
+        cycle.cycle_id
+    };
+    require_standing(&bins, &ag_database);
+    let c2_gate = gate_args(&catalog, &observation, &standing);
+    let mut c2_decide = str_args(&["decide", "--database", &ag_database.display().to_string()]);
+    c2_decide.extend(c2_gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_decide)),
+        "admissible_pending_authorization"
+    );
+    let mut c2_authorize = str_args(&[
+        "authorize",
+        "--database",
+        &ag_database.display().to_string(),
+    ]);
+    c2_authorize.extend(c2_gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_authorize)),
+        "authorization_consumed"
+    );
+    assert_eq!(replay(&bins, &ag_database)["ag_spends"], 3);
+    let c2_qualify_docket = docket_args_for_executor(
+        &root,
+        &qualify_rig.trust,
+        &docket_standing,
+        &c2_qualify_plan_path,
+        &qualify_rig.issuer_key,
+        &executor,
+        &bins,
+    );
+    let mut c2_dispatch = str_args(&["dispatch", "--database", &ag_database.display().to_string()]);
+    c2_dispatch.extend(c2_qualify_docket.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_dispatch)),
+        "dispatched"
+    );
+    let mut c2_poll = str_args(&["poll", "--database", &ag_database.display().to_string()]);
+    c2_poll.extend(c2_qualify_docket);
+    let c2_settled = loopctl_ok(&bins, &c2_poll);
+    assert_eq!(program_counter(&c2_settled), "settled_observation_required");
+
+    let c2_compilation: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c2_qualify_compilation_path).unwrap()).unwrap();
+    let c2_issuance = c2_settled
+        .pointer("/state/settled_observation_required/dispatch/authorized/issuance")
+        .unwrap();
+    let c2_docket_custody = c2_settled
+        .pointer("/state/settled_observation_required/dispatch/custody")
+        .unwrap();
+    let c2_settlement = c2_settled
+        .pointer("/state/settled_observation_required/settlement")
+        .unwrap();
+    let c2_cycle = CanonicalStore::open(&ns_database)
+        .unwrap()
+        .list_cycles()
+        .unwrap()
+        .into_iter()
+        .find(|cycle| cycle.cycle_id == c2_cycle_id)
+        .unwrap();
+    let c2_lineage = c2_cycle.authoring_context_provenance.as_ref().unwrap();
+    let c2_authoring_custody = c2_cycle.authoring_context_custody.as_ref().unwrap();
+    assert_eq!(c2_lineage.maude_plan_ref, c2_plan_digest);
+    assert_ne!(c2_lineage.maude_plan_ref, c1_plan_digest);
+    let c2_attempt_id = c2_docket_custody["attempt"].as_str().unwrap();
+    let c2_settlement_id = c2_settlement["settlement"].as_str().unwrap();
+    let c2_inspector_path = format!(
+        "/phosphor-ng/campaigns/{}/occurrences/{}/proposals/{}",
+        campaign_id.replace(':', "%3A"),
+        occurrence_uuid(2),
+        c2_issuance["proposal"]
+            .as_str()
+            .unwrap()
+            .replace(':', "%3A")
+    );
+    let c2_bindings = c2_compilation["node_bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| {
+            let mut binding = serde_json::json!({
+                "schema": "maude.plan-node-governed-binding/v1",
+                "binding_id": "",
+                "draft_id": c2_compilation["draft_id"],
+                "node_id": node["node_id"],
+                "plan_digest": c2_compilation["plan_digest"],
+                "compilation_id": c2_compilation["compilation_id"],
+                "compiled_output_identity": node["output_identity"],
+                "exact_work_identity": c2_qualify_work,
+                "authoring_provenance_id": c2_lineage.provenance_id,
+                "handoff_id": c2_authoring_custody.handoff_id,
+                "campaign_id": campaign_id,
+                "occurrence_id": occurrence_uuid(2),
+                "proposal_id": c2_issuance["proposal"],
+                "issuance_id": c2_issuance["issuance"],
+                "docket_attempt_id": c2_attempt_id,
+                "settlement_id": c2_settlement_id,
+                "outcome": c2_settlement["outcome"],
+                "inspector_path": c2_inspector_path,
+            });
+            let mut preimage = binding.clone();
+            preimage.as_object_mut().unwrap().remove("binding_id");
+            binding["binding_id"] = serde_json::json!(digest_value(&preimage));
+            binding
+        })
+        .collect::<Vec<_>>();
+    let c2_bindings_path = root.join("c2-qualify-governed-cross-probe.json");
+    write_jcs(
+        &c2_bindings_path,
+        &serde_json::json!({
+            "schema": "maude.plan-governed-cross-probe/v1",
+            "bindings": c2_bindings,
+        }),
+    );
+
+    // Only after the authorized C2 fault test settles may the ordinary
+    // observation adapter package the evidence that earns Q2.
+    let c2_evidence_path = PathBuf::from(c2_qualify_plan["workspace"].as_str().unwrap())
+        .join("evidence/attempts")
+        .join(format!(
+            "{}.json",
+            c2_attempt_id.trim_start_matches("sha256:")
+        ));
+    let acquisition_ledger = root.join("observation-acquisition.sqlite");
+    let docket_state = root.join("docket-state");
+    let observer_key = root.join("maude-observer.key");
+    let q2_output = Command::new(std::env::var_os("MAUDE_PYTHON").unwrap())
+        .args([
+            "-m",
+            "maude.plan.observation_acquisition",
+            "orchestrate-post-settlement",
+        ])
+        .args(["--ledger", acquisition_ledger.to_str().unwrap()])
+        .args(["--docket-program", bins.docket.to_str().unwrap()])
+        .args(["--docket-state", docket_state.to_str().unwrap()])
+        .args(["--issuance", c2_issuance["issuance"].as_str().unwrap()])
+        .args(["--executor-evidence", c2_evidence_path.to_str().unwrap()])
+        .args(["--executor-plan", c2_qualify_plan_path.to_str().unwrap()])
+        .args([
+            "--compilation-receipt",
+            c2_qualify_compilation_path.to_str().unwrap(),
+        ])
+        .args(["--governed-bindings", c2_bindings_path.to_str().unwrap()])
+        .args([
+            "--external-profile",
+            root.join("external-evidence-profile.json")
+                .to_str()
+                .unwrap(),
+        ])
+        .args(["--target-runtime-id", "nightshift:synthetic-local-v1"])
+        .args(["--producer-key", observer_key.to_str().unwrap()])
+        .args(["--producer-principal-id", "maude-observer:synthetic-local"])
+        .args(["--producer-key-id", "maude-observer-key:synthetic-v1"])
+        .args(["--nightshift-program", env!("CARGO_BIN_EXE_nightshift")])
+        .args(["--nightshift-store", ns_database.to_str().unwrap()])
+        .args(["--nightshift-credential", observer_key.to_str().unwrap()])
+        .args(["--nightshift-runtime-id", "nightshift:synthetic-local-v1"])
+        .env("PYTHONPATH", std::env::var_os("MAUDE_SRC").unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        q2_output.status.success(),
+        "C2 qualification evidence acquisition failed: {}",
+        String::from_utf8_lossy(&q2_output.stderr)
+    );
+    let q2_acquisition: serde_json::Value = serde_json::from_slice(&q2_output.stdout).unwrap();
+    let q2_observation_id = q2_acquisition
+        .pointer("/evidence/handoff/observation/observation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    assert_ne!(q2_observation_id, q1_handoff.observation.observation_id);
+    write_jcs(
+        &root.join("c2-qualification-acquisition.json"),
+        &q2_acquisition,
+    );
+
+    let q2_store = CanonicalStore::open(&ns_database).unwrap();
+    let q2_export = q2_store
+        .export_external_observation(
+            ExternalObservationQueryV1::Observation {
+                observation_id: q2_observation_id.clone(),
+            },
+            Utc::now().timestamp_millis(),
+            120_000,
+        )
+        .unwrap()
+        .matches;
+    let q1_export = q2_store
+        .export_external_observation(
+            ExternalObservationQueryV1::Observation {
+                observation_id: q1_handoff.observation.observation_id.clone(),
+            },
+            Utc::now().timestamp_millis(),
+            120_000,
+        )
+        .unwrap()
+        .matches;
+    assert_eq!(q2_export.len(), 1);
+    assert_eq!(q1_export.len(), 1);
+    let q2_source = q2_export[0].observation.clone();
+    let q2_custody = q2_export[0].custody.clone();
+    let q1_source = q1_export[0].observation.clone();
+    let q1_custody = q1_export[0].custody.clone();
+    assert_eq!(q1_source.plan_document_digest, c1_plan_digest);
+    assert_eq!(q2_source.plan_document_digest, c2_plan_digest);
+    assert_ne!(q1_custody.custody_id, q2_custody.custody_id);
+    let c2_steady_profile = SteadyStateEvidenceProfileV1 {
+        qualification_profile: c1_profile,
+        ..c1_steady_profile.clone()
+    }
+    .seal()
+    .unwrap();
+    let c2_steady_profile_path = root.join("c2-steady-state-evidence-profile.json");
+    write_jcs(
+        &c2_steady_profile_path,
+        &serde_json::to_value(&c2_steady_profile).unwrap(),
+    );
+    let c2_absent_basis = q2_store
+        .steady_state_reobservation_basis(
+            &q2_observation_id,
+            &c2_steady_profile,
+            u64::try_from(q2_custody.received_at.timestamp_millis()).unwrap(),
+        )
+        .unwrap();
+    let c2_absent_basis_path = root.join("c2-steady-state-basis-absent.json");
+    write_jcs(
+        &c2_absent_basis_path,
+        &serde_json::to_value(&c2_absent_basis).unwrap(),
+    );
+    drop(q2_store);
+
+    let s3_output = Command::new(std::env::var_os("MAUDE_PYTHON").unwrap())
+        .args([
+            "-m",
+            "maude.plan.observation_acquisition",
+            "orchestrate-reobserve-for-successor",
+        ])
+        .args(["--ledger", acquisition_ledger.to_str().unwrap()])
+        .args(["--docket-program", bins.docket.to_str().unwrap()])
+        .args(["--docket-state", docket_state.to_str().unwrap()])
+        .args(["--issuance", c2_issuance["issuance"].as_str().unwrap()])
+        .args(["--executor-evidence", c2_evidence_path.to_str().unwrap()])
+        .args(["--executor-plan", c2_qualify_plan_path.to_str().unwrap()])
+        .args([
+            "--compilation-receipt",
+            c2_qualify_compilation_path.to_str().unwrap(),
+        ])
+        .args(["--governed-bindings", c2_bindings_path.to_str().unwrap()])
+        .args([
+            "--external-profile",
+            c2_steady_profile_path.to_str().unwrap(),
+        ])
+        .args([
+            "--reobservation-basis",
+            c2_absent_basis_path.to_str().unwrap(),
+        ])
+        .args(["--target-runtime-id", "nightshift:synthetic-local-v1"])
+        .args(["--producer-key", observer_key.to_str().unwrap()])
+        .args(["--producer-principal-id", "maude-observer:synthetic-local"])
+        .args(["--producer-key-id", "maude-observer-key:synthetic-v1"])
+        .args(["--nightshift-program", env!("CARGO_BIN_EXE_nightshift")])
+        .args(["--nightshift-store", ns_database.to_str().unwrap()])
+        .args(["--nightshift-credential", observer_key.to_str().unwrap()])
+        .args(["--nightshift-runtime-id", "nightshift:synthetic-local-v1"])
+        .env("PYTHONPATH", std::env::var_os("MAUDE_SRC").unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        s3_output.status.success(),
+        "C2 passive acquisition failed: {}",
+        String::from_utf8_lossy(&s3_output.stderr)
+    );
+    let s3_acquisition: serde_json::Value = serde_json::from_slice(&s3_output.stdout).unwrap();
+    let s3_observation_id = s3_acquisition
+        .pointer("/evidence/handoff/observation/observation_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    let s3_custody_id = s3_acquisition
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.last())
+        .and_then(|event| event.get("custody_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    assert!(!s3_acquisition
+        .pointer("/evidence/handoff/observation")
+        .unwrap()
+        .to_string()
+        .contains("single_cache_failure_survived"));
+    write_jcs(
+        &root.join("c2-passive-acquisition-s3.json"),
+        &s3_acquisition,
+    );
+
+    // Current C2-looking S3 still cannot make Q1 applicable. Only Q2+S3 can
+    // prepare the exact C2 routine-continuation proposal.
+    let c2_store = CanonicalStore::open(&ns_database).unwrap();
+    let (c2_successor_diagnostic_occurrence, c2_successor_evaluated_at) =
+        next_unused_scheduled_occurrence(
+            &c2_store,
+            feedback_first_due,
+            clean_recurrence.obligations[0].policy.cadence_seconds,
+        );
+    let (c2_successor_policy, c2_successor_inputs, c2_successor_recurrence) =
+        fresh_policy_inputs_recurrence(
+            feedback_first_due,
+            c2_successor_diagnostic_occurrence,
+            c2_successor_evaluated_at - chrono::Duration::seconds(1),
+        );
+    let mut c2_successor_base = request_for_precompiled_fresh(
+        &c2_successor_policy,
+        &c2_successor_inputs,
+        &c2_successor_recurrence,
+        c2_successor_diagnostic_occurrence,
+        c2_successor_evaluated_at,
+        &digest('7'),
+        c2_teardown_proposal,
+    );
+    let q1_with_s3 = DecisionRelativeEvidenceReferenceV1 {
+        schema: DECISION_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+        qualification_observation_id: q1_source.observation_id,
+        qualification_custody_id: q1_custody.custody_id,
+        steady_state_observation_id: s3_observation_id.clone(),
+        steady_state_custody_id: s3_custody_id.clone(),
+        profile_id: c2_steady_profile.profile_id.clone(),
+    };
+    c2_successor_base.decision_external_evidence = Some(q1_with_s3);
+    let q1_s3_refusal = prepare_decision_evidence_cycle_request(
+        &c2_store,
+        c2_successor_base.clone(),
+        &c2_steady_profile,
+    )
+    .unwrap_err();
+    assert!(q1_s3_refusal
+        .to_string()
+        .contains("qualification does not apply to the target PlanDocument"));
+    c2_successor_base.decision_external_evidence = Some(DecisionRelativeEvidenceReferenceV1 {
+        schema: DECISION_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+        qualification_observation_id: q2_source.observation_id,
+        qualification_custody_id: q2_custody.custody_id,
+        steady_state_observation_id: s3_observation_id.clone(),
+        steady_state_custody_id: s3_custody_id,
+        profile_id: c2_steady_profile.profile_id.clone(),
+    });
+    c2_successor_base = c2_successor_base.seal().unwrap();
+    let c2_successor_base =
+        prepare_decision_evidence_cycle_request(&c2_store, c2_successor_base, &c2_steady_profile)
+            .unwrap();
+    let c2_teardown_request = attach_synthetic_maude_handoff(
+        &root,
+        "c2-teardown",
+        c2_successor_base,
+        &c2_locked_plan,
+        &custody_store,
+        &session_key,
+        &producer_key,
+        "sess_synthetic_cache_c2_teardown",
+    );
+    drop(c2_store);
+    let c2_composition = {
+        let mut store = CanonicalStore::open(&ns_database).unwrap();
+        let mut support = SupportPort;
+        let mut ag = AgLoopCtlPortV1::new(
+            &bins.loopctl,
+            &ag_database,
+            &observation,
+            OBSERVATION_RESOLVER_ID,
+            &profile,
+        )
+        .unwrap();
+        let outcome = CanonicalRuntime::new_with_decision_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut support,
+            &mut ag,
+            c2_steady_profile,
+        )
+        .unwrap()
+        .run_cycle_with_authoring_custody(c2_teardown_request, &verifier)
+        .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!("Q2 plus S3 did not open C2 routine continuation");
+        };
+        assert_eq!(cycle.ag.as_ref().unwrap().occurrence_id, occurrence_uuid(3));
+        cycle
+            .observation
+            .unwrap()
+            .decision_external_evidence
+            .unwrap()
+    };
+    assert_eq!(
+        c2_composition.qualification.source_observation_id,
+        q2_observation_id
+    );
+    assert_eq!(
+        c2_composition.qualification.plan_document_digest,
+        c2_plan_digest
+    );
+    write_jcs(
+        &root.join("c2-routine-continuation-composition.json"),
+        &serde_json::to_value(&c2_composition).unwrap(),
+    );
+    require_standing(&bins, &ag_database);
+    let mut c2_teardown_decide =
+        str_args(&["decide", "--database", &ag_database.display().to_string()]);
+    c2_teardown_decide.extend(c2_gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_teardown_decide)),
+        "admissible_pending_authorization"
+    );
+    let mut c2_teardown_authorize = str_args(&[
+        "authorize",
+        "--database",
+        &ag_database.display().to_string(),
+    ]);
+    c2_teardown_authorize.extend(c2_gate);
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_teardown_authorize)),
+        "authorization_consumed"
+    );
+    let c2_teardown_docket = docket_args_for_executor(
+        &root,
+        &qualify_rig.trust,
+        &docket_standing,
+        &c2_teardown_plan_path,
+        &qualify_rig.issuer_key,
+        &executor,
+        &bins,
+    );
+    let mut c2_teardown_dispatch =
+        str_args(&["dispatch", "--database", &ag_database.display().to_string()]);
+    c2_teardown_dispatch.extend(c2_teardown_docket.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_teardown_dispatch)),
+        "dispatched"
+    );
+    let mut c2_teardown_poll =
+        str_args(&["poll", "--database", &ag_database.display().to_string()]);
+    c2_teardown_poll.extend(c2_teardown_docket);
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &c2_teardown_poll)),
+        "settled_observation_required"
+    );
+    let c2_report = replay(&bins, &ag_database);
+    assert_eq!(c2_report["ag_spends"], 4);
+    assert_eq!(c2_report["docket_attempts"], 4);
+    assert_eq!(c2_report["settlements"], 4);
+    let c1_cross_probe: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("qualify-governed-cross-probe.json")).unwrap(),
+    )
+    .unwrap();
+    let c2_cross_probe: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&c2_bindings_path).unwrap()).unwrap();
+    let mut lifecycle_bindings = c1_cross_probe["bindings"].as_array().unwrap().clone();
+    lifecycle_bindings.extend(c2_cross_probe["bindings"].as_array().unwrap().clone());
+    let lifecycle_cross_probe_path = root.join("artifact-requalification-cross-probe.json");
+    write_jcs(
+        &lifecycle_cross_probe_path,
+        &serde_json::json!({
+            "schema": "maude.plan-governed-cross-probe/v1",
+            "bindings": lifecycle_bindings,
+        }),
+    );
+    write_jcs(
+        &root.join("synthetic-artifact-change-requalification.json"),
+        &serde_json::json!({
+            "schema": "nightshift.synthetic-cache-artifact-requalification/v1",
+            "c1": {
+                "plan_digest": c1_plan_digest,
+                "qualification_observation_id": q1_handoff.observation.observation_id,
+            },
+            "c2": {
+                "plan_digest": c2_plan_digest,
+                "qualification_compilation_id": c2_compilation["compilation_id"],
+                "qualify_work": c2_qualify_work,
+                "teardown_work": c2_teardown_work,
+                "qualification_observation_id": q2_observation_id,
+                "passive_observation_id": s3_observation_id,
+                "routine_composition_id": c2_composition.composition_id,
+            },
+            "cross_probe": lifecycle_cross_probe_path,
+            "q1_c2_refusal": q1_refusal.to_string(),
+            "q1_s3_refusal": q1_s3_refusal.to_string(),
+            "ag_replay": c2_report,
+        }),
+    );
+}
+
+/// Recovers the exact synthetic qualification after a transport/package fault
+/// which happened after Docket durably settled qualification but before Maude
+/// delivered application evidence. Qualification is never dispatched again;
+/// the test starts from the exact owner records and performs only observation,
+/// composition, successor opening, and governed teardown.
+#[test]
+#[ignore = "requires a retained post-qualification synthetic root and local Docker"]
+fn synthetic_cache_feedback_recovers_after_observation_packaging_fault() {
+    let bins = bins();
+    let root = PathBuf::from(
+        std::env::var_os("SYNTHETIC_CACHE_RESUME_ROOT").expect("SYNTHETIC_CACHE_RESUME_ROOT"),
+    );
+    assert!(root.is_absolute() && root.is_dir());
+    let exact_path = |name: &str| {
+        let path = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name}")));
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "missing exact input: {path:?}"
+        );
+        path
+    };
+    let qualify_plan_path = exact_path("SYNTHETIC_CACHE_QUALIFY_PLAN");
+    let teardown_plan_path = exact_path("SYNTHETIC_CACHE_TEARDOWN_PLAN");
+    let qualify_compilation_path = exact_path("SYNTHETIC_CACHE_QUALIFY_COMPILATION_RECEIPT");
+    let locked_plan = exact_path("SYNTHETIC_CACHE_LOCKED_PLAN");
+    let executor = exact_path("SYNTHETIC_CACHE_EXECUTOR");
+    let teardown_handoff: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(exact_path("SYNTHETIC_CACHE_TEARDOWN_HANDOFF")).unwrap(),
+    )
+    .unwrap();
+    let teardown_proposal: PrecompiledWorkflowProposalV2 =
+        serde_json::from_value(teardown_handoff).unwrap();
+
+    let ns_database = root.join("nightshift.sqlite");
+    let ag_database = root.join("ag.sqlite");
+    let qualify_settled = status(&bins, &ag_database);
+    assert_eq!(
+        program_counter(&qualify_settled),
+        "settled_observation_required"
+    );
+    assert_eq!(replay(&bins, &ag_database)["settlements"], 1);
+
+    let session_key = root.join("maude-session.key");
+    let producer_key = root.join("maude-producer.key");
+    let custody_store = root.join("maude-custody.sqlite");
+    let verifier = MaudeCustodyVerifierV1::from_key_file(
+        "maude-handoff:synthetic-local".into(),
+        "maude-handoff-key:synthetic-v1".into(),
+        "maude:synthetic-supervisor".into(),
+        "maude-session-key:synthetic-v1".into(),
+        "nightshift:synthetic-local-v1".into(),
+        &producer_key,
+        &session_key,
+    )
+    .unwrap();
+
+    let first_cycle = CanonicalStore::open(&ns_database)
+        .unwrap()
+        .list_cycles()
+        .unwrap()
+        .into_iter()
+        .find(|cycle| cycle.slot.occurrence == 0)
+        .expect("retained qualification Nightshift cycle");
+    let posture = &first_cycle.observation.as_ref().unwrap().posture;
+    let policy = posture.policy.clone();
+    let feedback_first_due =
+        DateTime::parse_from_rfc3339(&posture.schedule_obligations[0].policy.first_due_at)
+            .unwrap()
+            .with_timezone(&Utc);
+    let lineage = first_cycle.authoring_context_provenance.as_ref().unwrap();
+    let authoring_custody = first_cycle.authoring_context_custody.as_ref().unwrap();
+
+    let issuance = qualify_settled
+        .pointer("/state/settled_observation_required/dispatch/authorized/issuance")
+        .unwrap();
+    let docket_custody = qualify_settled
+        .pointer("/state/settled_observation_required/dispatch/custody")
+        .unwrap();
+    let settlement = qualify_settled
+        .pointer("/state/settled_observation_required/settlement")
+        .unwrap();
+    let campaign_id = issuance["key"]["campaign"].as_str().unwrap();
+    let occurrence_id = issuance["key"]["occurrence"].as_str().unwrap();
+    let proposal_id = issuance["proposal"].as_str().unwrap();
+    let exact_work_id = issuance["work"].as_str().unwrap();
+    let attempt_id = docket_custody["attempt"].as_str().unwrap();
+    let settlement_id = settlement["settlement"].as_str().unwrap();
+    assert_eq!(lineage.campaign_id, campaign_id);
+    assert_eq!(lineage.occurrence_id, occurrence_id);
+    assert_eq!(lineage.proposal_id, proposal_id);
+    assert_eq!(lineage.exact_work_id, exact_work_id);
+
+    let compilation: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&qualify_compilation_path).unwrap()).unwrap();
+    let inspector_path = format!(
+        "/phosphor-ng/campaigns/{}/occurrences/{}/proposals/{}",
+        campaign_id.replace(':', "%3A"),
+        occurrence_id,
+        proposal_id.replace(':', "%3A")
+    );
+    let bindings = compilation["node_bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| {
+            let mut binding = serde_json::json!({
+                "schema": "maude.plan-node-governed-binding/v1",
+                "binding_id": "",
+                "draft_id": compilation["draft_id"],
+                "node_id": node["node_id"],
+                "plan_digest": compilation["plan_digest"],
+                "compilation_id": compilation["compilation_id"],
+                "compiled_output_identity": node["output_identity"],
+                "exact_work_identity": exact_work_id,
+                "authoring_provenance_id": lineage.provenance_id,
+                "handoff_id": authoring_custody.handoff_id,
+                "campaign_id": campaign_id,
+                "occurrence_id": occurrence_id,
+                "proposal_id": proposal_id,
+                "issuance_id": issuance["issuance"],
+                "docket_attempt_id": attempt_id,
+                "settlement_id": settlement_id,
+                "outcome": settlement["outcome"],
+                "inspector_path": inspector_path,
+            });
+            let mut preimage = binding.clone();
+            preimage.as_object_mut().unwrap().remove("binding_id");
+            binding["binding_id"] = serde_json::json!(digest_value(&preimage));
+            binding
+        })
+        .collect::<Vec<_>>();
+    let governed_bindings = serde_json::json!({
+        "schema": "maude.plan-governed-cross-probe/v1",
+        "bindings": bindings,
+    });
+    let governed_bindings_path = root.join("qualify-governed-cross-probe.json");
+    write_jcs_convergent(&governed_bindings_path, &governed_bindings);
+
+    let evidence_path = PathBuf::from(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&qualify_plan_path).unwrap())
+            .unwrap()["workspace"]
+            .as_str()
+            .unwrap(),
+    )
+    .join("evidence/attempts")
+    .join(format!("{}.json", attempt_id.trim_start_matches("sha256:")));
+    let executor_evidence: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&evidence_path).unwrap()).unwrap();
+    let observed_at = executor_evidence["observed_at_unix_ms"].as_i64().unwrap();
+    let observer_key = root.join("maude-observer.key");
+    let observer_key_bytes = [0x43_u8; 32];
+    if observer_key.exists() {
+        assert_eq!(std::fs::read(&observer_key).unwrap(), observer_key_bytes);
+    } else {
+        std::fs::write(&observer_key, observer_key_bytes).unwrap();
+        std::fs::set_permissions(&observer_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let handoff_path = root.join("external-observation-qualify.json");
+    if !handoff_path.exists() {
+        let created_at = DateTime::from_timestamp_millis(observed_at + 10).unwrap();
+        let created_at_text = created_at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+        let output = Command::new(std::env::var_os("MAUDE_PYTHON").expect("MAUDE_PYTHON"))
+            .args(["-m", "maude.plan.world_observation"])
+            .args(["--executor-evidence", evidence_path.to_str().unwrap()])
+            .args(["--executor-plan", qualify_plan_path.to_str().unwrap()])
+            .args([
+                "--compilation-receipt",
+                qualify_compilation_path.to_str().unwrap(),
+            ])
+            .args([
+                "--governed-bindings",
+                governed_bindings_path.to_str().unwrap(),
+            ])
+            .args(["--producer-key", observer_key.to_str().unwrap()])
+            .args(["--producer-principal-id", "maude-observer:synthetic-local"])
+            .args(["--producer-key-id", "maude-observer-key:synthetic-v1"])
+            .args(["--target-runtime-id", "nightshift:synthetic-local-v1"])
+            .args(["--created-at", &created_at_text])
+            .args(["--output", handoff_path.to_str().unwrap()])
+            .env(
+                "PYTHONPATH",
+                std::env::var_os("MAUDE_SRC").expect("MAUDE_SRC"),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Maude observation adapter failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let handoff: ExternalObservationHandoffV1 =
+        serde_json::from_slice(&std::fs::read(&handoff_path).unwrap()).unwrap();
+    let external_verifier = ExternalObservationVerifierV1::from_key_file(
+        "maude-observer:synthetic-local".into(),
+        "maude-observer-key:synthetic-v1".into(),
+        "nightshift:synthetic-local-v1".into(),
+        &observer_key,
+    )
+    .unwrap();
+    let verified = external_verifier.verify(&handoff).unwrap();
+    let received_at = DateTime::from_timestamp_millis(observed_at + 20).unwrap();
+    let mut store = CanonicalStore::open(&ns_database).unwrap();
+    let external_custody = store
+        .record_external_observation(&verified, received_at)
+        .unwrap();
+    let external_profile = ExternalEvidenceProfileV1 {
+        schema: EXTERNAL_EVIDENCE_PROFILE_SCHEMA_V1.into(),
+        profile_id: String::new(),
+        purpose: ExternalEvidencePurposeV1::PostSettlementSuccessor,
+        expected_adapter_id: "maude.local-compose-observation-adapter".into(),
+        expected_adapter_version: "1".into(),
+        expected_producer_principal_id: "maude-observer:synthetic-local".into(),
+        expected_producer_key_id: "maude-observer-key:synthetic-v1".into(),
+        expected_runtime_id: "nightshift:synthetic-local-v1".into(),
+        required_action: LocalComposeActionV1::Qualify,
+        required_claims: vec![
+            LocalComposeClaimKindV1::FrontDoorReachable,
+            LocalComposeClaimKindV1::CacheMissThenHit,
+            LocalComposeClaimKindV1::SingleCacheFailureSurvived,
+            LocalComposeClaimKindV1::CacheTopologyRestored,
+        ],
+        max_age_ms: 600_000,
+    }
+    .seal()
+    .unwrap();
+
+    // The first recovery attempt deliberately remains as a closed historical
+    // observation. A new canonical composition uses a distinct admitted time
+    // and the recurrence slot current at that instant; neither fact is
+    // silently rewritten or refreshed on the retained record.
+    let successor_evaluated_at = DateTime::from_timestamp_millis(observed_at + 40).unwrap();
+    let diagnostic_occurrence = scheduled_occurrence_at(
+        feedback_first_due,
+        successor_evaluated_at,
+        posture.schedule_obligations[0].policy.cadence_seconds,
+    );
+    let (next_policy, next_inputs, next_recurrence) = fresh_policy_inputs_recurrence(
+        feedback_first_due,
+        diagnostic_occurrence,
+        successor_evaluated_at - chrono::Duration::seconds(1),
+    );
+    assert_eq!(next_policy.policy_id, policy.policy_id);
+    let mut successor_base = request_for_precompiled_fresh(
+        &next_policy,
+        &next_inputs,
+        &next_recurrence,
+        diagnostic_occurrence,
+        successor_evaluated_at,
+        &digest('e'),
+        teardown_proposal,
+    );
+    successor_base.external_evidence = Some(ExternalEvidenceReferenceV1 {
+        schema: EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+        source_observation_id: handoff.observation.observation_id.clone(),
+        source_custody_id: external_custody.custody_id.clone(),
+        profile_id: external_profile.profile_id.clone(),
+    });
+    successor_base = successor_base.seal().unwrap();
+    let successor_base =
+        prepare_external_evidence_cycle_request(&store, successor_base, &external_profile).unwrap();
+    let successor_request = attach_synthetic_maude_handoff(
+        &root,
+        "teardown-recovery",
+        successor_base,
+        &locked_plan,
+        &custody_store,
+        &session_key,
+        &producer_key,
+        "sess_synthetic_cache_teardown_recovery",
+    );
+    drop(store);
+
+    let observation = observation_wrapper(&root, &ns_database);
+    let standing = standing_wrapper(&bins, &root, &root.join("mandates.json"));
+    let qualify_rig = external_docket_rig(&root, &qualify_plan_path);
+    let docket_standing = docket_standing_script(&root, "current");
+    let profile = runtime_profile_for_executor(
+        &root,
+        "synthetic-cache",
+        &observation,
+        &standing,
+        &root.join("catalog.json"),
+        &docket_standing,
+        &qualify_rig,
+        &executor,
+        &bins,
+    );
+    let mut store = CanonicalStore::open(&ns_database).unwrap();
+    let mut support = SupportPort;
+    let mut ag = AgLoopCtlPortV1::new(
+        &bins.loopctl,
+        &ag_database,
+        &observation,
+        OBSERVATION_RESOLVER_ID,
+        &profile,
+    )
+    .unwrap();
+    let outcome = CanonicalRuntime::new_with_external_evidence_profile(
+        &mut store,
+        TestNqAdmissionPort,
+        &mut support,
+        &mut ag,
+        external_profile,
+    )
+    .unwrap()
+    .run_cycle_with_authoring_custody(successor_request, &verifier)
+    .unwrap();
+    let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+        panic!("fresh composed teardown successor did not enter AG");
+    };
+    let composed = cycle
+        .observation
+        .as_ref()
+        .unwrap()
+        .external_evidence
+        .as_ref()
+        .unwrap();
+    assert_eq!(composed.source_occurrence_id, occurrence_uuid(0));
+    assert_eq!(composed.target_occurrence_id, occurrence_uuid(1));
+    assert_eq!(cycle.ag.as_ref().unwrap().occurrence_id, occurrence_uuid(1));
+    write_jcs_convergent(
+        &root.join("external-composition.json"),
+        &serde_json::to_value(composed).unwrap(),
+    );
+
+    require_standing(&bins, &ag_database);
+    let gate = gate_args(&root.join("catalog.json"), &observation, &standing);
+    let mut decide = str_args(&["decide", "--database", &ag_database.display().to_string()]);
+    decide.extend(gate.clone());
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &decide)),
+        "admissible_pending_authorization"
+    );
+    let mut authorize = str_args(&[
+        "authorize",
+        "--database",
+        &ag_database.display().to_string(),
+    ]);
+    authorize.extend(gate);
+    assert_eq!(
+        program_counter(&loopctl_ok(&bins, &authorize)),
+        "authorization_consumed"
+    );
+    let teardown_docket = docket_args_for_executor(
+        &root,
+        &qualify_rig.trust,
+        &docket_standing,
+        &teardown_plan_path,
+        &qualify_rig.issuer_key,
+        &executor,
+        &bins,
+    );
+    let mut dispatch = str_args(&["dispatch", "--database", &ag_database.display().to_string()]);
+    dispatch.extend(teardown_docket.clone());
+    assert_eq!(program_counter(&loopctl_ok(&bins, &dispatch)), "dispatched");
+    let mut poll = str_args(&["poll", "--database", &ag_database.display().to_string()]);
+    poll.extend(teardown_docket);
+    let final_state = loopctl_ok(&bins, &poll);
+    assert_eq!(
+        program_counter(&final_state),
+        "settled_observation_required"
+    );
+    let report = replay(&bins, &ag_database);
+    assert_eq!(report["ag_spends"], 2);
+    assert_eq!(report["docket_attempts"], 2);
+    assert_eq!(report["settlements"], 2);
+    let stale_request = serde_json::json!({
+        "schema": "ag.governed-loop.observation-request/v1",
+        "key": {
+            "campaign": composed.target_campaign_id,
+            "occurrence": composed.target_occurrence_id,
+        },
+        "observation": composed.canonical_observation_id().unwrap(),
+        "subject": composed.subject_digest,
+        "now_unix_ms": composed.fresh_until_unix_ms,
+    });
+    let resolver_ttl = OBSERVATION_TTL_MS.to_string();
+    let mut resolver = Command::new(env!("CARGO_BIN_EXE_nightshift-observation-resolver"))
+        .args(["--store", ns_database.to_str().unwrap()])
+        .args(["--resolver-id", OBSERVATION_RESOLVER_ID])
+        .args(["--default-ttl-ms", &resolver_ttl])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    resolver
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_jcs::to_vec(&stale_request).unwrap())
+        .unwrap();
+    let stale_output = resolver.wait_with_output().unwrap();
+    assert!(
+        stale_output.status.success(),
+        "stale resolver witness failed: {}",
+        String::from_utf8_lossy(&stale_output.stderr)
+    );
+    let stale_resolution: serde_json::Value = serde_json::from_slice(&stale_output.stdout).unwrap();
+    assert_eq!(stale_resolution["status"], "stale");
+    assert_eq!(
+        stale_resolution["fresh_until_unix_ms"],
+        composed.fresh_until_unix_ms
+    );
+    assert_eq!(replay(&bins, &ag_database)["ag_spends"], 2);
+    write_jcs(
+        &root.join("synthetic-stale-resolution.json"),
+        &stale_resolution,
+    );
+    write_jcs(
+        &root.join("synthetic-feedback-recovery.json"),
+        &serde_json::json!({
+            "schema": "nightshift.synthetic-cache-feedback-recovery/v1",
+            "source_external_observation": handoff.observation.observation_id,
+            "source_custody": external_custody.custody_id,
+            "canonical_observation": composed.canonical_observation_id().unwrap(),
+            "composition": composed.composition_id,
+            "source_occurrence": composed.source_occurrence_id,
+            "successor_occurrence": composed.target_occurrence_id,
+            "stale_resolution": stale_resolution,
+            "ag_replay": report,
             "final_state": final_state,
         }),
     );

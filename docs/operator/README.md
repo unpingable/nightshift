@@ -122,9 +122,45 @@ causes a repeat.
 
 Workflow-specific application/world evidence may be retained through the
 authenticated [external-observation custody contract](../EXTERNAL_OBSERVATION_CUSTODY_V1.md).
-That projection is deliberately separate from canonical observation cycles:
+Custody is deliberately separate from canonical observation cycles:
 source-evidence age is not Nightshift currentness, and settlement remains
-neither health nor recovery.
+neither health nor recovery. The closed
+[external-evidence composition contract](../EXTERNAL_EVIDENCE_COMPOSITION_V1.md)
+allows one deployment-profiled record to participate in an exact successor
+observation; Nightshift still evaluates currentness at consequence time.
+The decision-relative
+[qualification and steady-state contract](../QUALIFICATION_AND_STEADY_STATE_EVIDENCE_V1.md)
+adds a separate read-only local-Compose adapter. It may refresh passive
+steady-state claims after an owner-produced stale result while retaining the
+original fault-test qualification as historical, exact-artifact-bound evidence.
+It cannot repeat or claim a new failure test.
+
+The deployment-owned example profile is
+[`examples/steady-state-evidence-profile-v1.json`](examples/steady-state-evidence-profile-v1.json).
+Nightshift produces an exact absent/current/stale acquisition basis without
+mutating runtime state:
+
+```sh
+nightshift --store /var/lib/nightshift/nightshift.sqlite \
+  external-observation steady-state-basis \
+  --qualification-observation-id sha256:EXACT_Q \
+  --profile /etc/nightshift/steady-state-evidence-profile.jcs.json \
+  --evaluated-at-unix-ms 1787450848101
+```
+
+After the distinct passive handoff is admitted, the read-only packager binds
+Q and S into the base request:
+
+```sh
+nightshift --store /var/lib/nightshift/nightshift.sqlite \
+  external-observation prepare-decision-cycle \
+  --request /bounded/successor-cycle-base.jcs.json \
+  --profile /etc/nightshift/steady-state-evidence-profile.jcs.json
+```
+
+The normal cycle run receives the same profile independently with
+`--decision-evidence-profile`. Packaging, import, and age arithmetic never
+construct Nightshift currentness.
 
 ## Scheduling
 

@@ -60,7 +60,9 @@ Nightshift recomputes the full canonical-byte digest and checks the returned
 `nq.diagnostic_admission_provenance.v1` against the artifact ID, contract,
 byte length, run, completion time, profile semantic ID, producer/source ID,
 and closed nonclaims. `nightshift.observation_record.v2` persists one such
-carrier per unique delivered artifact. A missing, refused, malformed, or
+carrier per unique delivered artifact. V3 preserves the identical NQ
+admission requirement while additionally binding one admitted external-
+application evidence composition. A missing, refused, malformed, or
 substituted carrier creates no cycle claim and no observation. Historical v1
 observation records remain readable; the production NQ-NG qualifier does not
 mint new provenance for v1 or imported artifacts.
@@ -203,6 +205,30 @@ checker; only a predicate that distinguishes states the normalization
 collapses requires a new normalization rule version. A new predicate does
 not automatically require a normalization change.
 
+External application evidence has a separate, narrower adequacy gate. The
+deployment-owned `nightshift.external_evidence_profile.v1` admits one closed
+claim set for one exact post-settlement successor and constrains that
+observation's freshness horizon. Those claims are not NQ atoms and are not
+relabeled as `condition.clean`. Their complete execution, PlanNode, producer,
+and temporal provenance is content-bound through the canonical observation
+identity. See
+[`EXTERNAL_EVIDENCE_COMPOSITION_V1.md`](EXTERNAL_EVIDENCE_COMPOSITION_V1.md).
+
+`nightshift.observation_record.v4` adds one separately versioned adequacy
+case: exact historical fault-test qualification plus fresh passive
+steady-state evidence for the same exact artifact. Only the passive component
+has a renewable temporal horizon; changing the PlanDocument, compilation,
+work, subject, or scope makes the historical qualification inapplicable. See
+[`QUALIFICATION_AND_STEADY_STATE_EVIDENCE_V1.md`](QUALIFICATION_AND_STEADY_STATE_EVIDENCE_V1.md).
+
+For the closed local-Compose V1 workflow, authorized deployment/effect and
+qualification of the exact artifact are atomic at the workflow boundary.
+There is no governed deploy-only transition that makes an unqualified
+successor artifact eligible as a passive-observation target. This is an
+explicit negative-reachability invariant, not a claim that future canary or
+staging semantics would be invalid. See
+[`ARTIFACT_CHANGE_AND_REQUALIFICATION_V1.md`](ARTIFACT_CHANGE_AND_REQUALIFICATION_V1.md).
+
 ### Observation currentness
 
 `nightshift-observation-resolver` answers one exact question about one
@@ -220,9 +246,13 @@ Status meanings:
   workflow-admissible, standing-granted, authorized, or that the world was
   re-observed at resolution time.
 - **Stale**: the observation's actionable wall-clock evidence window has
-  expired. The implemented rule is
-  `fresh_until = posture.evaluated_at + configured resolver TTL`, with
-  equality stale (`now >= fresh_until → Stale`). Support expiry is not used:
+  expired. For v1/v2 records the implemented rule is
+  `fresh_until = posture.evaluated_at + configured resolver TTL`. For a v3
+  composed observation it is the earlier of that deadline and the
+  deployment-profile horizon measured from the external evidence acquisition
+  time. For v4 decision-relative evidence it is similarly clipped by the
+  passive source horizon; the historical qualification timestamp is not a
+  currentness clock. Equality is stale (`now >= fresh_until → Stale`). Support expiry is not used:
   `SupportExpiryV1` lives on the external evidence authority's opaque
   receiver clock and has no valid Unix-time translation. The actionable
   window therefore inherits the deployment's existing trust in the

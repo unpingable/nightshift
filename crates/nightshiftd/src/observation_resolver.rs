@@ -307,6 +307,28 @@ fn classify(
     let Some(record) = &cycle.observation else {
         return Ok(sentinel(AgObservationStatusV1::Contradictory));
     };
+    if record
+        .external_evidence
+        .as_ref()
+        .is_some_and(|composition| {
+            store
+                .validate_external_composition_source(composition)
+                .is_err()
+        })
+    {
+        return Ok(sentinel(AgObservationStatusV1::Contradictory));
+    }
+    if record
+        .decision_external_evidence
+        .as_ref()
+        .is_some_and(|composition| {
+            store
+                .validate_decision_composition_source(composition)
+                .is_err()
+        })
+    {
+        return Ok(sentinel(AgObservationStatusV1::Contradictory));
+    }
     // Explicit subject cross-bindings over the persisted record. The store
     // has already re-run cycle/observation validation; these tie the slot,
     // support, and posture subjects to one exact Nightshift subject.
@@ -341,12 +363,57 @@ fn classify(
     let Some(evaluated_ms) = evaluated_ms else {
         return Ok(sentinel(AgObservationStatusV1::Contradictory));
     };
-    let fresh_until_unix_ms = evaluated_ms + config.default_ttl_ms;
-    let currentness = currentness_digest(&[
-        record.observation_id.as_bytes(),
-        record.support.support_id.as_bytes(),
-        record.posture.posture_id.as_bytes(),
-    ]);
+    let posture_fresh_until = evaluated_ms
+        .checked_add(config.default_ttl_ms)
+        .ok_or_else(|| {
+            ObservationResolverError::Configuration(
+                "resolver freshness horizon overflows Unix milliseconds".into(),
+            )
+        })?;
+    // A composed observation is current only inside both independent
+    // horizons: the ordinary Nightshift posture window and the
+    // deployment-owned application-evidence profile window. Receipt time and
+    // the UI's display-age arithmetic never participate.
+    let evidence_horizon = record
+        .external_evidence
+        .as_ref()
+        .map(|composition| composition.fresh_until_unix_ms)
+        .or_else(|| {
+            record
+                .decision_external_evidence
+                .as_ref()
+                .map(|composition| composition.fresh_until_unix_ms)
+        });
+    let fresh_until_unix_ms = evidence_horizon.map_or(posture_fresh_until, |horizon| {
+        posture_fresh_until.min(horizon)
+    });
+    let composition_id = record
+        .external_evidence
+        .as_ref()
+        .map(|composition| composition.composition_id.as_bytes())
+        .or_else(|| {
+            record
+                .decision_external_evidence
+                .as_ref()
+                .map(|composition| composition.composition_id.as_bytes())
+        });
+    let currentness = composition_id.map_or_else(
+        || {
+            currentness_digest(&[
+                record.observation_id.as_bytes(),
+                record.support.support_id.as_bytes(),
+                record.posture.posture_id.as_bytes(),
+            ])
+        },
+        |composition_id| {
+            currentness_digest(&[
+                record.observation_id.as_bytes(),
+                record.support.support_id.as_bytes(),
+                record.posture.posture_id.as_bytes(),
+                composition_id,
+            ])
+        },
+    );
     if request.now_unix_ms >= fresh_until_unix_ms {
         return Ok(Classification {
             status: AgObservationStatusV1::Stale,

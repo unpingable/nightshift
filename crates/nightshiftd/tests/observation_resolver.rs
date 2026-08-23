@@ -257,6 +257,8 @@ fn cycle_request_in(
         policy: policy.clone(),
         inputs: inputs.clone(),
         recurrence: recurrence.clone(),
+        external_evidence: None,
+        decision_external_evidence: None,
         temporal_policy: None,
         proposal: with_proposal.then(|| PrecompiledWorkflowProposalV2 {
             schema: nightshiftd::canonical_runtime::PRECOMPILED_PROPOSAL_SCHEMA_V2.into(),

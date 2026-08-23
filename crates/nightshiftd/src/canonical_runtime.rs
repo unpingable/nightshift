@@ -20,9 +20,10 @@ use crate::authoring_custody::{
     VerifiedMaudeHandoffV1,
 };
 use crate::canonical_store::{
-    AttentionClassV1, AttentionRecordV1, CanonicalStore, CanonicalStoreError, CycleStatusV1,
-    ObservationCycleId, ObservationCycleV1, ObservationRecordV1, RecurrenceSlotV1, SlotTimingV1,
-    TemporalDecisionV1, TemporalPostureV1, TypedCoarseIntentV2,
+    AgProgramCounterV1, AttentionClassV1, AttentionRecordV1, CanonicalStore, CanonicalStoreError,
+    CycleStatusV1, ObservationCycleId, ObservationCycleV1, ObservationFamilyKeyV1,
+    ObservationOrderKeyV1, ObservationRecordV1, RecurrenceSlotV1, SlotTimingV1, TemporalDecisionV1,
+    TemporalPostureV1, TypedCoarseIntentV2,
 };
 use crate::currentness::{
     delivered_artifact_ids, PresentEvidencePortV1, PresentEvidenceQueryV1, SupportStandingV1,
@@ -32,7 +33,14 @@ use crate::diagnostic_posture::{
     evaluate_posture_with_support, ConditionAxis, DiagnosticInputs, PosturePolicy,
     RecurrenceEvidence,
 };
+use crate::external_evidence_composition::{
+    ComposedExternalEvidenceV1, ExternalEvidenceProfileV1, ExternalEvidenceReferenceV1,
+};
 use crate::nq_admission::{qualify_delivered_inputs, NqAdmissionPortV1};
+use crate::steady_state_evidence::{
+    ComposedDecisionRelativeEvidenceV1, DecisionRelativeEvidenceReferenceV1,
+    SteadyStateEvidenceProfileV1,
+};
 
 pub const CYCLE_REQUEST_SCHEMA_V1: &str = "nightshift.canonical_cycle_request.v1";
 pub const PRECOMPILED_PROPOSAL_SCHEMA_V2: &str = "nightshift.precompiled_workflow_proposal.v2";
@@ -107,6 +115,8 @@ pub enum CanonicalRuntimeError {
     NqAdmission(String),
     #[error("diagnostic posture evaluation refused: {0}")]
     Diagnostic(String),
+    #[error("external application evidence refused: {0}")]
+    ExternalEvidence(String),
     #[error("AG boundary refused or was unavailable: {0}")]
     Ag(String),
 }
@@ -243,6 +253,15 @@ pub struct CanonicalCycleRequestV1 {
     pub policy: PosturePolicy,
     pub inputs: DiagnosticInputs,
     pub recurrence: RecurrenceEvidence,
+    /// Optional exact reference to separately authenticated application/world
+    /// evidence. The deployment-owned profile is supplied independently at
+    /// ingress; this reference cannot choose its own TTL or claim policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_evidence: Option<ExternalEvidenceReferenceV1>,
+    /// Optional exact qualification + passive observation reference. It is
+    /// mutually exclusive with the legacy strong single-source reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_external_evidence: Option<DecisionRelativeEvidenceReferenceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporal_policy: Option<TemporalPolicyRequestV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,6 +298,34 @@ impl CanonicalCycleRequestV1 {
         self.policy.validate()?;
         self.inputs.validate()?;
         self.recurrence.validate()?;
+        if let Some(reference) = &self.external_evidence {
+            reference.validate()?;
+            let proposal = self.proposal.as_ref().ok_or_else(|| {
+                "external application evidence requires an exact successor proposal".to_owned()
+            })?;
+            if !matches!(proposal.mode, AgOpenModeV1::Continuation { .. }) {
+                return Err(
+                    "external application evidence v1 applies only to a successor occurrence"
+                        .into(),
+                );
+            }
+        }
+        if let Some(reference) = &self.decision_external_evidence {
+            reference.validate()?;
+            if self.external_evidence.is_some() {
+                return Err(
+                    "cycle request cannot combine legacy and decision-relative evidence".into(),
+                );
+            }
+            let proposal = self.proposal.as_ref().ok_or_else(|| {
+                "decision-relative evidence requires an exact successor proposal".to_owned()
+            })?;
+            if !matches!(proposal.mode, AgOpenModeV1::Continuation { .. }) {
+                return Err(
+                    "decision-relative evidence applies only to a successor occurrence".into(),
+                );
+            }
+        }
         if self.slot.scheduler_clock_id != self.scheduler_clock_id
             || self.slot.subject_id != self.policy.subject.id
             || self.slot.scope_id != self.policy.subject.scope.digest
@@ -328,6 +375,181 @@ impl CanonicalCycleRequestV1 {
     }
 }
 
+/// Prepare the exact canonical cycle bytes that will later be admitted by the
+/// runtime. This is a deterministic packaging operation only: it performs no
+/// currentness decision, slot claim, proposal submission, or AG transition.
+pub fn prepare_external_evidence_cycle_request(
+    store: &CanonicalStore,
+    mut request: CanonicalCycleRequestV1,
+    profile: &ExternalEvidenceProfileV1,
+) -> Result<CanonicalCycleRequestV1, CanonicalRuntimeError> {
+    if request.authoring_context.is_some() {
+        return Err(CanonicalRuntimeError::ExternalEvidence(
+            "prepare external evidence before attaching authoring custody".into(),
+        ));
+    }
+    profile
+        .validate()
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    let reference = request.external_evidence.as_ref().ok_or_else(|| {
+        CanonicalRuntimeError::ExternalEvidence(
+            "cycle request lacks an external-evidence reference".into(),
+        )
+    })?;
+    let proposal = request.proposal.as_ref().ok_or_else(|| {
+        CanonicalRuntimeError::ExternalEvidence(
+            "external evidence requires an exact successor proposal".into(),
+        )
+    })?;
+    request
+        .policy
+        .validate()
+        .map_err(CanonicalRuntimeError::Invalid)?;
+    proposal
+        .validate()
+        .map_err(CanonicalRuntimeError::Invalid)?;
+    let (source, custody) = store
+        .external_observation_for_composition(&reference.source_observation_id)?
+        .ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "referenced authenticated application evidence is absent".into(),
+            )
+        })?;
+    let composition = ComposedExternalEvidenceV1::compose(
+        reference,
+        profile,
+        &source,
+        &custody,
+        request.evaluated_at,
+        &proposal.campaign_id,
+        &proposal.occurrence_id,
+        &request.policy.subject.id,
+        &proposal.subject_digest,
+        &request.policy.subject.scope.digest,
+    )
+    .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    request.observation_id = composition
+        .canonical_observation_id()
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    request
+        .proposal
+        .as_mut()
+        .and_then(|proposal| proposal.proposal_input.as_object_mut())
+        .ok_or_else(|| {
+            CanonicalRuntimeError::Invalid("successor proposal input is not an exact object".into())
+        })?
+        .insert(
+            "observation".into(),
+            serde_json::Value::String(request.observation_id.clone()),
+        );
+    request.seal().map_err(CanonicalRuntimeError::Invalid)
+}
+
+/// Deterministically bind one exact historical qualification source and one
+/// exact passive observation to a cycle request. This packages representation
+/// only; the runtime independently revalidates predecessor state and passive
+/// currentness at consequence time.
+pub fn prepare_decision_evidence_cycle_request(
+    store: &CanonicalStore,
+    mut request: CanonicalCycleRequestV1,
+    profile: &SteadyStateEvidenceProfileV1,
+) -> Result<CanonicalCycleRequestV1, CanonicalRuntimeError> {
+    if request.authoring_context.is_some() {
+        return Err(CanonicalRuntimeError::ExternalEvidence(
+            "prepare decision evidence before attaching authoring custody".into(),
+        ));
+    }
+    profile
+        .validate()
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    let reference = request.decision_external_evidence.as_ref().ok_or_else(|| {
+        CanonicalRuntimeError::ExternalEvidence(
+            "cycle request lacks a decision-relative evidence reference".into(),
+        )
+    })?;
+    let proposal = request.proposal.as_ref().ok_or_else(|| {
+        CanonicalRuntimeError::ExternalEvidence(
+            "decision-relative evidence requires an exact successor proposal".into(),
+        )
+    })?;
+    let (qualification, qualification_custody) = store
+        .external_observation_for_composition(&reference.qualification_observation_id)?
+        .ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "referenced historical qualification is absent".into(),
+            )
+        })?;
+    require_qualification_target_artifact(proposal, &qualification.plan_document_digest)?;
+    let (steady, steady_custody) = store
+        .steady_state_observation_for_composition(&reference.steady_state_observation_id)?
+        .ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "referenced passive steady-state evidence is absent".into(),
+            )
+        })?;
+    let composition = ComposedDecisionRelativeEvidenceV1::compose(
+        reference,
+        profile,
+        &qualification,
+        &qualification_custody,
+        &steady,
+        &steady_custody,
+        request.evaluated_at,
+        &proposal.campaign_id,
+        &proposal.occurrence_id,
+        &request.policy.subject.id,
+        &proposal.subject_digest,
+        &request.policy.subject.scope.digest,
+    )
+    .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    require_decision_evidence_target_artifact(proposal, &composition)?;
+    request.observation_id = composition
+        .canonical_observation_id()
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    request
+        .proposal
+        .as_mut()
+        .and_then(|proposal| proposal.proposal_input.as_object_mut())
+        .ok_or_else(|| {
+            CanonicalRuntimeError::Invalid("successor proposal input is not an exact object".into())
+        })?
+        .insert(
+            "observation".into(),
+            serde_json::Value::String(request.observation_id.clone()),
+        );
+    request.seal().map_err(CanonicalRuntimeError::Invalid)
+}
+
+fn require_decision_evidence_target_artifact(
+    proposal: &PrecompiledWorkflowProposalV2,
+    composition: &ComposedDecisionRelativeEvidenceV1,
+) -> Result<(), CanonicalRuntimeError> {
+    require_qualification_target_artifact(proposal, &composition.qualification.plan_document_digest)
+}
+
+fn require_qualification_target_artifact(
+    proposal: &PrecompiledWorkflowProposalV2,
+    qualification_plan_document_digest: &str,
+) -> Result<(), CanonicalRuntimeError> {
+    let target = proposal
+        .immutable_parameters
+        .get("plan_document")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "decision-relative work lacks an exact target PlanDocument digest".into(),
+            )
+        })?;
+    require_digest("target plan_document", target)
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+    if target != qualification_plan_document_digest {
+        return Err(CanonicalRuntimeError::ExternalEvidence(
+            "historical qualification does not apply to the target PlanDocument".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CycleRunOutcomeV1 {
@@ -346,6 +568,8 @@ where
     nq_admission: N,
     present_evidence: &'a mut P,
     ag: &'a mut A,
+    external_evidence_profile: Option<ExternalEvidenceProfileV1>,
+    decision_evidence_profile: Option<SteadyStateEvidenceProfileV1>,
 }
 
 impl<'a, N, P, A> CanonicalRuntime<'a, N, P, A>
@@ -365,7 +589,51 @@ where
             nq_admission,
             present_evidence,
             ag,
+            external_evidence_profile: None,
+            decision_evidence_profile: None,
         }
+    }
+
+    /// Construct the same canonical runtime with one deployment-owned,
+    /// non-authorizing external-evidence profile.
+    pub fn new_with_external_evidence_profile(
+        store: &'a mut CanonicalStore,
+        nq_admission: N,
+        present_evidence: &'a mut P,
+        ag: &'a mut A,
+        profile: ExternalEvidenceProfileV1,
+    ) -> Result<Self, CanonicalRuntimeError> {
+        profile
+            .validate()
+            .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+        Ok(Self {
+            store,
+            nq_admission,
+            present_evidence,
+            ag,
+            external_evidence_profile: Some(profile),
+            decision_evidence_profile: None,
+        })
+    }
+
+    pub fn new_with_decision_evidence_profile(
+        store: &'a mut CanonicalStore,
+        nq_admission: N,
+        present_evidence: &'a mut P,
+        ag: &'a mut A,
+        profile: SteadyStateEvidenceProfileV1,
+    ) -> Result<Self, CanonicalRuntimeError> {
+        profile
+            .validate()
+            .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+        Ok(Self {
+            store,
+            nq_admission,
+            present_evidence,
+            ag,
+            external_evidence_profile: None,
+            decision_evidence_profile: Some(profile),
+        })
     }
 
     pub fn run_cycle(
@@ -401,6 +669,234 @@ where
         self.run_cycle_inner(request, Some(verified))
     }
 
+    fn compose_external_evidence(
+        &mut self,
+        request: &CanonicalCycleRequestV1,
+    ) -> Result<Option<ComposedExternalEvidenceV1>, CanonicalRuntimeError> {
+        let Some(reference) = request.external_evidence.as_ref() else {
+            return Ok(None);
+        };
+        let profile = self.external_evidence_profile.as_ref().ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "cycle references external evidence but ingress has no configured profile".into(),
+            )
+        })?;
+        if reference.profile_id != profile.profile_id {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "cycle selected a different external-evidence profile".into(),
+            ));
+        }
+        let (source, custody) = self
+            .store
+            .external_observation_for_composition(&reference.source_observation_id)?
+            .ok_or_else(|| {
+                CanonicalRuntimeError::ExternalEvidence(
+                    "referenced authenticated application evidence is absent".into(),
+                )
+            })?;
+        let proposal = request.proposal.as_ref().ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "external evidence requires an exact successor proposal".into(),
+            )
+        })?;
+        if !matches!(proposal.mode, AgOpenModeV1::Continuation { .. }) {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "external evidence v1 cannot create a genesis occurrence".into(),
+            ));
+        }
+        let composition = ComposedExternalEvidenceV1::compose(
+            reference,
+            profile,
+            &source,
+            &custody,
+            request.evaluated_at,
+            &proposal.campaign_id,
+            &proposal.occurrence_id,
+            &request.policy.subject.id,
+            &proposal.subject_digest,
+            &request.policy.subject.scope.digest,
+        )
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+        let target_family = ObservationFamilyKeyV1::of_slot(&request.slot);
+        let target_order = ObservationOrderKeyV1::of_slot(&request.slot);
+        let latest_predecessor = self
+            .store
+            .list_cycles()?
+            .into_iter()
+            .filter(|cycle| {
+                ObservationFamilyKeyV1::of_slot(&cycle.slot) == target_family
+                    && ObservationOrderKeyV1::of_slot(&cycle.slot) < target_order
+                    && cycle.observation.is_some()
+                    && cycle.ag.is_some()
+            })
+            .max_by_key(|cycle| ObservationOrderKeyV1::of_slot(&cycle.slot))
+            .ok_or_else(|| {
+                CanonicalRuntimeError::ExternalEvidence(
+                    "external evidence has no exact prior Nightshift observation in this lineage"
+                        .into(),
+                )
+            })?;
+        let predecessor_ag = latest_predecessor.ag.as_ref().ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "latest prior Nightshift observation has no governed occurrence relation".into(),
+            )
+        })?;
+        if predecessor_ag.campaign_id != source.campaign_id
+            || predecessor_ag.occurrence_id != source.occurrence_id
+        {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "external evidence does not bind the latest exact governed predecessor".into(),
+            ));
+        }
+        if request.observation_id
+            != composition
+                .canonical_observation_id()
+                .map_err(CanonicalRuntimeError::ExternalEvidence)?
+        {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "cycle observation identity does not bind the exact external-evidence composition"
+                    .into(),
+            ));
+        }
+        for existing in self
+            .store
+            .external_compositions_for_source(&source.observation_id)?
+        {
+            if existing.target_campaign_id != composition.target_campaign_id
+                || existing.target_occurrence_id != composition.target_occurrence_id
+            {
+                return Err(CanonicalRuntimeError::ExternalEvidence(
+                    "historical application evidence is already composed for another exact target"
+                        .into(),
+                ));
+            }
+        }
+        let predecessor = self
+            .ag
+            .status(&source.campaign_id, &source.occurrence_id)
+            .map_err(CanonicalRuntimeError::Ag)?;
+        if predecessor.campaign_id != source.campaign_id
+            || predecessor.occurrence_id != source.occurrence_id
+            || predecessor.program_counter != AgProgramCounterV1::SettledObservationRequired
+            || predecessor.docket_attempt_id.as_deref() != Some(source.attempt_id.as_str())
+            || predecessor.settlement_id.as_deref() != Some(source.settlement_id.as_str())
+        {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "external evidence source is not the exact settled predecessor state".into(),
+            ));
+        }
+        Ok(Some(composition))
+    }
+
+    fn compose_decision_external_evidence(
+        &mut self,
+        request: &CanonicalCycleRequestV1,
+    ) -> Result<Option<ComposedDecisionRelativeEvidenceV1>, CanonicalRuntimeError> {
+        let Some(reference) = request.decision_external_evidence.as_ref() else {
+            return Ok(None);
+        };
+        let profile = self.decision_evidence_profile.as_ref().ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "cycle references decision evidence but ingress has no configured profile".into(),
+            )
+        })?;
+        if reference.profile_id != profile.profile_id {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "cycle selected a different decision-evidence profile".into(),
+            ));
+        }
+        let (qualification, qualification_custody) = self
+            .store
+            .external_observation_for_composition(&reference.qualification_observation_id)?
+            .ok_or_else(|| {
+                CanonicalRuntimeError::ExternalEvidence(
+                    "referenced historical qualification is absent".into(),
+                )
+            })?;
+        let proposal = request.proposal.as_ref().ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "decision evidence requires an exact successor proposal".into(),
+            )
+        })?;
+        require_qualification_target_artifact(proposal, &qualification.plan_document_digest)?;
+        let (steady, steady_custody) = self
+            .store
+            .steady_state_observation_for_composition(&reference.steady_state_observation_id)?
+            .ok_or_else(|| {
+                CanonicalRuntimeError::ExternalEvidence(
+                    "referenced passive steady-state evidence is absent".into(),
+                )
+            })?;
+        let composition = ComposedDecisionRelativeEvidenceV1::compose(
+            reference,
+            profile,
+            &qualification,
+            &qualification_custody,
+            &steady,
+            &steady_custody,
+            request.evaluated_at,
+            &proposal.campaign_id,
+            &proposal.occurrence_id,
+            &request.policy.subject.id,
+            &proposal.subject_digest,
+            &request.policy.subject.scope.digest,
+        )
+        .map_err(CanonicalRuntimeError::ExternalEvidence)?;
+        require_decision_evidence_target_artifact(proposal, &composition)?;
+        let target_family = ObservationFamilyKeyV1::of_slot(&request.slot);
+        let target_order = ObservationOrderKeyV1::of_slot(&request.slot);
+        let latest_predecessor = self
+            .store
+            .list_cycles()?
+            .into_iter()
+            .filter(|cycle| {
+                ObservationFamilyKeyV1::of_slot(&cycle.slot) == target_family
+                    && ObservationOrderKeyV1::of_slot(&cycle.slot) < target_order
+                    && cycle.observation.is_some()
+                    && cycle.ag.is_some()
+            })
+            .max_by_key(|cycle| ObservationOrderKeyV1::of_slot(&cycle.slot))
+            .ok_or_else(|| {
+                CanonicalRuntimeError::ExternalEvidence(
+                    "decision evidence has no exact governed predecessor".into(),
+                )
+            })?;
+        let predecessor_ag = latest_predecessor.ag.as_ref().ok_or_else(|| {
+            CanonicalRuntimeError::ExternalEvidence(
+                "latest prior observation has no governed occurrence relation".into(),
+            )
+        })?;
+        if predecessor_ag.campaign_id != qualification.campaign_id
+            || predecessor_ag.occurrence_id != qualification.occurrence_id
+        {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "qualification does not bind the latest exact governed predecessor".into(),
+            ));
+        }
+        if request.observation_id
+            != composition
+                .canonical_observation_id()
+                .map_err(CanonicalRuntimeError::ExternalEvidence)?
+        {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "cycle observation identity does not bind decision-relative composition".into(),
+            ));
+        }
+        let predecessor = self
+            .ag
+            .status(&qualification.campaign_id, &qualification.occurrence_id)
+            .map_err(CanonicalRuntimeError::Ag)?;
+        if predecessor.program_counter != AgProgramCounterV1::SettledObservationRequired
+            || predecessor.docket_attempt_id.as_deref() != Some(qualification.attempt_id.as_str())
+            || predecessor.settlement_id.as_deref() != Some(qualification.settlement_id.as_str())
+        {
+            return Err(CanonicalRuntimeError::ExternalEvidence(
+                "historical qualification source is not the exact settled predecessor".into(),
+            ));
+        }
+        Ok(Some(composition))
+    }
+
     fn run_cycle_inner(
         &mut self,
         request: CanonicalCycleRequestV1,
@@ -421,6 +917,8 @@ where
                 ));
             }
         }
+        let composed_external_evidence = self.compose_external_evidence(&request)?;
+        let composed_decision_evidence = self.compose_decision_external_evidence(&request)?;
         if request
             .slot
             .timing_at(&request.scheduler_clock_id, request.evaluated_at)?
@@ -485,9 +983,17 @@ where
             }
         };
         let observation = ObservationRecordV1 {
-            schema: crate::canonical_store::OBSERVATION_RECORD_SCHEMA.into(),
+            schema: if composed_decision_evidence.is_some() {
+                crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V4.into()
+            } else if composed_external_evidence.is_some() {
+                crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V3.into()
+            } else {
+                crate::canonical_store::OBSERVATION_RECORD_SCHEMA.into()
+            },
             observation_id: request.observation_id,
             source_admissions,
+            external_evidence: composed_external_evidence,
+            decision_external_evidence: composed_decision_evidence,
             support,
             posture,
         };
@@ -690,10 +1196,24 @@ mod tests {
         ConditionV1, DeliveryStanding, DiagnosticExecutionV1, DiagnosticInputStatus, Headline,
         RunSlotEvidence,
     };
+    use crate::external_evidence_composition::{
+        ExternalEvidencePurposeV1, EXTERNAL_EVIDENCE_PROFILE_SCHEMA_V1,
+        EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1,
+    };
+    use crate::external_observation::{
+        tests::{reseal_handoff, signed_handoff},
+        ExternalObservationVerifierV1, LocalComposeActionV1, LocalComposeClaimKindV1,
+    };
     use crate::nq_admission::{
         NqAdmissionArtifactV1, NqAdmissionJudgmentV1, NqAdmissionOriginV1, NqAdmissionPortV1,
         NqAdmissionProvenanceV1, NqAdmissionProviderV1, NqAdmissionQueryV1, NqAdmissionSourceV1,
         NqSourceDispositionV1,
+    };
+    use crate::steady_state_evidence::{
+        tests::steady_handoff, DecisionRelativeEvidenceReferenceV1, SteadyStateClaimKindV1,
+        SteadyStateEvidencePurposeV1, SteadyStateObservationVerifierV1,
+        DECISION_EVIDENCE_REFERENCE_SCHEMA_V1, STEADY_STATE_ADAPTER_ID_V1,
+        STEADY_STATE_ADAPTER_VERSION_V1,
     };
 
     fn digest(byte: char) -> String {
@@ -935,6 +1455,8 @@ mod tests {
             policy,
             inputs,
             recurrence,
+            external_evidence: None,
+            decision_external_evidence: None,
             temporal_policy: None,
             proposal: proposal.then(|| PrecompiledWorkflowProposalV2 {
                 schema: PRECOMPILED_PROPOSAL_SCHEMA_V2.into(),
@@ -1098,6 +1620,8 @@ mod tests {
         open_count: usize,
         lose_open_response: bool,
         status_pc: AgProgramCounterV1,
+        status_attempt: Option<String>,
+        status_settlement: Option<String>,
         request: Option<AgOpenOccurrenceRequestV1>,
     }
 
@@ -1107,6 +1631,8 @@ mod tests {
                 open_count: 0,
                 lose_open_response: false,
                 status_pc: AgProgramCounterV1::ProposalRecorded,
+                status_attempt: None,
+                status_settlement: None,
                 request: None,
             }
         }
@@ -1170,8 +1696,672 @@ mod tests {
             campaign_id: &str,
             occurrence_id: &str,
         ) -> Result<AgOccurrenceReferenceV1, String> {
-            Ok(fake_reference(campaign_id, occurrence_id, self.status_pc))
+            let mut reference = fake_reference(campaign_id, occurrence_id, self.status_pc);
+            if let Some(attempt) = &self.status_attempt {
+                reference.docket_attempt_id = Some(attempt.clone());
+            }
+            if let Some(settlement) = &self.status_settlement {
+                reference.settlement_id = Some(settlement.clone());
+            }
+            Ok(reference)
         }
+    }
+
+    fn external_profile(max_age_ms: u64) -> ExternalEvidenceProfileV1 {
+        ExternalEvidenceProfileV1 {
+            schema: EXTERNAL_EVIDENCE_PROFILE_SCHEMA_V1.into(),
+            profile_id: String::new(),
+            purpose: ExternalEvidencePurposeV1::PostSettlementSuccessor,
+            expected_adapter_id: "maude.local-compose-observation-adapter".into(),
+            expected_adapter_version: "1".into(),
+            expected_producer_principal_id: "maude-observer:local".into(),
+            expected_producer_key_id: "maude-observer-key:one".into(),
+            expected_runtime_id: "nightshift:local".into(),
+            required_action: LocalComposeActionV1::Qualify,
+            required_claims: vec![
+                LocalComposeClaimKindV1::FrontDoorReachable,
+                LocalComposeClaimKindV1::CacheMissThenHit,
+                LocalComposeClaimKindV1::SingleCacheFailureSurvived,
+                LocalComposeClaimKindV1::CacheTopologyRestored,
+            ],
+            max_age_ms,
+        }
+        .seal()
+        .unwrap()
+    }
+
+    fn decision_profile(max_age_ms: u64) -> SteadyStateEvidenceProfileV1 {
+        SteadyStateEvidenceProfileV1 {
+            schema: String::new(),
+            profile_id: String::new(),
+            purpose: SteadyStateEvidencePurposeV1::RoutineContinuation,
+            qualification_profile: external_profile(30_000),
+            expected_adapter_id: STEADY_STATE_ADAPTER_ID_V1.into(),
+            expected_adapter_version: STEADY_STATE_ADAPTER_VERSION_V1.into(),
+            expected_producer_principal_id: "maude-observer:local".into(),
+            expected_producer_key_id: "maude-observer-key:one".into(),
+            expected_runtime_id: "nightshift:local".into(),
+            required_qualification_claims: vec![
+                LocalComposeClaimKindV1::FrontDoorReachable,
+                LocalComposeClaimKindV1::CacheMissThenHit,
+                LocalComposeClaimKindV1::SingleCacheFailureSurvived,
+                LocalComposeClaimKindV1::CacheTopologyRestored,
+            ],
+            required_steady_state_claims: vec![
+                SteadyStateClaimKindV1::FrontDoorReachable,
+                SteadyStateClaimKindV1::CacheAPresent,
+                SteadyStateClaimKindV1::CacheBPresent,
+                SteadyStateClaimKindV1::OrdinaryCacheBehaviorObserved,
+            ],
+            max_age_ms,
+        }
+        .seal()
+        .unwrap()
+    }
+
+    fn next_clean_inputs_recurrence() -> (DiagnosticInputs, RecurrenceEvidence) {
+        let mut inputs_value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/operator/examples/diagnostic-posture-v1/inputs.json"
+        ))
+        .unwrap();
+        let artifact = &mut inputs_value["inputs"][0]["artifact"];
+        artifact["request_id"] = serde_json::json!("request:002");
+        artifact["run_id"] = serde_json::json!("run:002");
+        artifact["started_at"] = serde_json::json!("2026-07-27T20:01:03Z");
+        artifact["completed_at"] = serde_json::json!("2026-07-27T20:01:04Z");
+        artifact["attempt_interval"]["started_at"] = serde_json::json!("2026-07-27T20:01:03Z");
+        artifact["attempt_interval"]["ended_at"] = serde_json::json!("2026-07-27T20:01:04Z");
+        artifact["inputs"]["received"][0]["acquisition"]["started_at"] =
+            serde_json::json!("2026-07-27T20:01:01Z");
+        artifact["inputs"]["received"][0]["acquisition"]["ended_at"] =
+            serde_json::json!("2026-07-27T20:01:02Z");
+        artifact["inputs"]["received"][0]["received_at"] =
+            serde_json::json!("2026-07-27T20:01:03Z");
+        let mut artifact_preimage = artifact.clone();
+        artifact_preimage
+            .as_object_mut()
+            .unwrap()
+            .remove("artifact_id");
+        let artifact_id = digest_value(&artifact_preimage).unwrap();
+        artifact["artifact_id"] = serde_json::json!(artifact_id);
+        let artifact_snapshot = artifact.clone();
+        let mut inputs: DiagnosticInputs = serde_json::from_value(inputs_value).unwrap();
+        inputs.inputs_id = inputs.computed_inputs_id().unwrap();
+
+        let mut recurrence_value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/operator/examples/diagnostic-posture-v1/recurrence.json"
+        ))
+        .unwrap();
+        let base: RecurrenceEvidence = serde_json::from_value(recurrence_value.clone()).unwrap();
+        let slot = crate::diagnostic_posture::make_run_slot(
+            &base.records[0].policy,
+            &base.records[0].key,
+            1,
+        )
+        .unwrap();
+        recurrence_value["records"][0]["slot"] = serde_json::to_value(&slot).unwrap();
+        let evidence = &mut recurrence_value["records"][0]["evidence"];
+        evidence["attempt"]["attempt_id"] = serde_json::json!("attempt:fixture-2");
+        evidence["attempt"]["request_id"] = serde_json::json!("request:002");
+        evidence["attempt"]["slot_id"] = serde_json::json!(slot.slot_id);
+        evidence["attempt"]["started_at"] = serde_json::json!("2026-07-27T20:01:00Z");
+        evidence["completed_at"] = serde_json::json!("2026-07-27T20:01:04Z");
+        let reference = &mut evidence["artifact"];
+        reference["artifact_id"] = artifact_snapshot["artifact_id"].clone();
+        reference["request_id"] = artifact_snapshot["request_id"].clone();
+        reference["run_id"] = artifact_snapshot["run_id"].clone();
+        reference["attempt_interval"] = artifact_snapshot["attempt_interval"].clone();
+        reference["dependency_acquisitions"] =
+            serde_json::json!([artifact_snapshot["inputs"]["received"][0]["acquisition"].clone()]);
+        reference["claim"] = artifact_snapshot["claims"][0].clone();
+        let mut recurrence: RecurrenceEvidence = serde_json::from_value(recurrence_value).unwrap();
+        recurrence.recurrence_id = recurrence.computed_recurrence_id().unwrap();
+        (inputs, recurrence)
+    }
+
+    fn cycle_with_external_evidence(
+        store: &mut CanonicalStore,
+        occurrence: u64,
+        max_age_ms: u64,
+    ) -> (
+        CanonicalCycleRequestV1,
+        ExternalEvidenceProfileV1,
+        String,
+        String,
+    ) {
+        assert!(occurrence > 0, "external evidence requires a prior cycle");
+        let source_occurrence_number = occurrence - 1;
+        let source_request = cycle_request(source_occurrence_number, true);
+        let source_occurrence = source_request
+            .proposal
+            .as_ref()
+            .unwrap()
+            .occurrence_id
+            .clone();
+        let mut source_support = CurrentSupportPort::default();
+        let mut source_ag = FakeAg::default();
+        CanonicalRuntime::new(
+            store,
+            TestNqAdmissionPort,
+            &mut source_support,
+            &mut source_ag,
+        )
+        .run_cycle(source_request)
+        .unwrap();
+
+        let key = [7_u8; 32];
+        let mut request = cycle_request(occurrence, true);
+        if occurrence == 1 {
+            let (inputs, recurrence) = next_clean_inputs_recurrence();
+            request.inputs = inputs;
+            request.recurrence = recurrence;
+        }
+        let proposal = request.proposal.as_mut().unwrap();
+        let target_occurrence = proposal.occurrence_id.clone();
+        let expected_work = ag_executor_plan_identity(&proposal.ag_executor_plan).unwrap();
+        proposal.mode = AgOpenModeV1::Continuation {
+            continuation: serde_json::json!({
+                "occurrence": target_occurrence,
+                "expected_ag_work": expected_work,
+            }),
+        };
+        proposal.proposal_input["class"] = serde_json::json!("successor");
+
+        let mut handoff = signed_handoff(&key, "2026-07-27T20:00:09.950Z", &source_occurrence);
+        let observed_at = request.evaluated_at.timestamp_millis() - 100;
+        handoff.observation.campaign_id = proposal.campaign_id.clone();
+        handoff.observation.subject_digest = proposal.subject_digest.clone();
+        handoff.observation.scope_digest = request.policy.subject.scope.digest.clone();
+        handoff.observation.exact_work_id = expected_work.clone();
+        handoff.observation.observed_at_unix_ms = observed_at;
+        handoff.observation.source_evidence["dispatch"]["subject"] =
+            serde_json::json!(handoff.observation.subject_digest);
+        handoff.observation.source_evidence["dispatch"]["scope"] =
+            serde_json::json!(handoff.observation.scope_digest);
+        handoff.observation.source_evidence["dispatch"]["work"] = serde_json::json!(expected_work);
+        handoff.observation.source_evidence["observed_at_unix_ms"] = serde_json::json!(observed_at);
+        handoff.created_at = request.evaluated_at;
+        reseal_handoff(&mut handoff, &key);
+        let verifier = ExternalObservationVerifierV1::for_test(
+            "maude-observer:local",
+            "maude-observer-key:one",
+            "nightshift:local",
+            key,
+        );
+        let verified = verifier.verify(&handoff).unwrap();
+        let custody = store
+            .record_external_observation(&verified, request.evaluated_at)
+            .unwrap();
+        let profile = external_profile(max_age_ms);
+        request.external_evidence = Some(ExternalEvidenceReferenceV1 {
+            schema: EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+            source_observation_id: handoff.observation.observation_id.clone(),
+            source_custody_id: custody.custody_id,
+            profile_id: profile.profile_id.clone(),
+        });
+        request = prepare_external_evidence_cycle_request(store, request, &profile).unwrap();
+        (
+            request,
+            profile,
+            handoff.observation.attempt_id,
+            handoff.observation.settlement_id,
+        )
+    }
+
+    #[test]
+    fn external_evidence_composes_then_expires_under_canonical_resolver() {
+        use crate::observation_resolver::{
+            resolve_observation, AgObservationRequestV1, AgObservationStatusV1,
+            ObservationResolverConfigV1,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("nightshift.sqlite")).unwrap();
+        let (request, profile, attempt, settlement) =
+            cycle_with_external_evidence(&mut store, 1, 5_000);
+        let observation_id = request.observation_id.clone();
+        let subject = request.proposal.as_ref().unwrap().subject_digest.clone();
+        let evaluated_ms = u64::try_from(request.evaluated_at.timestamp_millis()).unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg {
+            status_pc: AgProgramCounterV1::SettledObservationRequired,
+            status_attempt: Some(attempt),
+            status_settlement: Some(settlement),
+            ..FakeAg::default()
+        };
+        let outcome = CanonicalRuntime::new_with_external_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut support,
+            &mut ag,
+            profile.clone(),
+        )
+        .unwrap()
+        .run_cycle(request)
+        .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!("external evidence should permit ordinary successor proposal evaluation: {outcome:?}");
+        };
+        let composition = cycle
+            .observation
+            .as_ref()
+            .unwrap()
+            .external_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(composition.claims.len(), 4);
+        assert_eq!(
+            composition.target_occurrence_id,
+            cycle.ag.as_ref().unwrap().occurrence_id
+        );
+
+        let config = ObservationResolverConfigV1 {
+            resolver_id: "nightshift-observation-resolver/v1".into(),
+            default_ttl_ms: 10_000,
+        };
+        let request_at = |now_unix_ms| AgObservationRequestV1 {
+            schema: crate::observation_resolver::AG_OBSERVATION_REQUEST_SCHEMA_V1.into(),
+            key: serde_json::json!({"campaign":"test","occurrence":"test"}),
+            observation: observation_id.clone(),
+            subject: subject.clone(),
+            now_unix_ms,
+        };
+        let current =
+            resolve_observation(&store, &request_at(evaluated_ms + 100), &config).unwrap();
+        assert_eq!(current.status, AgObservationStatusV1::Current);
+        assert_eq!(current.fresh_until_unix_ms, composition.fresh_until_unix_ms);
+        let stale = resolve_observation(
+            &store,
+            &request_at(composition.fresh_until_unix_ms),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(stale.status, AgObservationStatusV1::Stale);
+        assert_eq!(
+            stale.normalized_preconditions, current.normalized_preconditions,
+            "historical evidence retains its honest basis after currentness expires"
+        );
+
+        let mut retarget = cycle_request(2, true);
+        retarget.evaluated_at = cycle
+            .observation
+            .as_ref()
+            .unwrap()
+            .external_evidence
+            .as_ref()
+            .unwrap()
+            .admitted_at;
+        let proposal = retarget.proposal.as_mut().unwrap();
+        let expected_work = ag_executor_plan_identity(&proposal.ag_executor_plan).unwrap();
+        proposal.mode = AgOpenModeV1::Continuation {
+            continuation: serde_json::json!({
+                "occurrence": proposal.occurrence_id,
+                "expected_ag_work": expected_work,
+            }),
+        };
+        let source = cycle
+            .observation
+            .as_ref()
+            .unwrap()
+            .external_evidence
+            .as_ref()
+            .unwrap();
+        retarget.external_evidence = Some(ExternalEvidenceReferenceV1 {
+            schema: EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+            source_observation_id: source.source_observation_id.clone(),
+            source_custody_id: source.source_custody_id.clone(),
+            profile_id: profile.profile_id.clone(),
+        });
+        let retarget = prepare_external_evidence_cycle_request(&store, retarget, &profile).unwrap();
+        let mut second_support = CurrentSupportPort::default();
+        let mut second_ag = FakeAg {
+            status_pc: AgProgramCounterV1::SettledObservationRequired,
+            status_attempt: Some(source.source_attempt_id.clone()),
+            status_settlement: Some(source.source_settlement_id.clone()),
+            ..FakeAg::default()
+        };
+        let error = CanonicalRuntime::new_with_external_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut second_support,
+            &mut second_ag,
+            profile,
+        )
+        .unwrap()
+        .run_cycle(retarget)
+        .unwrap_err();
+        assert!(matches!(error, CanonicalRuntimeError::ExternalEvidence(_)));
+        assert_eq!(second_ag.open_count, 0);
+        assert_eq!(store.list_cycles().unwrap().len(), 2);
+        drop(store);
+        let reopened =
+            CanonicalStore::open_read_only(directory.path().join("nightshift.sqlite")).unwrap();
+        let export = reopened.export_observation(&observation_id).unwrap();
+        assert_eq!(export.matches.len(), 1);
+        assert_eq!(
+            export.matches[0]
+                .observation
+                .external_evidence
+                .as_ref()
+                .unwrap()
+                .composition_id,
+            source.composition_id
+        );
+        let after_restart =
+            resolve_observation(&reopened, &request_at(source.fresh_until_unix_ms), &config)
+                .unwrap();
+        assert_eq!(after_restart.status, AgObservationStatusV1::Stale);
+    }
+
+    #[test]
+    fn routine_continuation_combines_historical_qualification_with_passive_currentness() {
+        use crate::observation_resolver::{
+            resolve_observation, AgObservationRequestV1, AgObservationStatusV1,
+            ObservationResolverConfigV1,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("nightshift.sqlite")).unwrap();
+        let (mut request, _strong_profile, attempt, settlement) =
+            cycle_with_external_evidence(&mut store, 1, 30_000);
+        let strong_reference = request.external_evidence.take().unwrap();
+        let (qualification, _) = store
+            .external_observation_for_composition(&strong_reference.source_observation_id)
+            .unwrap()
+            .unwrap();
+        let key = [7_u8; 32];
+        let passive_time = request.evaluated_at.timestamp_millis() - 200;
+        let handoff = steady_handoff(&qualification, passive_time, &key);
+        let verifier = SteadyStateObservationVerifierV1::for_test(
+            "maude-observer:local",
+            "maude-observer-key:one",
+            "nightshift:local",
+            key,
+        );
+        let verified = verifier.verify(&handoff).unwrap();
+        let passive_custody = store
+            .record_steady_state_observation(&verified, request.evaluated_at)
+            .unwrap();
+        let profile = decision_profile(5_000);
+        request.decision_external_evidence = Some(DecisionRelativeEvidenceReferenceV1 {
+            schema: DECISION_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+            qualification_observation_id: qualification.observation_id.clone(),
+            qualification_custody_id: strong_reference.source_custody_id,
+            steady_state_observation_id: handoff.observation.observation_id.clone(),
+            steady_state_custody_id: passive_custody.custody_id,
+            profile_id: profile.profile_id.clone(),
+        });
+        let mut changed_artifact = request.clone();
+        changed_artifact
+            .proposal
+            .as_mut()
+            .unwrap()
+            .immutable_parameters["plan_document"] = serde_json::Value::String(digest('c'));
+        let refusal = prepare_decision_evidence_cycle_request(&store, changed_artifact, &profile)
+            .unwrap_err();
+        assert!(refusal
+            .to_string()
+            .contains("qualification does not apply to the target PlanDocument"));
+        request.proposal.as_mut().unwrap().immutable_parameters["plan_document"] =
+            serde_json::Value::String(qualification.plan_document_digest.clone());
+        request = prepare_decision_evidence_cycle_request(&store, request, &profile).unwrap();
+        let observation_id = request.observation_id.clone();
+        let subject = request.proposal.as_ref().unwrap().subject_digest.clone();
+        let evaluated_ms = u64::try_from(request.evaluated_at.timestamp_millis()).unwrap();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg {
+            status_pc: AgProgramCounterV1::SettledObservationRequired,
+            status_attempt: Some(attempt),
+            status_settlement: Some(settlement),
+            ..FakeAg::default()
+        };
+        let outcome = CanonicalRuntime::new_with_decision_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut support,
+            &mut ag,
+            profile,
+        )
+        .unwrap()
+        .run_cycle(request)
+        .unwrap();
+        let CycleRunOutcomeV1::AgOccurrenceOpened { cycle } = outcome else {
+            panic!(
+                "qualified artifact plus passive observation should reach ordinary AG evaluation"
+            )
+        };
+        let observation = cycle.observation.as_ref().unwrap();
+        assert_eq!(
+            observation.schema,
+            crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V4
+        );
+        let composition = observation.decision_external_evidence.as_ref().unwrap();
+        assert_eq!(
+            composition.qualification.source_observation_id,
+            qualification.observation_id
+        );
+        assert_eq!(
+            composition.qualification.acquired_at_unix_ms,
+            u64::try_from(qualification.observed_at_unix_ms).unwrap()
+        );
+        assert_eq!(
+            composition.steady_state_observed_at_unix_ms,
+            u64::try_from(passive_time).unwrap()
+        );
+        assert!(!serde_json::to_string(&composition.steady_state_claims)
+            .unwrap()
+            .contains("single_cache_failure_survived"));
+
+        let resolver = ObservationResolverConfigV1 {
+            resolver_id: "nightshift-observation-resolver/v1".into(),
+            default_ttl_ms: 10_000,
+        };
+        let at = |now_unix_ms| AgObservationRequestV1 {
+            schema: crate::observation_resolver::AG_OBSERVATION_REQUEST_SCHEMA_V1.into(),
+            key: serde_json::json!({"campaign":"test","occurrence":"test"}),
+            observation: observation_id.clone(),
+            subject: subject.clone(),
+            now_unix_ms,
+        };
+        assert_eq!(
+            resolve_observation(&store, &at(evaluated_ms + 100), &resolver)
+                .unwrap()
+                .status,
+            AgObservationStatusV1::Current
+        );
+        assert_eq!(
+            resolve_observation(&store, &at(composition.fresh_until_unix_ms), &resolver,)
+                .unwrap()
+                .status,
+            AgObservationStatusV1::Stale
+        );
+    }
+
+    #[test]
+    fn historical_evidence_can_recompose_for_same_target_after_inadequate_observation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("nightshift.sqlite")).unwrap();
+        let (request, profile, attempt, settlement) =
+            cycle_with_external_evidence(&mut store, 1, 180_000);
+        let target_proposal = request.proposal.clone().unwrap();
+        let source_reference = request.external_evidence.clone().unwrap();
+
+        let mut inadequate_support = CurrentSupportPort {
+            standing: SupportStandingV1::Unknown,
+        };
+        let mut first_ag = FakeAg {
+            status_pc: AgProgramCounterV1::SettledObservationRequired,
+            status_attempt: Some(attempt.clone()),
+            status_settlement: Some(settlement.clone()),
+            ..FakeAg::default()
+        };
+        let outcome = CanonicalRuntime::new_with_external_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut inadequate_support,
+            &mut first_ag,
+            profile.clone(),
+        )
+        .unwrap()
+        .run_cycle(request)
+        .unwrap();
+        let CycleRunOutcomeV1::PostureOnly { cycle } = outcome else {
+            panic!("inadequate support must close without creating governed work")
+        };
+        let first_composition = cycle
+            .observation
+            .as_ref()
+            .unwrap()
+            .external_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(first_ag.open_count, 0);
+
+        // A later diagnostic slot may reconsider the same exact governed
+        // successor target after its decision-relative basis is repaired. The
+        // historical evidence is not a one-use authority token and is not
+        // retargeted merely because a new Nightshift observation is composed.
+        let mut reconsideration = cycle_request(2, true);
+        reconsideration.proposal = Some(target_proposal);
+        reconsideration.external_evidence = Some(source_reference);
+        let reconsideration =
+            prepare_external_evidence_cycle_request(&store, reconsideration, &profile).unwrap();
+        let mut current_support = CurrentSupportPort::default();
+        let mut second_ag = FakeAg {
+            status_pc: AgProgramCounterV1::SettledObservationRequired,
+            status_attempt: Some(attempt),
+            status_settlement: Some(settlement),
+            ..FakeAg::default()
+        };
+        let recomposed = CanonicalRuntime::new_with_external_evidence_profile(
+            &mut store,
+            TestNqAdmissionPort,
+            &mut current_support,
+            &mut second_ag,
+            profile,
+        )
+        .unwrap()
+        .compose_external_evidence(&reconsideration)
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            recomposed.target_occurrence_id,
+            first_composition.target_occurrence_id
+        );
+        assert_ne!(recomposed.composition_id, first_composition.composition_id);
+        assert_eq!(second_ag.open_count, 0);
+        assert_eq!(store.list_cycles().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn stale_absent_and_retargeted_external_evidence_refuse_before_new_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("nightshift.sqlite")).unwrap();
+        let error = {
+            let key = [7_u8; 32];
+            let mut request = cycle_request(0, true);
+            let proposal = request.proposal.as_mut().unwrap();
+            proposal.mode = AgOpenModeV1::Continuation {
+                continuation: serde_json::json!({
+                    "occurrence": proposal.occurrence_id,
+                    "expected_ag_work": ag_executor_plan_identity(&proposal.ag_executor_plan).unwrap(),
+                }),
+            };
+            let mut handoff = signed_handoff(
+                &key,
+                "2026-07-27T20:00:00Z",
+                "11111111-1111-4111-8111-111111111111",
+            );
+            handoff.observation.campaign_id = proposal.campaign_id.clone();
+            handoff.observation.subject_digest = proposal.subject_digest.clone();
+            handoff.observation.scope_digest = request.policy.subject.scope.digest.clone();
+            handoff.observation.source_evidence["dispatch"]["subject"] =
+                serde_json::json!(handoff.observation.subject_digest);
+            handoff.observation.source_evidence["dispatch"]["scope"] =
+                serde_json::json!(handoff.observation.scope_digest);
+            reseal_handoff(&mut handoff, &key);
+            let verifier = ExternalObservationVerifierV1::for_test(
+                "maude-observer:local",
+                "maude-observer-key:one",
+                "nightshift:local",
+                key,
+            );
+            let verified = verifier.verify(&handoff).unwrap();
+            let custody = store
+                .record_external_observation(&verified, request.evaluated_at)
+                .unwrap();
+            let profile = external_profile(1_000);
+            request.external_evidence = Some(ExternalEvidenceReferenceV1 {
+                schema: EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+                source_observation_id: handoff.observation.observation_id,
+                source_custody_id: custody.custody_id,
+                profile_id: profile.profile_id.clone(),
+            });
+            prepare_external_evidence_cycle_request(&store, request, &profile).unwrap_err()
+        };
+        assert!(matches!(error, CanonicalRuntimeError::ExternalEvidence(_)));
+        assert!(store.list_cycles().unwrap().is_empty());
+
+        let mut absent = cycle_request(2, true);
+        let profile = external_profile(5_000);
+        absent.proposal.as_mut().unwrap().mode = AgOpenModeV1::Continuation {
+            continuation: serde_json::json!({
+                "occurrence": absent.proposal.as_ref().unwrap().occurrence_id,
+                "expected_ag_work": ag_executor_plan_identity(
+                    &absent.proposal.as_ref().unwrap().ag_executor_plan
+                ).unwrap(),
+            }),
+        };
+        absent.external_evidence = Some(ExternalEvidenceReferenceV1 {
+            schema: EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+            source_observation_id: digest('f'),
+            source_custody_id: digest('e'),
+            profile_id: profile.profile_id.clone(),
+        });
+        assert!(matches!(
+            prepare_external_evidence_cycle_request(&store, absent, &profile),
+            Err(CanonicalRuntimeError::ExternalEvidence(_))
+        ));
+        assert!(store.list_cycles().unwrap().is_empty());
+    }
+
+    #[test]
+    fn authenticated_external_evidence_does_not_bypass_nq_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("nightshift.sqlite")).unwrap();
+        let (request, profile, attempt, settlement) =
+            cycle_with_external_evidence(&mut store, 1, 5_000);
+        let source_id = request
+            .external_evidence
+            .as_ref()
+            .unwrap()
+            .source_observation_id
+            .clone();
+        let mut support = CurrentSupportPort::default();
+        let mut ag = FakeAg {
+            status_pc: AgProgramCounterV1::SettledObservationRequired,
+            status_attempt: Some(attempt),
+            status_settlement: Some(settlement),
+            ..FakeAg::default()
+        };
+        let error = CanonicalRuntime::new_with_external_evidence_profile(
+            &mut store,
+            RefusingNqAdmissionPort,
+            &mut support,
+            &mut ag,
+            profile,
+        )
+        .unwrap()
+        .run_cycle(request)
+        .unwrap_err();
+        assert!(matches!(error, CanonicalRuntimeError::NqAdmission(_)));
+        assert_eq!(store.list_cycles().unwrap().len(), 1);
+        assert!(store
+            .external_observation_for_composition(&source_id)
+            .unwrap()
+            .is_some());
+        assert_eq!(ag.open_count, 0);
     }
 
     #[test]
@@ -2117,6 +3307,8 @@ mod tests {
                 schema: crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V1.into(),
                 observation_id: request.observation_id,
                 source_admissions: Vec::new(),
+                external_evidence: None,
+                decision_external_evidence: None,
                 support,
                 posture,
             };

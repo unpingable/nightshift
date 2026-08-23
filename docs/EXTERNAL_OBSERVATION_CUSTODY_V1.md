@@ -18,7 +18,10 @@ immutable local-Compose executor evidence
     -> immutable Nightshift custody projection
 ```
 
-It does not insert an observation into a canonical Nightshift cycle.
+Custody by itself does not insert an observation into a canonical Nightshift
+cycle. The separate, deployment-profiled composition contract may later admit
+one exact custodied record; see
+[`EXTERNAL_EVIDENCE_COMPOSITION_V1.md`](EXTERNAL_EVIDENCE_COMPOSITION_V1.md).
 
 ## Owner and producer
 
@@ -90,7 +93,8 @@ Nightshift persists the observation and custody receipt in
 - Restart/reopen recovers the exact record.
 - Historical occurrences without a candidate remain absent; no backfill is
   inferred.
-- A successor occurrence needs its own exact candidate and handoff.
+- Custody never moves to a successor occurrence. A separately composed
+  successor observation retains the exact historical source coordinates.
 
 ## Read projection and evidence age
 
@@ -126,10 +130,16 @@ The candidate and custody record establish neither:
 - Docket execution permission;
 - incident closure or successful recovery now.
 
-No canonical cycle code reads this table. A later campaign may define an
-explicit composition contract by which an appropriate source observation is
-used alongside NQ substrate testimony and present support. Until then, the
-candidate remains inspectable source evidence, honestly unpromoted.
+Canonical cycle code does not treat this table as currentness. The separately
+versioned composition boundary resolves one exact record, checks a
+deployment-owned profile and predecessor relation, and embeds the resulting
+receipt in `nightshift.observation_record.v3`. Unreferenced candidates remain
+inspectable source evidence, honestly unpromoted.
+
+A closed read-only successor source is documented separately in
+[`QUALIFICATION_AND_STEADY_STATE_EVIDENCE_V1.md`](QUALIFICATION_AND_STEADY_STATE_EVIDENCE_V1.md).
+Its distinct schema and custody slot cannot impersonate or refresh this
+effectful qualification record.
 
 ## Commands
 

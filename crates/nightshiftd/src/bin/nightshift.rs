@@ -16,6 +16,7 @@ use nightshiftd::ag_port::{
 use nightshiftd::authoring_context::AuthoringContextQueryV1;
 use nightshiftd::authoring_custody::{MaudeAuthoringContextHandoffV1, MaudeCustodyVerifierV1};
 use nightshiftd::canonical_runtime::{
+    prepare_decision_evidence_cycle_request, prepare_external_evidence_cycle_request,
     CanonicalCycleRequestV1, CanonicalRuntime, CycleRunOutcomeV1,
 };
 use nightshiftd::canonical_store::{
@@ -24,11 +25,15 @@ use nightshiftd::canonical_store::{
 use nightshiftd::currentness::{
     CommandPresentEvidencePortV1, PresentEvidencePortV1, PresentEvidenceQueryV1, QualifiedSupportV1,
 };
+use nightshiftd::external_evidence_composition::ExternalEvidenceProfileV1;
 use nightshiftd::external_observation::{
     ExternalObservationHandoffV1, ExternalObservationQueryV1, ExternalObservationVerifierV1,
 };
 use nightshiftd::nq_admission::{
     CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenanceV1, NqAdmissionQueryV1,
+};
+use nightshiftd::steady_state_evidence::{
+    SteadyStateEvidenceProfileV1, SteadyStateObservationHandoffV1, SteadyStateObservationVerifierV1,
 };
 
 const MAX_EXACT_INPUT_BYTES: u64 = 16 * 1024 * 1024;
@@ -77,6 +82,21 @@ enum ExternalObservationCommand {
         #[arg(long)]
         received_at: String,
     },
+    /// Authenticate and retain one passive, non-effectful observation.
+    ImportSteadyState {
+        #[arg(long)]
+        handoff: PathBuf,
+        #[arg(long)]
+        credential: PathBuf,
+        #[arg(long)]
+        producer_principal_id: String,
+        #[arg(long)]
+        producer_key_id: String,
+        #[arg(long)]
+        nightshift_runtime_id: String,
+        #[arg(long)]
+        received_at: String,
+    },
     /// Read-only lookup. Select exactly one identity form.
     Export {
         #[arg(long)]
@@ -91,6 +111,32 @@ enum ExternalObservationCommand {
         evaluated_at_unix_ms: i64,
         #[arg(long)]
         evidence_ttl_ms: u64,
+    },
+    /// Deterministically bind one sealed base cycle request to the exact
+    /// authenticated source and deployment-owned composition profile. This
+    /// writes no runtime state and performs no currentness or AG decision.
+    PrepareCycle {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        profile: PathBuf,
+    },
+    /// Bind one historical qualification plus one passive observation to an
+    /// exact successor request without making a currentness decision.
+    PrepareDecisionCycle {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        profile: PathBuf,
+    },
+    /// Owner-produced absent/current/stale basis for one passive source.
+    SteadyStateBasis {
+        #[arg(long)]
+        qualification_observation_id: String,
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        evaluated_at_unix_ms: u64,
     },
 }
 
@@ -233,6 +279,13 @@ struct CycleRunArguments {
     maude_session_issuer_key_id: Option<String>,
     #[arg(long)]
     nightshift_runtime_id: Option<String>,
+    /// Deployment-owned profile required only when the sealed cycle request
+    /// references authenticated external application evidence.
+    #[arg(long)]
+    external_evidence_profile: Option<PathBuf>,
+    /// Deployment-owned decision-relative qualification + passive profile.
+    #[arg(long)]
+    decision_evidence_profile: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
     format: OutputFormat,
 }
@@ -311,6 +364,27 @@ fn run_external_observation_command(
             let mut store = CanonicalStore::open(store_path)?;
             write_exact(&store.record_external_observation(&verified, received_at)?)
         }
+        ExternalObservationCommand::ImportSteadyState {
+            handoff,
+            credential,
+            producer_principal_id,
+            producer_key_id,
+            nightshift_runtime_id,
+            received_at,
+        } => {
+            let handoff: SteadyStateObservationHandoffV1 = read_exact_canonical(&handoff)?;
+            let verifier = SteadyStateObservationVerifierV1::from_key_file(
+                producer_principal_id,
+                producer_key_id,
+                nightshift_runtime_id,
+                &credential,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let verified = verifier.verify(&handoff).map_err(anyhow::Error::msg)?;
+            let received_at = parse_time(&received_at)?;
+            let mut store = CanonicalStore::open(store_path)?;
+            write_exact(&store.record_steady_state_observation(&verified, received_at)?)
+        }
         ExternalObservationCommand::Export {
             observation_id,
             campaign_id,
@@ -343,6 +417,35 @@ fn run_external_observation_command(
                 evidence_ttl_ms,
             )?)
         }
+        ExternalObservationCommand::PrepareCycle { request, profile } => {
+            let request: CanonicalCycleRequestV1 = read_exact_canonical(&request)?;
+            let profile: ExternalEvidenceProfileV1 = read_exact_canonical(&profile)?;
+            let store = CanonicalStore::open_read_only(store_path)?;
+            write_exact(&prepare_external_evidence_cycle_request(
+                &store, request, &profile,
+            )?)
+        }
+        ExternalObservationCommand::PrepareDecisionCycle { request, profile } => {
+            let request: CanonicalCycleRequestV1 = read_exact_canonical(&request)?;
+            let profile: SteadyStateEvidenceProfileV1 = read_exact_canonical(&profile)?;
+            let store = CanonicalStore::open_read_only(store_path)?;
+            write_exact(&prepare_decision_evidence_cycle_request(
+                &store, request, &profile,
+            )?)
+        }
+        ExternalObservationCommand::SteadyStateBasis {
+            qualification_observation_id,
+            profile,
+            evaluated_at_unix_ms,
+        } => {
+            let profile: SteadyStateEvidenceProfileV1 = read_exact_canonical(&profile)?;
+            let store = CanonicalStore::open_read_only(store_path)?;
+            write_exact(&store.steady_state_reobservation_basis(
+                &qualification_observation_id,
+                &profile,
+                evaluated_at_unix_ms,
+            )?)
+        }
     }
 }
 
@@ -368,6 +471,8 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 maude_session_issuer_principal_id,
                 maude_session_issuer_key_id,
                 nightshift_runtime_id,
+                external_evidence_profile,
+                decision_evidence_profile,
                 format,
             } = *arguments;
             let mut request: CanonicalCycleRequestV1 = read_exact(&request)?;
@@ -451,6 +556,32 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 None
             };
             let has_proposal = request.proposal.is_some();
+            let external_profile = match (
+                request.external_evidence.is_some(),
+                external_evidence_profile,
+            ) {
+                (true, Some(path)) => {
+                    Some(read_exact_canonical::<ExternalEvidenceProfileV1>(&path)?)
+                }
+                (true, None) => bail!("external evidence requires --external-evidence-profile"),
+                (false, Some(_)) => {
+                    bail!("external-evidence profile supplied without an exact evidence reference")
+                }
+                (false, None) => None,
+            };
+            let decision_profile = match (
+                request.decision_external_evidence.is_some(),
+                decision_evidence_profile,
+            ) {
+                (true, Some(path)) => {
+                    Some(read_exact_canonical::<SteadyStateEvidenceProfileV1>(&path)?)
+                }
+                (true, None) => bail!("decision evidence requires --decision-evidence-profile"),
+                (false, Some(_)) => {
+                    bail!("decision-evidence profile supplied without an exact evidence reference")
+                }
+                (false, None) => None,
+            };
             let mut store = CanonicalStore::open(store_path)?;
             let mut support = CommandPresentEvidencePortV1::new(present_evidence_resolver)
                 .map_err(anyhow::Error::msg)?;
@@ -480,7 +611,26 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 let mut ag =
                     AgLoopCtlPortV1::new(program, database, resolver, resolver_id, profile)
                         .map_err(anyhow::Error::msg)?;
-                let mut runtime = CanonicalRuntime::new(&mut store, nq, &mut support, &mut ag);
+                let mut runtime = match (external_profile, decision_profile) {
+                    (Some(_), Some(_)) => bail!(
+                        "cycle cannot configure legacy and decision-relative evidence together"
+                    ),
+                    (Some(profile), None) => CanonicalRuntime::new_with_external_evidence_profile(
+                        &mut store,
+                        nq,
+                        &mut support,
+                        &mut ag,
+                        profile,
+                    )?,
+                    (None, Some(profile)) => CanonicalRuntime::new_with_decision_evidence_profile(
+                        &mut store,
+                        nq,
+                        &mut support,
+                        &mut ag,
+                        profile,
+                    )?,
+                    (None, None) => CanonicalRuntime::new(&mut store, nq, &mut support, &mut ag),
+                };
                 match custody_verifier.as_ref() {
                     Some(verifier) => {
                         runtime.run_cycle_with_authoring_custody(request, verifier)?
@@ -755,7 +905,7 @@ fn read_exact_canonical<T: DeserializeOwned + Serialize>(path: &Path) -> anyhow:
     let value = decode_exact(&actual, path)?;
     let expected = serde_jcs::to_vec(&value).context("canonicalize exact input")?;
     if actual != expected {
-        bail!("external-observation handoff must be exact canonical JSON");
+        bail!("input must be exact canonical JSON: {}", path.display());
     }
     Ok(value)
 }

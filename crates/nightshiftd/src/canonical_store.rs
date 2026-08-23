@@ -26,17 +26,28 @@ use crate::currentness::{
     QualifiedSupportV1, RecurrenceLatestAdmissibleV1, SupportStandingV1, TemporalHoldExpiryV1,
 };
 use crate::diagnostic_posture::{Headline, OperationalPosture};
+use crate::external_evidence_composition::{
+    ComposedExternalEvidenceV1, ExternalEvidenceReferenceV1, EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1,
+};
 use crate::external_observation::{
     evidence_age, ExternalObservationCustodyProvenanceV1, ExternalObservationExportMatchV1,
     ExternalObservationExportV1, ExternalObservationQueryV1, LocalComposeWorldObservationV1,
     VerifiedExternalObservationHandoffV1, EXTERNAL_OBSERVATION_EXPORT_SCHEMA_V1,
 };
 use crate::nq_admission::{validate_admission_cover, NqAdmissionProvenanceV1};
+use crate::steady_state_evidence::{
+    ArtifactQualificationEvidenceV1, ComposedDecisionRelativeEvidenceV1,
+    DecisionRelativeEvidenceReferenceV1, LocalComposeSteadyStateObservationV1,
+    SteadyStateEvidenceProfileV1, SteadyStateObservationCustodyV1, SteadyStateReobservationBasisV1,
+    VerifiedSteadyStateObservationHandoffV1, DECISION_EVIDENCE_REFERENCE_SCHEMA_V1,
+};
 
 pub const SLOT_SCHEMA_V1: &str = "nightshift.recurrence_slot.v1";
 pub const CYCLE_SCHEMA_V1: &str = "nightshift.observation_cycle.v1";
 pub const OBSERVATION_RECORD_SCHEMA_V1: &str = "nightshift.observation_record.v1";
 pub const OBSERVATION_RECORD_SCHEMA_V2: &str = "nightshift.observation_record.v2";
+pub const OBSERVATION_RECORD_SCHEMA_V3: &str = "nightshift.observation_record.v3";
+pub const OBSERVATION_RECORD_SCHEMA_V4: &str = "nightshift.observation_record.v4";
 pub const OBSERVATION_RECORD_SCHEMA: &str = OBSERVATION_RECORD_SCHEMA_V2;
 pub const TYPED_INTENT_SCHEMA_V2: &str = "nightshift.typed_coarse_intent.v2";
 pub const AG_REFERENCE_SCHEMA_V1: &str = "nightshift.ag_occurrence_reference.v1";
@@ -361,6 +372,16 @@ pub struct ObservationRecordV1 {
     /// diagnostic. This establishes evidence eligibility only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_admissions: Vec<NqAdmissionProvenanceV1>,
+    /// Optional Nightshift-owned admission of authenticated application/world
+    /// evidence. V3 alone may carry this relation. It constrains the
+    /// observation's freshness horizon but is neither NQ testimony nor
+    /// authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_evidence: Option<ComposedExternalEvidenceV1>,
+    /// Decision-relative combination of historical exact-artifact
+    /// qualification and a separately current passive observation. V4 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_external_evidence: Option<ComposedDecisionRelativeEvidenceV1>,
     pub support: QualifiedSupportV1,
     pub posture: OperationalPosture,
 }
@@ -371,15 +392,90 @@ impl ObservationRecordV1 {
         cycle: &ObservationCycleId,
     ) -> Result<(), CanonicalStoreError> {
         match self.schema.as_str() {
-            OBSERVATION_RECORD_SCHEMA_V1 if self.source_admissions.is_empty() => {}
+            OBSERVATION_RECORD_SCHEMA_V1
+                if self.source_admissions.is_empty()
+                    && self.external_evidence.is_none()
+                    && self.decision_external_evidence.is_none() => {}
             OBSERVATION_RECORD_SCHEMA_V1 => {
                 return Err(CanonicalStoreError::Invalid(
                     "v1 observation record cannot carry NQ admission provenance".into(),
                 ));
             }
-            OBSERVATION_RECORD_SCHEMA_V2 => {
+            OBSERVATION_RECORD_SCHEMA_V2
+                if self.external_evidence.is_none()
+                    && self.decision_external_evidence.is_none() =>
+            {
                 validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
                     .map_err(CanonicalStoreError::Invalid)?
+            }
+            OBSERVATION_RECORD_SCHEMA_V2 => {
+                return Err(CanonicalStoreError::Invalid(
+                    "v2 observation record cannot carry composed external evidence".into(),
+                ));
+            }
+            OBSERVATION_RECORD_SCHEMA_V3 => {
+                if self.decision_external_evidence.is_some() {
+                    return Err(CanonicalStoreError::Invalid(
+                        "v3 observation record cannot carry decision-relative evidence".into(),
+                    ));
+                }
+                validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
+                    .map_err(CanonicalStoreError::Invalid)?;
+                let composition = self.external_evidence.as_ref().ok_or_else(|| {
+                    CanonicalStoreError::Invalid(
+                        "v3 observation record requires composed external evidence".into(),
+                    )
+                })?;
+                composition
+                    .validate()
+                    .map_err(CanonicalStoreError::Invalid)?;
+                if composition
+                    .canonical_observation_id()
+                    .map_err(CanonicalStoreError::Invalid)?
+                    != self.observation_id
+                    || composition.subject_id != self.posture.policy.subject.id
+                    || composition.scope_digest != self.posture.policy.subject.scope.digest
+                    || composition
+                        .admitted_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                        != self.posture.evaluated_at
+                {
+                    return Err(CanonicalStoreError::Invalid(
+                        "composed external evidence does not bind the canonical observation".into(),
+                    ));
+                }
+            }
+            OBSERVATION_RECORD_SCHEMA_V4 => {
+                if self.external_evidence.is_some() {
+                    return Err(CanonicalStoreError::Invalid(
+                        "v4 observation record cannot carry legacy single-source evidence".into(),
+                    ));
+                }
+                validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
+                    .map_err(CanonicalStoreError::Invalid)?;
+                let composition = self.decision_external_evidence.as_ref().ok_or_else(|| {
+                    CanonicalStoreError::Invalid(
+                        "v4 observation record requires decision-relative evidence".into(),
+                    )
+                })?;
+                composition
+                    .validate()
+                    .map_err(CanonicalStoreError::Invalid)?;
+                if composition
+                    .canonical_observation_id()
+                    .map_err(CanonicalStoreError::Invalid)?
+                    != self.observation_id
+                    || composition.subject_id != self.posture.policy.subject.id
+                    || composition.scope_digest != self.posture.policy.subject.scope.digest
+                    || composition
+                        .admitted_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                        != self.posture.evaluated_at
+                {
+                    return Err(CanonicalStoreError::Invalid(
+                        "decision-relative evidence does not bind canonical observation".into(),
+                    ));
+                }
             }
             _ => {
                 return Err(CanonicalStoreError::Invalid(
@@ -1237,6 +1333,23 @@ impl CanonicalStore {
             ) STRICT;
             CREATE INDEX IF NOT EXISTS canonical_external_observations_by_governed_occurrence
             ON canonical_external_observations(campaign_id, occurrence_id);
+            CREATE TABLE IF NOT EXISTS canonical_steady_state_observations (
+                observation_id TEXT PRIMARY KEY,
+                handoff_id TEXT NOT NULL UNIQUE,
+                custody_id TEXT NOT NULL UNIQUE,
+                qualification_observation_id TEXT NOT NULL,
+                plan_document_digest TEXT NOT NULL,
+                compilation_id TEXT NOT NULL,
+                evidence_receipt TEXT NOT NULL UNIQUE,
+                observed_at_unix_ms INTEGER NOT NULL,
+                observation_json TEXT NOT NULL,
+                custody_json TEXT NOT NULL,
+                received_at TEXT NOT NULL
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS canonical_steady_state_by_qualification
+            ON canonical_steady_state_observations(
+                qualification_observation_id, observed_at_unix_ms
+            );
             ",
         )?;
         // Narrow migration: older databases predate the queryable
@@ -1424,6 +1537,9 @@ impl CanonicalStore {
         now: DateTime<Utc>,
     ) -> Result<ObservationCycleV1, CanonicalStoreError> {
         observation.validate_for_cycle(&lease.cycle_id)?;
+        if let Some(composition) = &observation.external_evidence {
+            self.validate_external_composition_source(composition)?;
+        }
         if attention.source_posture_id != observation.posture.posture_id {
             return Err(CanonicalStoreError::Invalid(
                 "attention record does not bind the exact posture".into(),
@@ -2167,6 +2283,189 @@ impl CanonicalStore {
         Ok(custody)
     }
 
+    /// Persist one authenticated read-only steady-state observation. Unlike
+    /// the qualification custody slot, multiple exact acquisitions may bind
+    /// one qualification; observation/evidence identities remain unique.
+    pub fn record_steady_state_observation(
+        &mut self,
+        verified: &VerifiedSteadyStateObservationHandoffV1,
+        received_at: DateTime<Utc>,
+    ) -> Result<SteadyStateObservationCustodyV1, CanonicalStoreError> {
+        let handoff = verified.handoff();
+        if received_at < handoff.created_at
+            || handoff.observation.observed_at_unix_ms > handoff.created_at.timestamp_millis()
+        {
+            return Err(CanonicalStoreError::Invalid(
+                "steady-state custody time precedes source or handoff".into(),
+            ));
+        }
+        let custody = SteadyStateObservationCustodyV1::mint(verified, received_at)
+            .map_err(CanonicalStoreError::Invalid)?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT observation_json, custody_json
+                 FROM canonical_steady_state_observations
+                 WHERE observation_id=?1 OR handoff_id=?2 OR evidence_receipt=?3",
+                params![
+                    &handoff.observation.observation_id,
+                    &handoff.handoff_id,
+                    &handoff.observation.evidence_receipt,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((observation_json, custody_json)) = existing {
+            let observation =
+                serde_json::from_str::<LocalComposeSteadyStateObservationV1>(&observation_json)?;
+            let existing_custody =
+                serde_json::from_str::<SteadyStateObservationCustodyV1>(&custody_json)?;
+            observation
+                .validate()
+                .map_err(CanonicalStoreError::Invalid)?;
+            existing_custody
+                .validate()
+                .map_err(CanonicalStoreError::Invalid)?;
+            if observation == handoff.observation
+                && existing_custody.handoff_id == custody.handoff_id
+                && existing_custody.producer_principal_id == custody.producer_principal_id
+                && existing_custody.producer_key_id == custody.producer_key_id
+                && existing_custody.target_runtime_id == custody.target_runtime_id
+            {
+                return Ok(existing_custody);
+            }
+            return Err(CanonicalStoreError::ExternalObservationConflict(
+                "steady-state observation, handoff, or evidence receipt is already bound".into(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO canonical_steady_state_observations
+             (observation_id, handoff_id, custody_id, qualification_observation_id,
+              plan_document_digest, compilation_id, evidence_receipt,
+              observed_at_unix_ms, observation_json, custody_json, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                &handoff.observation.observation_id,
+                &handoff.handoff_id,
+                &custody.custody_id,
+                &handoff.observation.qualification_observation_id,
+                &handoff.observation.plan_document_digest,
+                &handoff.observation.compilation_id,
+                &handoff.observation.evidence_receipt,
+                handoff.observation.observed_at_unix_ms,
+                canonical_json(&handoff.observation)?,
+                canonical_json(&custody)?,
+                timestamp(received_at),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(custody)
+    }
+
+    pub(crate) fn steady_state_observation_for_composition(
+        &self,
+        observation_id: &str,
+    ) -> Result<
+        Option<(
+            LocalComposeSteadyStateObservationV1,
+            SteadyStateObservationCustodyV1,
+        )>,
+        CanonicalStoreError,
+    > {
+        require_digest("steady-state observation_id", observation_id)?;
+        let row = self
+            .connection
+            .query_row(
+                "SELECT observation_json, custody_json
+                 FROM canonical_steady_state_observations WHERE observation_id=?1",
+                [observation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((observation_json, custody_json)) = row else {
+            return Ok(None);
+        };
+        let observation =
+            serde_json::from_str::<LocalComposeSteadyStateObservationV1>(&observation_json)?;
+        let custody = serde_json::from_str::<SteadyStateObservationCustodyV1>(&custody_json)?;
+        observation
+            .validate()
+            .map_err(CanonicalStoreError::Replay)?;
+        custody.validate().map_err(CanonicalStoreError::Replay)?;
+        if custody.observation_id != observation.observation_id
+            || custody.qualification_observation_id != observation.qualification_observation_id
+            || custody.plan_document_digest != observation.plan_document_digest
+            || custody.compilation_id != observation.compilation_id
+            || custody.evidence_receipt != observation.evidence_receipt
+        {
+            return Err(CanonicalStoreError::Replay(
+                "steady-state observation custody projection is contradictory".into(),
+            ));
+        }
+        Ok(Some((observation, custody)))
+    }
+
+    fn latest_steady_state_for_qualification(
+        &self,
+        qualification_observation_id: &str,
+    ) -> Result<
+        Option<(
+            LocalComposeSteadyStateObservationV1,
+            SteadyStateObservationCustodyV1,
+        )>,
+        CanonicalStoreError,
+    > {
+        require_digest("qualification_observation_id", qualification_observation_id)?;
+        let observation_id = self
+            .connection
+            .query_row(
+                "SELECT observation_id FROM canonical_steady_state_observations
+                 WHERE qualification_observation_id=?1
+                 ORDER BY observed_at_unix_ms DESC, observation_id DESC LIMIT 1",
+                [qualification_observation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        match observation_id {
+            Some(observation_id) => self.steady_state_observation_for_composition(&observation_id),
+            None => Ok(None),
+        }
+    }
+
+    pub fn steady_state_reobservation_basis(
+        &self,
+        qualification_observation_id: &str,
+        profile: &SteadyStateEvidenceProfileV1,
+        evaluated_at_unix_ms: u64,
+    ) -> Result<SteadyStateReobservationBasisV1, CanonicalStoreError> {
+        profile.validate().map_err(CanonicalStoreError::Invalid)?;
+        let (source, source_custody) = self
+            .external_observation_for_composition(qualification_observation_id)?
+            .ok_or_else(|| {
+                CanonicalStoreError::Invalid(
+                    "qualification source is absent from authenticated canonical custody".into(),
+                )
+            })?;
+        let qualification = ArtifactQualificationEvidenceV1::from_source(
+            &profile.qualification_profile,
+            &source,
+            &source_custody,
+        )
+        .map_err(CanonicalStoreError::Invalid)?;
+        let prior = self.latest_steady_state_for_qualification(qualification_observation_id)?;
+        SteadyStateReobservationBasisV1::create(
+            profile,
+            &qualification,
+            prior
+                .as_ref()
+                .map(|(observation, custody)| (observation, custody)),
+            evaluated_at_unix_ms,
+        )
+        .map_err(CanonicalStoreError::Invalid)
+    }
+
     /// Read-only exact candidate/custody lookup with an explicit age
     /// projection. `fresh_at_evaluation` says only that source evidence falls
     /// inside this caller-supplied age window; it is not Nightshift currentness.
@@ -2278,6 +2577,181 @@ impl CanonicalStore {
             query,
             matches,
         })
+    }
+
+    /// Owner-internal exact lookup used by composition. Unlike the export
+    /// path, this returns no caller-selected age classification; eligibility
+    /// and currentness policy belong to the composition profile and canonical
+    /// resolver respectively.
+    pub(crate) fn external_observation_for_composition(
+        &self,
+        observation_id: &str,
+    ) -> Result<
+        Option<(
+            LocalComposeWorldObservationV1,
+            ExternalObservationCustodyProvenanceV1,
+        )>,
+        CanonicalStoreError,
+    > {
+        require_digest("external observation_id", observation_id)?;
+        let row = self
+            .connection
+            .query_row(
+                "SELECT observation_json, custody_json
+                 FROM canonical_external_observations WHERE observation_id=?1",
+                [observation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((observation_json, custody_json)) = row else {
+            return Ok(None);
+        };
+        let observation =
+            serde_json::from_str::<LocalComposeWorldObservationV1>(&observation_json)?;
+        let custody =
+            serde_json::from_str::<ExternalObservationCustodyProvenanceV1>(&custody_json)?;
+        observation
+            .validate()
+            .map_err(CanonicalStoreError::Replay)?;
+        custody.validate().map_err(CanonicalStoreError::Replay)?;
+        if observation.observation_id != custody.observation_id
+            || observation.campaign_id != custody.campaign_id
+            || observation.occurrence_id != custody.occurrence_id
+            || observation.exact_work_id != custody.exact_work_id
+            || observation.attempt_id != custody.attempt_id
+            || observation.settlement_id != custody.settlement_id
+            || observation.executor_evidence_receipt != custody.executor_evidence_receipt
+        {
+            return Err(CanonicalStoreError::Replay(
+                "external-observation composition source is contradictory".into(),
+            ));
+        }
+        Ok(Some((observation, custody)))
+    }
+
+    /// Every durable use of one exact source observation. This prevents a
+    /// historical predecessor observation from being silently rebound to a
+    /// different successor occurrence.
+    pub(crate) fn external_compositions_for_source(
+        &self,
+        source_observation_id: &str,
+    ) -> Result<Vec<ComposedExternalEvidenceV1>, CanonicalStoreError> {
+        require_digest("source_observation_id", source_observation_id)?;
+        let mut statement = self.connection.prepare(
+            "SELECT snapshot_json FROM canonical_observation_cycles
+             WHERE observation_id IS NOT NULL ORDER BY cycle_id",
+        )?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut matches = Vec::new();
+        for json in rows {
+            let cycle: ObservationCycleV1 = serde_json::from_str(&json)?;
+            cycle.validate()?;
+            if let Some(composition) = cycle
+                .observation
+                .as_ref()
+                .and_then(|observation| observation.external_evidence.as_ref())
+                .filter(|composition| composition.source_observation_id == source_observation_id)
+            {
+                matches.push(composition.clone());
+            }
+        }
+        Ok(matches)
+    }
+
+    /// Re-resolve and recompose the exact source record. A persisted
+    /// composition is contradictory if its custody source disappeared,
+    /// changed, or no longer reproduces the same owner-produced receipt.
+    pub(crate) fn validate_external_composition_source(
+        &self,
+        composition: &ComposedExternalEvidenceV1,
+    ) -> Result<(), CanonicalStoreError> {
+        composition
+            .validate()
+            .map_err(CanonicalStoreError::Invalid)?;
+        let (observation, custody) = self
+            .external_observation_for_composition(&composition.source_observation_id)?
+            .ok_or_else(|| {
+                CanonicalStoreError::Replay("composed external-evidence source is absent".into())
+            })?;
+        let rebuilt = ComposedExternalEvidenceV1::compose(
+            &ExternalEvidenceReferenceV1 {
+                schema: EXTERNAL_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+                source_observation_id: composition.source_observation_id.clone(),
+                source_custody_id: composition.source_custody_id.clone(),
+                profile_id: composition.profile.profile_id.clone(),
+            },
+            &composition.profile,
+            &observation,
+            &custody,
+            composition.admitted_at,
+            &composition.target_campaign_id,
+            &composition.target_occurrence_id,
+            &composition.subject_id,
+            &composition.subject_digest,
+            &composition.scope_digest,
+        )
+        .map_err(CanonicalStoreError::Replay)?;
+        if rebuilt != *composition {
+            return Err(CanonicalStoreError::Replay(
+                "composed external evidence does not reproduce from canonical custody".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reconstruct a decision-relative composition from both independently
+    /// custodied sources. Neither historical qualification nor passive
+    /// evidence can remain applicable if its exact source projection changes.
+    pub(crate) fn validate_decision_composition_source(
+        &self,
+        composition: &ComposedDecisionRelativeEvidenceV1,
+    ) -> Result<(), CanonicalStoreError> {
+        composition
+            .validate()
+            .map_err(CanonicalStoreError::Invalid)?;
+        let (qualification, qualification_custody) = self
+            .external_observation_for_composition(&composition.qualification.source_observation_id)?
+            .ok_or_else(|| {
+                CanonicalStoreError::Replay(
+                    "decision composition qualification source is absent".into(),
+                )
+            })?;
+        let (steady, steady_custody) = self
+            .steady_state_observation_for_composition(&composition.steady_state_observation_id)?
+            .ok_or_else(|| {
+                CanonicalStoreError::Replay("decision composition passive source is absent".into())
+            })?;
+        let reference = DecisionRelativeEvidenceReferenceV1 {
+            schema: DECISION_EVIDENCE_REFERENCE_SCHEMA_V1.into(),
+            qualification_observation_id: qualification.observation_id.clone(),
+            qualification_custody_id: qualification_custody.custody_id.clone(),
+            steady_state_observation_id: steady.observation_id.clone(),
+            steady_state_custody_id: steady_custody.custody_id.clone(),
+            profile_id: composition.profile.profile_id.clone(),
+        };
+        let rebuilt = ComposedDecisionRelativeEvidenceV1::compose(
+            &reference,
+            &composition.profile,
+            &qualification,
+            &qualification_custody,
+            &steady,
+            &steady_custody,
+            composition.admitted_at,
+            &composition.target_campaign_id,
+            &composition.target_occurrence_id,
+            &composition.subject_id,
+            &composition.subject_digest,
+            &composition.scope_digest,
+        )
+        .map_err(CanonicalStoreError::Replay)?;
+        if rebuilt != *composition {
+            return Err(CanonicalStoreError::Replay(
+                "decision composition does not reproduce from exact custody".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Read-only export of every persisted observation with one exact
@@ -3183,6 +3657,8 @@ mod tests {
             schema: OBSERVATION_RECORD_SCHEMA_V1.into(),
             observation_id: observation_id.into(),
             source_admissions: Vec::new(),
+            external_evidence: None,
+            decision_external_evidence: None,
             support,
             posture,
         }

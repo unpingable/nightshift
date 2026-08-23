@@ -38,14 +38,14 @@ const REQUIRED_NONCLAIMS: [&str; 4] = [
     "observation candidate cannot authorize or execute work",
 ];
 
-fn require_token(name: &str, value: &str) -> Result<(), String> {
+pub(crate) fn require_token(name: &str, value: &str) -> Result<(), String> {
     if value.trim().is_empty() || value.chars().any(char::is_whitespace) {
         return Err(format!("{name} must be a non-empty token"));
     }
     Ok(())
 }
 
-fn require_digest(name: &str, value: &str) -> Result<(), String> {
+pub(crate) fn require_digest(name: &str, value: &str) -> Result<(), String> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         return Err(format!("{name} must use sha256:<64 lowercase hex>"));
     };
@@ -59,7 +59,7 @@ fn require_digest(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn semantic_id<T: Serialize>(value: &T, field: &str) -> Result<String, String> {
+pub(crate) fn semantic_id<T: Serialize>(value: &T, field: &str) -> Result<String, String> {
     let mut value = serde_json::to_value(value).map_err(|error| error.to_string())?;
     let object = value
         .as_object_mut()
@@ -70,7 +70,7 @@ fn semantic_id<T: Serialize>(value: &T, field: &str) -> Result<String, String> {
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
-fn authentication_preimage<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
+pub(crate) fn authentication_preimage<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     let mut value = serde_json::to_value(value).map_err(|error| error.to_string())?;
     value
         .as_object_mut()
@@ -79,7 +79,7 @@ fn authentication_preimage<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     serde_jcs::to_vec(&value).map_err(|error| error.to_string())
 }
 
-fn hash_domain(domain: &str, payload: &[u8]) -> String {
+pub(crate) fn hash_domain(domain: &str, payload: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"ag-ng\0digest\0v1\0");
     hasher.update((domain.len() as u128).to_be_bytes());
@@ -113,7 +113,7 @@ fn hmac_sha256(key: &[u8], domain: &[u8], payload: &[u8]) -> [u8; 32] {
     outer.finalize().into()
 }
 
-fn hmac_text(key: &[u8], domain: &[u8], payload: &[u8]) -> String {
+pub(crate) fn hmac_text(key: &[u8], domain: &[u8], payload: &[u8]) -> String {
     let mut text = "hmac-sha256:".to_owned();
     for byte in hmac_sha256(key, domain, payload) {
         use std::fmt::Write as _;
@@ -122,7 +122,7 @@ fn hmac_text(key: &[u8], domain: &[u8], payload: &[u8]) -> String {
     text
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
@@ -132,7 +132,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
-fn read_protected_key(path: &Path) -> Result<[u8; MAX_CREDENTIAL_BYTES], String> {
+pub(crate) fn read_protected_key(path: &Path) -> Result<[u8; MAX_CREDENTIAL_BYTES], String> {
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -810,7 +810,7 @@ pub fn evidence_age(observed_at: i64, evaluated_at: i64, ttl_ms: u64) -> Evidenc
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::canonical_store::{CanonicalStore, CanonicalStoreError};
     use std::sync::{Arc, Barrier};
@@ -820,7 +820,7 @@ mod tests {
         format!("sha256:{:x}", Sha256::digest(label.as_bytes()))
     }
 
-    fn signed_handoff(
+    pub(crate) fn signed_handoff(
         key: &[u8; 32],
         created_at: &str,
         occurrence: &str,
@@ -953,7 +953,7 @@ mod tests {
         handoff
     }
 
-    fn reseal_handoff(handoff: &mut ExternalObservationHandoffV1, key: &[u8; 32]) {
+    pub(crate) fn reseal_handoff(handoff: &mut ExternalObservationHandoffV1, key: &[u8; 32]) {
         let mut evidence_preimage = handoff.observation.source_evidence.clone();
         evidence_preimage
             .as_object_mut()

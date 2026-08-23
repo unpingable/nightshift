@@ -402,7 +402,7 @@ fn the_checker_accepts_a_benign_collision() {
     struct PhantomState {
         condition: ConditionAxis,
         delivery: DeliveryStanding,
-        phantom: bool,
+        _phantom: bool,
     }
     let canonical = canonical_posture();
     let mut states = Vec::new();
@@ -416,7 +416,7 @@ fn the_checker_accepts_a_benign_collision() {
                     PhantomState {
                         condition,
                         delivery,
-                        phantom,
+                        _phantom: phantom,
                     },
                 ));
             }

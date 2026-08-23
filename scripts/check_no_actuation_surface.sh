@@ -240,11 +240,13 @@ if [ "$(rg -c 'AuthoringContextCustodyProvenanceV1::mint' crates/nightshiftd/src
     fail "authoring custody mint is not confined to the canonical handoff"
 fi
 
-# External application/world observations are authenticated source evidence,
-# never an alternate observation cycle or authority input. The ingress lives
-# in the existing one-shot Nightshift binary, invokes no subprocess, and its
-# custody constructor is confined to the canonical store insertion boundary.
+# External application/world observations are authenticated source evidence.
+# Custody is inert; the separate Nightshift composition module may admit an
+# exact source into a canonical observation, but neither surface may mint AG
+# authority or invoke effects. The deployment profile, never the producer,
+# owns the evidence horizon.
 external_observation_source="crates/nightshiftd/src/external_observation.rs"
+external_composition_source="crates/nightshiftd/src/external_evidence_composition.rs"
 if [ ! -f "$external_observation_source" ]; then
     fail "external-observation custody source is missing"
 fi
@@ -266,8 +268,96 @@ fi
 if [ "$(rg -c 'ExternalObservationCustodyProvenanceV1::mint' crates/nightshiftd/src/canonical_store.rs || true)" -ne 1 ]; then
     fail "external-observation custody mint is not confined to canonical store insertion"
 fi
-if rg -n 'record_external_observation' crates/nightshiftd/src/canonical_runtime.rs crates/nightshiftd/src/observation_resolver.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
-    fail "external-observation custody leaked into cycle currentness/runtime evaluation:"
+runtime_test_line=$(rg -n '^#\[cfg\(test\)\]$' crates/nightshiftd/src/canonical_runtime.rs | head -n1 | cut -d: -f1)
+if rg -n 'record_external_observation' crates/nightshiftd/src/canonical_runtime.rs crates/nightshiftd/src/observation_resolver.rs \
+    | awk -F: -v test_line="${runtime_test_line:-999999}" \
+        '$1 != "crates/nightshiftd/src/canonical_runtime.rs" || $2 < test_line' \
+        >/tmp/nightshift_exclusivity_hits 2>/dev/null \
+    && [ -s /tmp/nightshift_exclusivity_hits ]; then
+    fail "external-observation custody insertion leaked into cycle currentness/runtime evaluation:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if [ ! -f "$external_composition_source" ]; then
+    fail "external-evidence composition source is missing"
+fi
+if rg -n 'Command::new|docket::|ag_port::|AuthorizationReceipt|StandingResolution|AgSpend|dispatch\(' \
+    "$external_composition_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "external-evidence composition reaches governed authority/effect code:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'pub (authorization|spend|standing|capability|admissibility):' \
+    "$external_composition_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "external-evidence composition contains authority-bearing fields:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'max_age_ms|fresh_until_unix_ms' "$external_observation_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "external-observation producer/custody surface chooses Nightshift currentness policy:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+mapfile -t composition_callers < <(
+    rg -l 'ComposedExternalEvidenceV1::compose' crates/nightshiftd/src \
+        | rg -v 'external_evidence_composition.rs$' \
+        | sort
+)
+expected_composition_callers=(
+    crates/nightshiftd/src/canonical_runtime.rs
+    crates/nightshiftd/src/canonical_store.rs
+)
+if [ "${composition_callers[*]}" != "${expected_composition_callers[*]}" ]; then
+    fail "external-evidence composition constructor escaped canonical runtime/store revalidation: ${composition_callers[*]:-<none>}"
+fi
+if ! rg -q 'resolve_observation' crates/nightshiftd/src/canonical_runtime.rs \
+    || ! rg -q 'fresh_until_unix_ms' crates/nightshiftd/src/observation_resolver.rs; then
+    fail "external evidence is not routed through canonical observation/currentness ownership"
+fi
+
+# Passive steady-state evidence is a second source class, not a weakened
+# qualification profile. Only canonical runtime/store may compose it, and the
+# canonical resolver alone consumes its owner-produced horizon.
+steady_source="crates/nightshiftd/src/steady_state_evidence.rs"
+if [ ! -f "$steady_source" ]; then
+    fail "steady-state evidence source is missing"
+fi
+if rg -n 'Command::new|docket::|AuthorizationReceipt|StandingResolution|AgSpend|dispatch\(' \
+    "$steady_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "steady-state evidence reaches authority/effect code:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'pub (authorization|spend|standing|capability|admissibility):' \
+    "$steady_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "steady-state evidence contains authority-bearing fields:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+mapfile -t decision_composition_callers < <(
+    rg -l 'ComposedDecisionRelativeEvidenceV1::compose' crates/nightshiftd/src \
+        | rg -v 'steady_state_evidence.rs$' \
+        | sort
+)
+if [ "${decision_composition_callers[*]}" != "${expected_composition_callers[*]}" ]; then
+    fail "decision-evidence composition escaped canonical runtime/store: ${decision_composition_callers[*]:-<none>}"
+fi
+if ! rg -q 'decision_external_evidence' crates/nightshiftd/src/observation_resolver.rs; then
+    fail "passive evidence horizon is not consequence-time revalidated by canonical resolver"
+fi
+if [ "$(rg -c 'require_qualification_target_artifact\(' crates/nightshiftd/src/canonical_runtime.rs || true)" -ne 4 ]; then
+    # One definition, admission-time and consequence-time calls, plus the
+    # composition-level wrapper's second defensive check.
+    fail "historical qualification is not pinned to the target PlanDocument at both decision boundaries"
+fi
+if rg -n 'SingleCacheFailureSurvived|CacheTopologyRestored' "$steady_source" \
+    | rg 'SteadyStateClaimKindV1::' >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "passive claim enum can mint effectful qualification claims:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+atomicity_doc="docs/ARTIFACT_CHANGE_AND_REQUALIFICATION_V1.md"
+if ! rg -Fq 'there is no currently' "$atomicity_doc" \
+    || ! rg -Fq 'governed transition to a state in which successor artifact C2 is deployed' "$atomicity_doc" \
+    || ! rg -Fq 'Qualification is therefore not a mutable artifact attribute' "$atomicity_doc"; then
+    fail "V1 artifact-change atomicity/negative-reachability contract is missing"
+fi
+if rg -n 'DeployOnly|deploy_only|UnqualifiedObservationTarget|unqualified_observation_target' \
+    crates/nightshiftd/src >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "Nightshift introduced a deploy-only or unqualified observation-target semantic:"
     cat /tmp/nightshift_exclusivity_hits >&2
 fi
 if [ "$(rg -c 'MaudeCustodyVerifierV1::from_key_file' crates/nightshiftd/src/bin/nightshift.rs || true)" -ne 1 ]; then
@@ -306,7 +396,7 @@ if [ "${1:-}" = "--self-test-inject" ]; then
     sandbox=$(mktemp -d)
     trap 'rm -rf "$sandbox" /tmp/nightshift_exclusivity_hits /tmp/nightshift_exclusivity_selftest' EXIT
     mkdir "$sandbox/repo"
-    cp -a Cargo.toml Cargo.lock crates deploy scripts "$sandbox/repo/"
+    cp -a Cargo.toml Cargo.lock crates deploy docs scripts "$sandbox/repo/"
 
     cat >"$sandbox/repo/crates/nightshiftd/src/_legacy_resurrection.rs" <<'EOF'
 use wicket::Intent;
