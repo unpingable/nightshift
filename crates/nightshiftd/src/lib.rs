@@ -10,6 +10,7 @@ pub mod authoring_context;
 pub mod authoring_custody;
 pub mod canonical_runtime;
 pub mod canonical_store;
+pub mod continuity_authority;
 pub mod currentness;
 pub mod decision_basis;
 pub mod diagnostic_execution_v2;

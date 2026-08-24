@@ -22,6 +22,7 @@ use crate::authoring_context::{
 use crate::authoring_custody::{
     AuthoringContextCustodyExportV1, AuthoringContextCustodyProvenanceV1, CUSTODY_EXPORT_SCHEMA_V1,
 };
+use crate::continuity_authority::ContinuityApplicabilityV1;
 use crate::currentness::{
     QualifiedSupportV1, RecurrenceLatestAdmissibleV1, SupportStandingV1, TemporalHoldExpiryV1,
 };
@@ -34,7 +35,7 @@ use crate::external_observation::{
     ExternalObservationExportV1, ExternalObservationQueryV1, LocalComposeWorldObservationV1,
     VerifiedExternalObservationHandoffV1, EXTERNAL_OBSERVATION_EXPORT_SCHEMA_V1,
 };
-use crate::nq_admission::{validate_admission_cover, NqAdmissionProvenanceV1};
+use crate::nq_admission::{validate_admission_cover, NqAdmissionProvenance};
 use crate::steady_state_evidence::{
     ArtifactQualificationEvidenceV1, ComposedDecisionRelativeEvidenceV1,
     DecisionRelativeEvidenceReferenceV1, LocalComposeSteadyStateObservationV1,
@@ -48,6 +49,7 @@ pub const OBSERVATION_RECORD_SCHEMA_V1: &str = "nightshift.observation_record.v1
 pub const OBSERVATION_RECORD_SCHEMA_V2: &str = "nightshift.observation_record.v2";
 pub const OBSERVATION_RECORD_SCHEMA_V3: &str = "nightshift.observation_record.v3";
 pub const OBSERVATION_RECORD_SCHEMA_V4: &str = "nightshift.observation_record.v4";
+pub const OBSERVATION_RECORD_SCHEMA_V5: &str = "nightshift.observation_record.v5";
 pub const OBSERVATION_RECORD_SCHEMA: &str = OBSERVATION_RECORD_SCHEMA_V2;
 pub const TYPED_INTENT_SCHEMA_V2: &str = "nightshift.typed_coarse_intent.v2";
 pub const AG_REFERENCE_SCHEMA_V1: &str = "nightshift.ag_occurrence_reference.v1";
@@ -371,7 +373,12 @@ pub struct ObservationRecordV1 {
     /// Exact upstream NQ-NG admission provenance for every delivered
     /// diagnostic. This establishes evidence eligibility only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_admissions: Vec<NqAdmissionProvenanceV1>,
+    pub source_admissions: Vec<NqAdmissionProvenance>,
+    /// Nightshift's exact verification result for every continuity-bearing NQ
+    /// source admission. V5 only. These are attribution predicates, not
+    /// currentness or authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuity_applicability: Vec<ContinuityApplicabilityV1>,
     /// Optional Nightshift-owned admission of authenticated application/world
     /// evidence. V3 alone may carry this relation. It constrains the
     /// observation's freshness horizon but is neither NQ testimony nor
@@ -394,6 +401,7 @@ impl ObservationRecordV1 {
         match self.schema.as_str() {
             OBSERVATION_RECORD_SCHEMA_V1
                 if self.source_admissions.is_empty()
+                    && self.continuity_applicability.is_empty()
                     && self.external_evidence.is_none()
                     && self.decision_external_evidence.is_none() => {}
             OBSERVATION_RECORD_SCHEMA_V1 => {
@@ -402,11 +410,16 @@ impl ObservationRecordV1 {
                 ));
             }
             OBSERVATION_RECORD_SCHEMA_V2
-                if self.external_evidence.is_none()
+                if self.continuity_applicability.is_empty()
+                    && self.external_evidence.is_none()
                     && self.decision_external_evidence.is_none() =>
             {
-                validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
-                    .map_err(CanonicalStoreError::Invalid)?
+                validate_admission_cover(
+                    &self.posture.input_evidence,
+                    &self.source_admissions,
+                    &self.continuity_applicability,
+                )
+                .map_err(CanonicalStoreError::Invalid)?
             }
             OBSERVATION_RECORD_SCHEMA_V2 => {
                 return Err(CanonicalStoreError::Invalid(
@@ -414,13 +427,19 @@ impl ObservationRecordV1 {
                 ));
             }
             OBSERVATION_RECORD_SCHEMA_V3 => {
-                if self.decision_external_evidence.is_some() {
+                if !self.continuity_applicability.is_empty()
+                    || self.decision_external_evidence.is_some()
+                {
                     return Err(CanonicalStoreError::Invalid(
                         "v3 observation record cannot carry decision-relative evidence".into(),
                     ));
                 }
-                validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
-                    .map_err(CanonicalStoreError::Invalid)?;
+                validate_admission_cover(
+                    &self.posture.input_evidence,
+                    &self.source_admissions,
+                    &self.continuity_applicability,
+                )
+                .map_err(CanonicalStoreError::Invalid)?;
                 let composition = self.external_evidence.as_ref().ok_or_else(|| {
                     CanonicalStoreError::Invalid(
                         "v3 observation record requires composed external evidence".into(),
@@ -446,13 +465,17 @@ impl ObservationRecordV1 {
                 }
             }
             OBSERVATION_RECORD_SCHEMA_V4 => {
-                if self.external_evidence.is_some() {
+                if !self.continuity_applicability.is_empty() || self.external_evidence.is_some() {
                     return Err(CanonicalStoreError::Invalid(
                         "v4 observation record cannot carry legacy single-source evidence".into(),
                     ));
                 }
-                validate_admission_cover(&self.posture.input_evidence, &self.source_admissions)
-                    .map_err(CanonicalStoreError::Invalid)?;
+                validate_admission_cover(
+                    &self.posture.input_evidence,
+                    &self.source_admissions,
+                    &self.continuity_applicability,
+                )
+                .map_err(CanonicalStoreError::Invalid)?;
                 let composition = self.decision_external_evidence.as_ref().ok_or_else(|| {
                     CanonicalStoreError::Invalid(
                         "v4 observation record requires decision-relative evidence".into(),
@@ -475,6 +498,70 @@ impl ObservationRecordV1 {
                     return Err(CanonicalStoreError::Invalid(
                         "decision-relative evidence does not bind canonical observation".into(),
                     ));
+                }
+            }
+            OBSERVATION_RECORD_SCHEMA_V5 => {
+                if self.continuity_applicability.is_empty() {
+                    return Err(CanonicalStoreError::Invalid(
+                        "v5 observation record requires continuity applicability".into(),
+                    ));
+                }
+                validate_admission_cover(
+                    &self.posture.input_evidence,
+                    &self.source_admissions,
+                    &self.continuity_applicability,
+                )
+                .map_err(CanonicalStoreError::Invalid)?;
+                match (&self.external_evidence, &self.decision_external_evidence) {
+                    (None, None) => {}
+                    (Some(composition), None) => {
+                        composition
+                            .validate()
+                            .map_err(CanonicalStoreError::Invalid)?;
+                        if composition
+                            .canonical_observation_id()
+                            .map_err(CanonicalStoreError::Invalid)?
+                            != self.observation_id
+                            || composition.subject_id != self.posture.policy.subject.id
+                            || composition.scope_digest != self.posture.policy.subject.scope.digest
+                            || composition
+                                .admitted_at
+                                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                                != self.posture.evaluated_at
+                        {
+                            return Err(CanonicalStoreError::Invalid(
+                                "composed external evidence does not bind the canonical observation"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    (None, Some(composition)) => {
+                        composition
+                            .validate()
+                            .map_err(CanonicalStoreError::Invalid)?;
+                        if composition
+                            .canonical_observation_id()
+                            .map_err(CanonicalStoreError::Invalid)?
+                            != self.observation_id
+                            || composition.subject_id != self.posture.policy.subject.id
+                            || composition.scope_digest != self.posture.policy.subject.scope.digest
+                            || composition
+                                .admitted_at
+                                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                                != self.posture.evaluated_at
+                        {
+                            return Err(CanonicalStoreError::Invalid(
+                                "decision-relative evidence does not bind the canonical observation"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(CanonicalStoreError::Invalid(
+                            "v5 observation cannot combine legacy and decision-relative evidence"
+                                .into(),
+                        ));
+                    }
                 }
             }
             _ => {
@@ -3657,6 +3744,7 @@ mod tests {
             schema: OBSERVATION_RECORD_SCHEMA_V1.into(),
             observation_id: observation_id.into(),
             source_admissions: Vec::new(),
+            continuity_applicability: Vec::new(),
             external_evidence: None,
             decision_external_evidence: None,
             support,

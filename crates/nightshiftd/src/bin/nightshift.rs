@@ -22,6 +22,7 @@ use nightshiftd::canonical_runtime::{
 use nightshiftd::canonical_store::{
     AgOccurrenceReferenceV1, CanonicalStore, ObservationCycleId, ObservationCycleV1,
 };
+use nightshiftd::continuity_authority::ContinuityAuthorityVerifierV1;
 use nightshiftd::currentness::{
     CommandPresentEvidencePortV1, PresentEvidencePortV1, PresentEvidenceQueryV1, QualifiedSupportV1,
 };
@@ -30,7 +31,7 @@ use nightshiftd::external_observation::{
     ExternalObservationHandoffV1, ExternalObservationQueryV1, ExternalObservationVerifierV1,
 };
 use nightshiftd::nq_admission::{
-    CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenanceV1, NqAdmissionQueryV1,
+    CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenance, NqAdmissionQueryV1,
 };
 use nightshiftd::steady_state_evidence::{
     SteadyStateEvidenceProfileV1, SteadyStateObservationHandoffV1, SteadyStateObservationVerifierV1,
@@ -249,6 +250,13 @@ struct CycleRunArguments {
     /// Stable expected NQ-NG store-genesis identity.
     #[arg(long)]
     nq_source_id: String,
+    /// Standing Ed25519 public key used only to verify continuity carriers.
+    #[arg(long, requires_all = ["standing_continuity_key_id", "standing_continuity_nq_audience"])]
+    standing_continuity_public_key: Option<PathBuf>,
+    #[arg(long, requires_all = ["standing_continuity_public_key", "standing_continuity_nq_audience"])]
+    standing_continuity_key_id: Option<String>,
+    #[arg(long, requires_all = ["standing_continuity_public_key", "standing_continuity_key_id"])]
+    standing_continuity_nq_audience: Option<String>,
     #[arg(long)]
     ag_loopctl: Option<PathBuf>,
     #[arg(long)]
@@ -323,7 +331,7 @@ impl PresentEvidencePortV1 for NoPresentEvidencePort {
 struct NoNqAdmissionPort;
 
 impl NqAdmissionPortV1 for NoNqAdmissionPort {
-    fn qualify(&mut self, _: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenanceV1, String> {
+    fn qualify(&mut self, _: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenance, String> {
         Err("status recovery never qualifies new NQ evidence".into())
     }
 }
@@ -458,6 +466,9 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 nq_program,
                 nq_config,
                 nq_source_id,
+                standing_continuity_public_key,
+                standing_continuity_key_id,
+                standing_continuity_nq_audience,
                 ag_loopctl,
                 ag_database,
                 ag_observation_resolver,
@@ -587,6 +598,20 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 .map_err(anyhow::Error::msg)?;
             let nq = CommandNqAdmissionPortV1::new(nq_program, nq_config, nq_source_id)
                 .map_err(anyhow::Error::msg)?;
+            let nq = match (
+                standing_continuity_public_key,
+                standing_continuity_key_id,
+                standing_continuity_nq_audience,
+            ) {
+                (Some(key), Some(key_id), Some(audience)) => nq.with_continuity_verifier(
+                    ContinuityAuthorityVerifierV1::from_public_key_file(key_id, audience, &key)
+                        .map_err(anyhow::Error::msg)?,
+                ),
+                (None, None, None) => nq,
+                _ => bail!(
+                    "Standing continuity verification requires public key, key id, and NQ audience"
+                ),
+            };
             let outcome = if has_proposal {
                 let (program, database, resolver, resolver_id, profile) = match (
                     ag_loopctl,

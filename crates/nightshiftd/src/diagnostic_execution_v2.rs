@@ -940,6 +940,20 @@ impl DiagnosticExecution {
         }
     }
 
+    /// Exact provider-intake identities retained by the artifact. V1 did not
+    /// expose this proof-bearing acquisition coordinate.
+    pub fn provider_intake_ids(&self) -> Vec<&str> {
+        match self {
+            Self::V1(_) => Vec::new(),
+            Self::V2(value) => value
+                .inputs
+                .received
+                .iter()
+                .map(|input| input.provider_intake_id.as_str())
+                .collect(),
+        }
+    }
+
     pub fn vantage(&self) -> &SemanticIdentityV1 {
         match self {
             Self::V1(value) => &value.vantage,

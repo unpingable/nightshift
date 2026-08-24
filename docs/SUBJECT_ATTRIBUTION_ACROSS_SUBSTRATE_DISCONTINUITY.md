@@ -108,69 +108,70 @@ attribution model.
 
 ### Genuinely ex-post authority
 
-Not representable. No current schema binds a subject, prior substrate,
-successor substrate, and proof-bearing authority occurrence to the evidence.
-Issuing an ordinary Standing assertion lease after observation would authorize
-future speech within its scope; it would not provide a succession verdict and
-must not canonicalize the earlier observation.
+The cross-office causal carrier is now specified and implemented in
+[`CONTINUITY_AUTHORITY_CARRIER_V1.md`](CONTINUITY_AUTHORITY_CARRIER_V1.md).
+A completed NQ acquisition cannot be amended to add a later Standing warrant.
+Backdated evidence times do not change the immutable acquisition intent.
 
 ### Prior authority delivered late
 
-Also not representable. Current records cannot prove that an independently
-valid succession authority existed before the observation but became available
-to the attribution resolver later.
+The immutable NQ intent now commits the exact authenticated Standing authority
+before provider invocation. Nightshift may receive the intent/evidence before
+it separately learns or configures the Standing verification material; later
+verification preserves the historical prerequisite relation. Consumer delivery
+order is not used as issuance order.
 
-Standing receipt chains prove append-only order within one grant lifecycle.
-They do not share a causal order with NQ acquisition or Nightshift custody.
-`not_before`, `issued_at`, `observed_at`, and receipt timestamps have different
-owners and meanings. Comparing their wall-clock values would not prove
-independence or prevent a later issuer from backdating an effective time.
-
-These two scenarios cannot be distinguished by receipt delivery order, and
-they must not be collapsed.
+The remaining attribution gate is empirical rather than causal: current NQ
+diagnostic provenance supplies no independently owned observation-substrate
+coordinate. A cryptographically valid chain is therefore `unresolved` rather
+than silently attributed when complete configured identity is reused across
+P1 and P2.
 
 ## Hostile-case standing
 
 | Attempt | Current result |
 |---|---|
-| P1-to-P3 authority substituted for P1-to-P2 | No succession authority schema exists to validate or substitute. |
-| Authority for another subject | Ordinary Standing subject binding refuses speech-scope substitution, but this is not a continuity test. |
+| P1-to-P3 authority substituted for P1-to-P2 | Exact continuity-edge and acquisition-basis checks refuse. |
+| Authority for another subject | Exact signed edge and diagnostic-subject checks refuse. |
 | P2 artifact relabelled from its declared P2 binding to P1 | Exact NQ/profile/policy substitution checks refuse, including after resealing the artifact identity. |
-| P2 reuses every P1 configured identity | Discontinuity is not observable under the current contract. |
+| P2 reuses every P1 configured identity | An explicit continuity-bearing acquisition is unresolved without independent edge context. An ordinary V1 acquisition remains physically indistinguishable; the carrier cannot select its own use. |
 | Duplicate NQ evidence or admission provenance | Exact replay converges; changed bytes or bindings refuse. |
-| Duplicate Standing request proof | Replay nonce is consumed/refused within the Standing audience. |
-| Backdated effective time | No governed continuity rule may rely on it; cross-system causal precedence is absent. |
+| Duplicate Standing authority or NQ intent | Exact replay converges; deliberate reissuance has a distinct authority occurrence. |
+| Backdated effective time | Asserted times are not consulted; a later authority cannot be inserted into a completed NQ intent. |
 | Currentness or qualification offered as succession authority | Structurally the wrong object; neither establishes attribution. |
 
 Failure to establish attribution does not establish another subject, a safe
 state, or permission to delete evidence. That negative-clearance prohibition
 is consistent with existing refusal and historical-evidence doctrine.
 
-## Decision required before implementation
+## Ratified carrier and remaining attribution gate
 
-A future implementation needs an explicit governance decision defining at
-least:
+The first four questions above are now answered by the exact Standing warrant,
+signed acquisition commitment, immutable NQ intent, and append-only provider
+phases documented in
+[`CONTINUITY_AUTHORITY_CARRIER_V1.md`](CONTINUITY_AUTHORITY_CARRIER_V1.md).
+Nightshift's applicability record cites that exact chain without changing
+evidence custody or acquisition time.
 
-1. the owner and versioned shape of substrate-succession authority;
-2. exact binding to logical subject, prior substrate, successor substrate,
-   scope, and authority occurrence;
-3. a proof-bearing causal order capable of distinguishing authority that
-   existed independently before an observation from authority created after
-   seeing it;
-4. revocation, supersession, replay, and wrong-transition behavior;
-5. an append-only attribution verdict that can cite retained evidence without
-   mutating its custody or acquisition time; and
-6. the reliance law for unresolved/refused attribution.
+The remaining positive-attribution prerequisite is authenticated,
+independently established predecessor and observation-substrate context bound
+to the same provider intake. Current NQ diagnostic provenance does not carry
+that context. Without it, Nightshift can verify that the warrant was a
+prerequisite but cannot prove that the evidence came from the warrant's
+successor substrate in the required edge; the result is `unresolved` and
+routine reliance refuses.
 
 Wall-clock comparison alone is explicitly insufficient. So are DNS names,
 provider identifiers, conserved configuration strings, host keys, and stable
 PlanNode or campaign lineage.
 
-Until that decision exists, the safe behavior is to keep any substrate
-distinction represented by existing semantic identities in distinct lineages,
-retain exact refused evidence, and refuse to claim continuity. A process that
-reuses a prior substrate's complete configured identity remains an unclosed
-detection gap; deploying it does not make the identity claim true.
+Until an existing owner supplies that context and an owner-correct rule selects
+the continuity acquisition path for a successor, the safe behavior is to keep
+any available substrate distinctions in separate lineages, retain exact
+provenance, and refuse to claim continuity. A process that reuses a prior
+substrate's complete configured identity through ordinary V1 evidence remains
+an undetectable physical discontinuity under the current wire contract;
+deploying it does not make the identity claim true.
 
 ## Non-claims
 

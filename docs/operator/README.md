@@ -64,6 +64,22 @@ NQ-NG admission is checked before the recurrence slot is claimed. It makes
 the exact artifact eligible for Nightshift reasoning; it does not establish
 currentness or authorize the optional work proposal.
 
+When NQ returns continuity-bearing
+`nq.diagnostic_admission_provenance.v2`, pin the complete verification-only
+Standing coordinate set:
+
+```sh
+  --standing-continuity-public-key /etc/nightshift/standing-continuity.pub \
+  --standing-continuity-key-id standing-continuity:SITE_KEY_ID \
+  --standing-continuity-nq-audience nq:SITE_AUDIENCE
+```
+
+The file contains a raw 32-byte Ed25519 public key encoded as lowercase hex.
+Nightshift has no Standing private key. Omitting the complete set refuses V2
+provenance. Supplying it verifies the authority/acquisition prerequisite but
+does not by itself establish attribution: independently owned predecessor and
+observation-substrate coordinates remain required.
+
 For exact work, append:
 
 ```sh

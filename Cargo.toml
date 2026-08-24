@@ -19,6 +19,8 @@ serde_jcs = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 libc = "0.2"
+ed25519-dalek = "2.2"
+hex = "0.4"

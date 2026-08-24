@@ -932,7 +932,7 @@ where
             )?;
             return Ok(CycleRunOutcomeV1::Missed { cycle });
         }
-        let source_admissions = qualify_delivered_inputs(&mut self.nq_admission, &request.inputs)
+        let qualified_sources = qualify_delivered_inputs(&mut self.nq_admission, &request.inputs)
             .map_err(CanonicalRuntimeError::NqAdmission)?;
         let (claimed, lease) = self.store.claim_slot(
             request.slot,
@@ -983,7 +983,9 @@ where
             }
         };
         let observation = ObservationRecordV1 {
-            schema: if composed_decision_evidence.is_some() {
+            schema: if !qualified_sources.continuity.is_empty() {
+                crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V5.into()
+            } else if composed_decision_evidence.is_some() {
                 crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V4.into()
             } else if composed_external_evidence.is_some() {
                 crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V3.into()
@@ -991,7 +993,8 @@ where
                 crate::canonical_store::OBSERVATION_RECORD_SCHEMA.into()
             },
             observation_id: request.observation_id,
-            source_admissions,
+            source_admissions: qualified_sources.provenance,
+            continuity_applicability: qualified_sources.continuity,
             external_evidence: composed_external_evidence,
             decision_external_evidence: composed_decision_evidence,
             support,
@@ -1206,8 +1209,8 @@ mod tests {
     };
     use crate::nq_admission::{
         NqAdmissionArtifactV1, NqAdmissionJudgmentV1, NqAdmissionOriginV1, NqAdmissionPortV1,
-        NqAdmissionProvenanceV1, NqAdmissionProviderV1, NqAdmissionQueryV1, NqAdmissionSourceV1,
-        NqSourceDispositionV1,
+        NqAdmissionProvenance, NqAdmissionProvenanceV1, NqAdmissionProviderV1, NqAdmissionQueryV1,
+        NqAdmissionSourceV1, NqSourceDispositionV1,
     };
     use crate::steady_state_evidence::{
         tests::steady_handoff, DecisionRelativeEvidenceReferenceV1, SteadyStateClaimKindV1,
@@ -1230,10 +1233,7 @@ mod tests {
     struct TestNqAdmissionPort;
 
     impl NqAdmissionPortV1 for TestNqAdmissionPort {
-        fn qualify(
-            &mut self,
-            query: &NqAdmissionQueryV1,
-        ) -> Result<NqAdmissionProvenanceV1, String> {
+        fn qualify(&mut self, query: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenance, String> {
             NqAdmissionProvenanceV1 {
                 schema: String::new(),
                 provenance_id: String::new(),
@@ -1273,6 +1273,8 @@ mod tests {
                 nonclaims: Vec::new(),
             }
             .seal()
+            .map(Box::new)
+            .map(NqAdmissionProvenance::V1)
         }
     }
 
@@ -1547,7 +1549,7 @@ mod tests {
     struct RefusingNqAdmissionPort;
 
     impl NqAdmissionPortV1 for RefusingNqAdmissionPort {
-        fn qualify(&mut self, _: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenanceV1, String> {
+        fn qualify(&mut self, _: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenance, String> {
             Err("artifact has no local NQ-NG admission history".into())
         }
     }
@@ -3307,6 +3309,7 @@ mod tests {
                 schema: crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V1.into(),
                 observation_id: request.observation_id,
                 source_admissions: Vec::new(),
+                continuity_applicability: Vec::new(),
                 external_evidence: None,
                 decision_external_evidence: None,
                 support,

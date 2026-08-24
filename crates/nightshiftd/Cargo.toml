@@ -36,5 +36,7 @@ rusqlite.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
 libc.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
 
 [dev-dependencies]

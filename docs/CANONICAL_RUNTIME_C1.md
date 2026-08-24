@@ -559,7 +559,14 @@ cargo build --locked --release --bins
 an executable named `pulse-support-resolver`. AG options are required only
 when the request contains an exact precompiled proposal; the complete set is
 the AG CLI, database, observation-resolver locator and expected identity, and
-runtime-profile locator. `cycle sync-ag` and
+runtime-profile locator.
+
+For continuity-bearing NQ V2 provenance, `cycle run` additionally accepts an
+all-or-none Standing Ed25519 public-key path, key ID, and NQ audience. These
+are verification coordinates only; the strict carrier and unresolved
+attribution boundary are defined in
+[`CONTINUITY_AUTHORITY_CARRIER_V1.md`](CONTINUITY_AUTHORITY_CARRIER_V1.md).
+`cycle sync-ag` and
 `cycle recover` read AG state through `ag-loopctl`; neither can resubmit a
 prepared request.
 `nightshift-observation-resolver` is invoked by AG as a configured

@@ -93,6 +93,10 @@ for nq_option in nq-program nq-config nq-source-id; do
         fail "systemd service does not bind required NQ admission option --${nq_option}"
     fi
 done
+if ! rg -q '\$NIGHTSHIFT_CONTINUITY_FLAGS' deploy/systemd/nightshift-observation-cycle.service \
+    || ! rg -q '^NIGHTSHIFT_CONTINUITY_FLAGS=$' deploy/systemd/observation-cycle.env.example; then
+    fail "active deployment cannot pin optional Standing continuity verification material"
+fi
 if rg -n -i 'watchbill|wicket|\bwlp\b|governor|no-governor|authority[_ -]?level|scheduled[_ -]?skip' \
     "${active_units[@]}" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
     fail "retired runtime vocabulary remains in active systemd deployment:"
@@ -387,6 +391,45 @@ if ! rg -q 'pub\(crate\) fn prepare_ag_occurrence' crates/nightshiftd/src/canoni
 fi
 if rg -n 'authoring_context|AuthoringContext|authoring_custody|AuthoringCustody|MaudeCustody' crates/nightshiftd/src/ag_port.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
     fail "AG wire adapter consumes Maude authoring context:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+
+# Continuity authority is an asymmetric verification-only ingress. Standing
+# signs; NQ commits the exact prerequisite before provider invocation;
+# Nightshift may only verify and record an applicability predicate.
+continuity_source="crates/nightshiftd/src/continuity_authority.rs"
+continuity_doc="docs/CONTINUITY_AUTHORITY_CARRIER_V1.md"
+if [ ! -f "$continuity_source" ] || [ ! -f "$continuity_doc" ]; then
+    fail "continuity-authority verifier or canonical contract is missing"
+fi
+if ! rg -q 'ed25519_dalek::.*VerifyingKey' "$continuity_source" \
+    || ! rg -q 'pub struct ContinuityAuthorityVerifierV1' "$continuity_source"; then
+    fail "continuity-authority ingress is not pinned to asymmetric verification"
+fi
+if rg -n 'pub fn (sign|mint|issue|authorize)|Command::new|AgOccurrencePortV1|Docket' \
+    "$continuity_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "Nightshift continuity verifier exposes issuance, execution, or subprocess authority:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'issued_at[[:space:]]*(<|>|==|!=)|committed_at[[:space:]]*(<|>|==|!=)' \
+    "$continuity_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "continuity applicability uses asserted timestamps as causal proof:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n -i 'hostname|dns|ip_address|current_substrate|continuity_authorized[[:space:]]*:' \
+    "$continuity_source" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "continuity applicability contains a heuristic or mutable-authority shortcut:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if ! rg -q 'independently_established_predecessor_ref: Option<&str>' "$continuity_source" \
+    || ! rg -q 'independently_established_observation_substrate_ref: Option<&str>' \
+    "$continuity_source" \
+    || ! rg -q 'ObservationSubstrateAbsent' "$continuity_source"; then
+    fail "continuity applicability no longer fails closed without independent substrate evidence"
+fi
+if rg -n 'standing-continuity-(private|secret|signing)' crates/nightshiftd/src/bin/nightshift.rs \
+    >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "production Nightshift CLI accepts Standing private/signing material:"
     cat /tmp/nightshift_exclusivity_hits >&2
 fi
 

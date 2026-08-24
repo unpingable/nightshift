@@ -1,7 +1,7 @@
 use nightshiftd::nq_admission::{
     NqAdmissionArtifactV1, NqAdmissionJudgmentV1, NqAdmissionOriginV1, NqAdmissionPortV1,
-    NqAdmissionProvenanceV1, NqAdmissionProviderV1, NqAdmissionQueryV1, NqAdmissionSourceV1,
-    NqSourceDispositionV1,
+    NqAdmissionProvenance, NqAdmissionProvenanceV1, NqAdmissionProviderV1, NqAdmissionQueryV1,
+    NqAdmissionSourceV1, NqSourceDispositionV1,
 };
 
 fn digest(byte: char) -> String {
@@ -14,7 +14,7 @@ fn digest(byte: char) -> String {
 pub struct TestNqAdmissionPort;
 
 impl NqAdmissionPortV1 for TestNqAdmissionPort {
-    fn qualify(&mut self, query: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenanceV1, String> {
+    fn qualify(&mut self, query: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenance, String> {
         NqAdmissionProvenanceV1 {
             schema: String::new(),
             provenance_id: String::new(),
@@ -54,5 +54,7 @@ impl NqAdmissionPortV1 for TestNqAdmissionPort {
             nonclaims: Vec::new(),
         }
         .seal()
+        .map(Box::new)
+        .map(NqAdmissionProvenance::V1)
     }
 }
