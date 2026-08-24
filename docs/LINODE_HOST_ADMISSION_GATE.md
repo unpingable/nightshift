@@ -100,7 +100,10 @@ already recorded in `NQ_PRODUCTION_EVIDENCE_CIRCUIT.md`.
    `labelwatch-host` source name). What is *not* mechanical is whether a
    reimaged or migrated host remains the same governed subject. That question
    determines which fact is authoritative, and it must be answered before a
-   persistent subject exists.
+   persistent subject exists. The general substrate-discontinuity audit is
+   recorded in `SUBJECT_ATTRIBUTION_ACROSS_SUBSTRATE_DISCONTINUITY.md`; current
+   contracts cannot distinguish prior authority learned late from genuinely
+   ex-post authority without a new proof-bearing succession decision.
 2. **NQ-NG is not installed on the host.** Classic NQ has no `diagnostics`
    subcommand (`error: unrecognized subcommand 'diagnostics'`, exit 2), emits
    no `nq.diagnostic_execution.v2`, and cannot answer the qualifier. Cutover is
