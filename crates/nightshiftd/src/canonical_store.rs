@@ -5,6 +5,7 @@
 //! exact external references while deliberately retaining no reconstructible
 //! live-currentness token.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -42,6 +43,9 @@ use crate::steady_state_evidence::{
     SteadyStateEvidenceProfileV1, SteadyStateObservationCustodyV1, SteadyStateReobservationBasisV1,
     VerifiedSteadyStateObservationHandoffV1, DECISION_EVIDENCE_REFERENCE_SCHEMA_V1,
 };
+use crate::substrate_origin::{
+    SubstrateOriginApplicabilityStatusV1, SubstrateOriginApplicabilityV1,
+};
 
 pub const SLOT_SCHEMA_V1: &str = "nightshift.recurrence_slot.v1";
 pub const CYCLE_SCHEMA_V1: &str = "nightshift.observation_cycle.v1";
@@ -50,6 +54,7 @@ pub const OBSERVATION_RECORD_SCHEMA_V2: &str = "nightshift.observation_record.v2
 pub const OBSERVATION_RECORD_SCHEMA_V3: &str = "nightshift.observation_record.v3";
 pub const OBSERVATION_RECORD_SCHEMA_V4: &str = "nightshift.observation_record.v4";
 pub const OBSERVATION_RECORD_SCHEMA_V5: &str = "nightshift.observation_record.v5";
+pub const OBSERVATION_RECORD_SCHEMA_V6: &str = "nightshift.observation_record.v6";
 pub const OBSERVATION_RECORD_SCHEMA: &str = OBSERVATION_RECORD_SCHEMA_V2;
 pub const TYPED_INTENT_SCHEMA_V2: &str = "nightshift.typed_coarse_intent.v2";
 pub const AG_REFERENCE_SCHEMA_V1: &str = "nightshift.ag_occurrence_reference.v1";
@@ -379,6 +384,11 @@ pub struct ObservationRecordV1 {
     /// currentness or authority.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continuity_applicability: Vec<ContinuityApplicabilityV1>,
+    /// Exact append-only origin-chain verdicts for V3 NQ admissions. V6 only.
+    /// These establish attribution applicability, not evidence truth,
+    /// currentness, standing, or authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub substrate_origin_applicability: Vec<SubstrateOriginApplicabilityV1>,
     /// Optional Nightshift-owned admission of authenticated application/world
     /// evidence. V3 alone may carry this relation. It constrains the
     /// observation's freshness horizon but is neither NQ testimony nor
@@ -402,6 +412,7 @@ impl ObservationRecordV1 {
             OBSERVATION_RECORD_SCHEMA_V1
                 if self.source_admissions.is_empty()
                     && self.continuity_applicability.is_empty()
+                    && self.substrate_origin_applicability.is_empty()
                     && self.external_evidence.is_none()
                     && self.decision_external_evidence.is_none() => {}
             OBSERVATION_RECORD_SCHEMA_V1 => {
@@ -411,6 +422,7 @@ impl ObservationRecordV1 {
             }
             OBSERVATION_RECORD_SCHEMA_V2
                 if self.continuity_applicability.is_empty()
+                    && self.substrate_origin_applicability.is_empty()
                     && self.external_evidence.is_none()
                     && self.decision_external_evidence.is_none() =>
             {
@@ -418,6 +430,7 @@ impl ObservationRecordV1 {
                     &self.posture.input_evidence,
                     &self.source_admissions,
                     &self.continuity_applicability,
+                    &self.substrate_origin_applicability,
                 )
                 .map_err(CanonicalStoreError::Invalid)?
             }
@@ -428,6 +441,7 @@ impl ObservationRecordV1 {
             }
             OBSERVATION_RECORD_SCHEMA_V3 => {
                 if !self.continuity_applicability.is_empty()
+                    || !self.substrate_origin_applicability.is_empty()
                     || self.decision_external_evidence.is_some()
                 {
                     return Err(CanonicalStoreError::Invalid(
@@ -438,6 +452,7 @@ impl ObservationRecordV1 {
                     &self.posture.input_evidence,
                     &self.source_admissions,
                     &self.continuity_applicability,
+                    &self.substrate_origin_applicability,
                 )
                 .map_err(CanonicalStoreError::Invalid)?;
                 let composition = self.external_evidence.as_ref().ok_or_else(|| {
@@ -465,7 +480,10 @@ impl ObservationRecordV1 {
                 }
             }
             OBSERVATION_RECORD_SCHEMA_V4 => {
-                if !self.continuity_applicability.is_empty() || self.external_evidence.is_some() {
+                if !self.continuity_applicability.is_empty()
+                    || !self.substrate_origin_applicability.is_empty()
+                    || self.external_evidence.is_some()
+                {
                     return Err(CanonicalStoreError::Invalid(
                         "v4 observation record cannot carry legacy single-source evidence".into(),
                     ));
@@ -474,6 +492,7 @@ impl ObservationRecordV1 {
                     &self.posture.input_evidence,
                     &self.source_admissions,
                     &self.continuity_applicability,
+                    &self.substrate_origin_applicability,
                 )
                 .map_err(CanonicalStoreError::Invalid)?;
                 let composition = self.decision_external_evidence.as_ref().ok_or_else(|| {
@@ -506,10 +525,16 @@ impl ObservationRecordV1 {
                         "v5 observation record requires continuity applicability".into(),
                     ));
                 }
+                if !self.substrate_origin_applicability.is_empty() {
+                    return Err(CanonicalStoreError::Invalid(
+                        "v5 observation record cannot carry substrate-origin applicability".into(),
+                    ));
+                }
                 validate_admission_cover(
                     &self.posture.input_evidence,
                     &self.source_admissions,
                     &self.continuity_applicability,
+                    &self.substrate_origin_applicability,
                 )
                 .map_err(CanonicalStoreError::Invalid)?;
                 match (&self.external_evidence, &self.decision_external_evidence) {
@@ -559,6 +584,81 @@ impl ObservationRecordV1 {
                     (Some(_), Some(_)) => {
                         return Err(CanonicalStoreError::Invalid(
                             "v5 observation cannot combine legacy and decision-relative evidence"
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            OBSERVATION_RECORD_SCHEMA_V6 => {
+                if self.substrate_origin_applicability.is_empty() {
+                    return Err(CanonicalStoreError::Invalid(
+                        "v6 observation record requires substrate-origin applicability".into(),
+                    ));
+                }
+                validate_admission_cover(
+                    &self.posture.input_evidence,
+                    &self.source_admissions,
+                    &self.continuity_applicability,
+                    &self.substrate_origin_applicability,
+                )
+                .map_err(CanonicalStoreError::Invalid)?;
+                if self
+                    .substrate_origin_applicability
+                    .iter()
+                    .any(|value| value.status != SubstrateOriginApplicabilityStatusV1::Applicable)
+                {
+                    return Err(CanonicalStoreError::Invalid(
+                        "v6 observation record cannot persist a relied-on non-applicable origin"
+                            .into(),
+                    ));
+                }
+                match (&self.external_evidence, &self.decision_external_evidence) {
+                    (None, None) => {}
+                    (Some(composition), None) => {
+                        composition
+                            .validate()
+                            .map_err(CanonicalStoreError::Invalid)?;
+                        if composition
+                            .canonical_observation_id()
+                            .map_err(CanonicalStoreError::Invalid)?
+                            != self.observation_id
+                            || composition.subject_id != self.posture.policy.subject.id
+                            || composition.scope_digest != self.posture.policy.subject.scope.digest
+                            || composition
+                                .admitted_at
+                                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                                != self.posture.evaluated_at
+                        {
+                            return Err(CanonicalStoreError::Invalid(
+                                "composed external evidence does not bind the canonical observation"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    (None, Some(composition)) => {
+                        composition
+                            .validate()
+                            .map_err(CanonicalStoreError::Invalid)?;
+                        if composition
+                            .canonical_observation_id()
+                            .map_err(CanonicalStoreError::Invalid)?
+                            != self.observation_id
+                            || composition.subject_id != self.posture.policy.subject.id
+                            || composition.scope_digest != self.posture.policy.subject.scope.digest
+                            || composition
+                                .admitted_at
+                                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                                != self.posture.evaluated_at
+                        {
+                            return Err(CanonicalStoreError::Invalid(
+                                "decision-relative evidence does not bind canonical observation"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(CanonicalStoreError::Invalid(
+                            "v6 observation cannot combine legacy and decision-relative evidence"
                                 .into(),
                         ));
                     }
@@ -1306,6 +1406,53 @@ impl ObservationCycleV1 {
     }
 }
 
+fn unique_substrate_origin_head(
+    nodes: BTreeMap<String, SubstrateOriginApplicabilityV1>,
+) -> Result<SubstrateOriginApplicabilityV1, CanonicalStoreError> {
+    let mut referenced = BTreeSet::new();
+    for verdict in nodes.values() {
+        if let Some(predecessor_id) = &verdict.predecessor_applicability_id {
+            let predecessor = nodes.get(predecessor_id).ok_or_else(|| {
+                CanonicalStoreError::Invalid(
+                    "substrate-origin chain references unknown predecessor verdict".into(),
+                )
+            })?;
+            if verdict.predecessor_coordinate_ref.as_deref()
+                != Some(predecessor.observed_coordinate_ref.as_str())
+            {
+                return Err(CanonicalStoreError::Invalid(
+                    "substrate-origin chain substitutes predecessor coordinate".into(),
+                ));
+            }
+            if !referenced.insert(predecessor_id.clone()) {
+                return Err(CanonicalStoreError::Invalid(
+                    "substrate-origin history forks from one predecessor".into(),
+                ));
+            }
+        }
+    }
+    let heads: Vec<_> = nodes
+        .iter()
+        .filter(|(identity, _)| !referenced.contains(*identity))
+        .map(|(_, verdict)| verdict)
+        .collect();
+    if heads.len() != 1 {
+        return Err(CanonicalStoreError::Invalid(
+            "substrate-origin history has no unique append-only chain head".into(),
+        ));
+    }
+    let roots = nodes
+        .values()
+        .filter(|value| value.predecessor_applicability_id.is_none())
+        .count();
+    if roots != 1 || referenced.len() + 1 != nodes.len() {
+        return Err(CanonicalStoreError::Invalid(
+            "substrate-origin history is disconnected or cyclic".into(),
+        ));
+    }
+    Ok((*heads[0]).clone())
+}
+
 pub struct CanonicalStore {
     connection: Connection,
 }
@@ -2043,6 +2190,42 @@ impl CanonicalStore {
             self.validate_authoring_custody_claim(cycle)?;
         }
         Ok(values)
+    }
+
+    /// Reconstruct the unique append-only substrate-origin chain head for one
+    /// subject from admitted V6 observation records. No mutable
+    /// `current_substrate` field or request-supplied predecessor participates.
+    pub fn substrate_origin_head(
+        &self,
+        subject_ref: &str,
+    ) -> Result<Option<SubstrateOriginApplicabilityV1>, CanonicalStoreError> {
+        require_token("substrate-origin subject", subject_ref)?;
+        let mut nodes = BTreeMap::new();
+        for cycle in self.list_cycles()? {
+            let Some(observation) = cycle.observation else {
+                continue;
+            };
+            for verdict in observation.substrate_origin_applicability {
+                if verdict.subject_ref != subject_ref
+                    || verdict.status != SubstrateOriginApplicabilityStatusV1::Applicable
+                {
+                    continue;
+                }
+                verdict.validate().map_err(CanonicalStoreError::Invalid)?;
+                if nodes
+                    .insert(verdict.applicability_id.clone(), verdict.clone())
+                    .is_some()
+                {
+                    return Err(CanonicalStoreError::Invalid(
+                        "duplicate substrate-origin applicability identity".into(),
+                    ));
+                }
+            }
+        }
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+        unique_substrate_origin_head(nodes).map(Some)
     }
 
     /// Every persisted cycle carrying this exact `observation_id`. Zero, one,
@@ -3384,6 +3567,101 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    fn origin_node(
+        tag: &str,
+        predecessor: Option<&SubstrateOriginApplicabilityV1>,
+    ) -> SubstrateOriginApplicabilityV1 {
+        let mut value = SubstrateOriginApplicabilityV1 {
+            schema: crate::substrate_origin::APPLICABILITY_SCHEMA_V1.into(),
+            applicability_id: String::new(),
+            status: SubstrateOriginApplicabilityStatusV1::Applicable,
+            reason: if predecessor.is_some() {
+                crate::substrate_origin::SubstrateOriginApplicabilityReasonV1::StableExactOrigin
+            } else {
+                crate::substrate_origin::SubstrateOriginApplicabilityReasonV1::BootstrapOriginEstablished
+            },
+            profile_id: "profile-origin-v3".into(),
+            diagnostic_artifact_id: digest(tag.chars().next().unwrap()),
+            subject_ref: "observer:test-office".into(),
+            predecessor_applicability_id: predecessor.map(|item| item.applicability_id.clone()),
+            predecessor_coordinate_ref: predecessor
+                .map(|item| item.observed_coordinate_ref.clone()),
+            observed_coordinate_ref: format!("substrate:attester-key:v1:{tag}"),
+            attestation_occurrence_ref: format!("attestation:{tag}"),
+            acquisition_id: format!("acquisition:{tag}"),
+            provider_intake_ref: format!("intake:{tag}"),
+            authority_occurrence_ref: None,
+        };
+        value.applicability_id = object_id(&value, "applicability_id").unwrap();
+        value.validate().unwrap();
+        value
+    }
+
+    #[test]
+    fn substrate_origin_history_has_one_exact_append_only_head() {
+        let first = origin_node(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        );
+        let second = origin_node(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            Some(&first),
+        );
+        let nodes = BTreeMap::from([
+            (first.applicability_id.clone(), first),
+            (second.applicability_id.clone(), second.clone()),
+        ]);
+        assert_eq!(
+            unique_substrate_origin_head(nodes)
+                .unwrap()
+                .applicability_id,
+            second.applicability_id
+        );
+    }
+
+    #[test]
+    fn substrate_origin_history_refuses_forks_and_predecessor_substitution() {
+        let first = origin_node(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            None,
+        );
+        let second = origin_node(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            Some(&first),
+        );
+        let third = origin_node(
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            Some(&first),
+        );
+        let fork = BTreeMap::from([
+            (first.applicability_id.clone(), first.clone()),
+            (second.applicability_id.clone(), second),
+            (third.applicability_id.clone(), third),
+        ]);
+        assert!(unique_substrate_origin_head(fork)
+            .unwrap_err()
+            .to_string()
+            .contains("forks"));
+
+        let mut substituted = origin_node(
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            Some(&first),
+        );
+        substituted.predecessor_coordinate_ref = Some(
+            "substrate:attester-key:v1:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                .into(),
+        );
+        substituted.applicability_id = object_id(&substituted, "applicability_id").unwrap();
+        let nodes = BTreeMap::from([
+            (first.applicability_id.clone(), first),
+            (substituted.applicability_id.clone(), substituted),
+        ]);
+        assert!(unique_substrate_origin_head(nodes)
+            .unwrap_err()
+            .to_string()
+            .contains("substitutes predecessor"));
+    }
+
     fn slot(trigger: RecurrenceTriggerV1) -> RecurrenceSlotV1 {
         RecurrenceSlotV1::new(
             "policy-1".into(),
@@ -3745,6 +4023,7 @@ mod tests {
             observation_id: observation_id.into(),
             source_admissions: Vec::new(),
             continuity_applicability: Vec::new(),
+            substrate_origin_applicability: Vec::new(),
             external_evidence: None,
             decision_external_evidence: None,
             support,

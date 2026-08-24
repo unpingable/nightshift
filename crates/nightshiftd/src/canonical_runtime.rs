@@ -5,6 +5,8 @@
 //! exact occurrence. It has no effect, standing, authorization, retry, Docket,
 //! executor, or human-disposition API.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -36,7 +38,7 @@ use crate::diagnostic_posture::{
 use crate::external_evidence_composition::{
     ComposedExternalEvidenceV1, ExternalEvidenceProfileV1, ExternalEvidenceReferenceV1,
 };
-use crate::nq_admission::{qualify_delivered_inputs, NqAdmissionPortV1};
+use crate::nq_admission::{qualify_delivered_inputs_with_origin_history, NqAdmissionPortV1};
 use crate::steady_state_evidence::{
     ComposedDecisionRelativeEvidenceV1, DecisionRelativeEvidenceReferenceV1,
     SteadyStateEvidenceProfileV1,
@@ -932,8 +934,19 @@ where
             )?;
             return Ok(CycleRunOutcomeV1::Missed { cycle });
         }
-        let qualified_sources = qualify_delivered_inputs(&mut self.nq_admission, &request.inputs)
-            .map_err(CanonicalRuntimeError::NqAdmission)?;
+        let mut origin_history = BTreeMap::new();
+        if let Some(head) = self
+            .store
+            .substrate_origin_head(&request.policy.subject.id)?
+        {
+            origin_history.insert(request.policy.subject.id.clone(), head);
+        }
+        let qualified_sources = qualify_delivered_inputs_with_origin_history(
+            &mut self.nq_admission,
+            &request.inputs,
+            &origin_history,
+        )
+        .map_err(CanonicalRuntimeError::NqAdmission)?;
         let (claimed, lease) = self.store.claim_slot(
             request.slot,
             &request.scheduler_clock_id,
@@ -983,7 +996,9 @@ where
             }
         };
         let observation = ObservationRecordV1 {
-            schema: if !qualified_sources.continuity.is_empty() {
+            schema: if !qualified_sources.substrate_origins.is_empty() {
+                crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V6.into()
+            } else if !qualified_sources.continuity.is_empty() {
                 crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V5.into()
             } else if composed_decision_evidence.is_some() {
                 crate::canonical_store::OBSERVATION_RECORD_SCHEMA_V4.into()
@@ -995,6 +1010,7 @@ where
             observation_id: request.observation_id,
             source_admissions: qualified_sources.provenance,
             continuity_applicability: qualified_sources.continuity,
+            substrate_origin_applicability: qualified_sources.substrate_origins,
             external_evidence: composed_external_evidence,
             decision_external_evidence: composed_decision_evidence,
             support,
@@ -3310,6 +3326,7 @@ mod tests {
                 observation_id: request.observation_id,
                 source_admissions: Vec::new(),
                 continuity_applicability: Vec::new(),
+                substrate_origin_applicability: Vec::new(),
                 external_evidence: None,
                 decision_external_evidence: None,
                 support,

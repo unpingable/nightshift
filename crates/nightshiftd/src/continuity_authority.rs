@@ -80,7 +80,7 @@ fn object_id<T: Serialize>(value: &T, field: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -112,7 +112,7 @@ mod tests {
         (digest, signature)
     }
 
-    fn proof() -> ContinuityAcquisitionProofV1 {
+    pub(crate) fn proof() -> ContinuityAcquisitionProofV1 {
         let authority_payload = ContinuityAuthorityV1 {
             schema: AUTHORITY_SCHEMA_V1.into(),
             authority_occurrence_ref: Uuid::from_u128(1),
@@ -206,7 +206,7 @@ mod tests {
         }
     }
 
-    fn verifier() -> ContinuityAuthorityVerifierV1 {
+    pub(crate) fn verifier() -> ContinuityAuthorityVerifierV1 {
         ContinuityAuthorityVerifierV1::from_public_key_hex(
             KEY_ID.into(),
             AUDIENCE.into(),
@@ -215,7 +215,7 @@ mod tests {
         .unwrap()
     }
 
-    fn resign_authority(proof: &mut ContinuityAcquisitionProofV1) {
+    pub(crate) fn resign_authority(proof: &mut ContinuityAcquisitionProofV1) {
         let (digest, signature) = sign_payload(
             SIGNED_AUTHORITY_SCHEMA_V1,
             &proof.intent.carrier.authority.payload,
@@ -224,7 +224,7 @@ mod tests {
         proof.intent.carrier.authority.signature = signature;
     }
 
-    fn resign_commitment(proof: &mut ContinuityAcquisitionProofV1) {
+    pub(crate) fn resign_commitment(proof: &mut ContinuityAcquisitionProofV1) {
         let (digest, signature) = sign_payload(
             SIGNED_COMMITMENT_SCHEMA_V1,
             &proof.intent.carrier.commitment.payload,
@@ -233,7 +233,7 @@ mod tests {
         proof.intent.carrier.commitment.signature = signature;
     }
 
-    fn reseal_intent(proof: &mut ContinuityAcquisitionProofV1) {
+    pub(crate) fn reseal_intent(proof: &mut ContinuityAcquisitionProofV1) {
         proof.intent.intent_id.clear();
         proof.intent.intent_id = object_id(&proof.intent, "intent_id").unwrap();
         proof.intent_digest = format!("sha256:{:x}", Sha256::digest(jcs(&proof.intent).unwrap()));
@@ -1112,6 +1112,39 @@ impl ContinuityAuthorityVerifierV1 {
             ContinuityApplicabilityStatusV1::Applicable,
             ContinuityApplicabilityReasonV1::ExactAuthenticatedPrerequisite,
         )
+    }
+
+    /// Verify a Standing carrier embedded in the substrate-origin V3
+    /// acquisition basis. This is the same authenticated edge/commitment law
+    /// as V2, without manufacturing the older NQ intent wrapper.
+    pub(crate) fn verify_embedded_carrier(
+        &self,
+        carrier: &ContinuityAcquisitionCarrierV1,
+        basis: &ContinuityAcquisitionBasisV1,
+    ) -> Result<(), String> {
+        basis.edge.validate()?;
+        self.verify_authority(&carrier.authority)?;
+        self.verify_commitment(&carrier.commitment)?;
+        let authority = &carrier.authority.payload;
+        let commitment = &carrier.commitment.payload;
+        if commitment.authority_occurrence_ref != authority.authority_occurrence_ref
+            || commitment.authority_payload_digest != carrier.authority.payload_digest
+            || commitment.nq_audience != authority.nq_audience
+            || authority.nq_audience != self.expected_nq_audience
+            || commitment.standing_instance != authority.standing_instance
+            || commitment.acquisition_id != basis.acquisition_id
+            || commitment.acquisition_basis_digest != format!("{:x}", Sha256::digest(jcs(basis)?))
+            || basis.authority_occurrence_ref != authority.authority_occurrence_ref.to_string()
+            || basis.authority_digest != carrier.authority.payload_digest
+            || basis.edge != authority.edge
+            || basis.nq_audience != authority.nq_audience
+        {
+            return Err(
+                "Standing carrier does not bind the exact substrate-origin acquisition basis"
+                    .into(),
+            );
+        }
+        Ok(())
     }
 
     fn verify_proof(&self, proof: &ContinuityAcquisitionProofV1) -> Result<(), String> {

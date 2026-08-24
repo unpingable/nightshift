@@ -24,6 +24,7 @@ ExecStart=/usr/local/bin/nightshift \
     --nq-source-id ${NIGHTSHIFT_NQ_SOURCE_ID} \
     --present-evidence-resolver ${NIGHTSHIFT_PRESENT_EVIDENCE_RESOLVER} \
     $NIGHTSHIFT_CONTINUITY_FLAGS \
+    $NIGHTSHIFT_SUBSTRATE_ORIGIN_FLAGS \
     $NIGHTSHIFT_AG_FLAGS
 
 StandardOutput=journal

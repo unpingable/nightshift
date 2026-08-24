@@ -22,5 +22,6 @@ pub mod nq_admission;
 pub mod nq_disposition;
 pub mod observation_resolver;
 pub mod steady_state_evidence;
+pub mod substrate_origin;
 
 pub use errors::{NightShiftError, Result};

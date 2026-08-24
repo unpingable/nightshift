@@ -97,6 +97,10 @@ if ! rg -q '\$NIGHTSHIFT_CONTINUITY_FLAGS' deploy/systemd/nightshift-observation
     || ! rg -q '^NIGHTSHIFT_CONTINUITY_FLAGS=$' deploy/systemd/observation-cycle.env.example; then
     fail "active deployment cannot pin optional Standing continuity verification material"
 fi
+if ! rg -q '\$NIGHTSHIFT_SUBSTRATE_ORIGIN_FLAGS' deploy/systemd/nightshift-observation-cycle.service \
+    || ! rg -q '^NIGHTSHIFT_SUBSTRATE_ORIGIN_FLAGS=$' deploy/systemd/observation-cycle.env.example; then
+    fail "active deployment cannot pin an owner-required substrate-origin V3 verifier"
+fi
 if rg -n -i 'watchbill|wicket|\bwlp\b|governor|no-governor|authority[_ -]?level|scheduled[_ -]?skip' \
     "${active_units[@]}" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
     fail "retired runtime vocabulary remains in active systemd deployment:"
@@ -430,6 +434,35 @@ fi
 if rg -n 'standing-continuity-(private|secret|signing)' crates/nightshiftd/src/bin/nightshift.rs \
     >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
     fail "production Nightshift CLI accepts Standing private/signing material:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+
+# Substrate origin is an asymmetric evidence ingress and an append-only
+# relying-side chain. It neither signs, acts, nor accepts configured identity,
+# DNS, IP, hostname, or a mutable current-substrate field as origin proof.
+substrate_origin_source="crates/nightshiftd/src/substrate_origin.rs"
+substrate_origin_doc="docs/architecture/substrate-origin-v2.md"
+if [ ! -f "$substrate_origin_source" ] || [ ! -f "$substrate_origin_doc" ]; then
+    fail "substrate-origin verifier or canonical contract is missing"
+fi
+if ! rg -q 'pub struct SubstrateOriginVerifierV1' "$substrate_origin_source" \
+    || ! rg -q 'SubstrateOriginApplicabilityV1' crates/nightshiftd/src/canonical_store.rs; then
+    fail "substrate-origin verification/applicability path is missing"
+fi
+if ! rg -q 'substrate_origin_head' crates/nightshiftd/src/canonical_store.rs \
+    || ! rg -q 'V3 is required; V1 configured identity cannot establish continuity' \
+    crates/nightshiftd/src/nq_admission.rs; then
+    fail "append-only predecessor history or V1 downgrade refusal is missing"
+fi
+if awk '/#\[cfg\(test\)\]/{exit} {print}' "$substrate_origin_source" \
+    | rg -n 'SigningKey|Command::new|pub (hostname|dns|ip|boot_id|machine_id|current_substrate):' \
+      >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "production substrate-origin verifier contains signing, execution, or heuristic origin material:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n 'substrate-origin-(private|secret|signing)' crates/nightshiftd/src/bin/nightshift.rs \
+    >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "production Nightshift CLI accepts origin private/signing material:"
     cat /tmp/nightshift_exclusivity_hits >&2
 fi
 

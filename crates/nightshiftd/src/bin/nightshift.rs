@@ -36,6 +36,9 @@ use nightshiftd::nq_admission::{
 use nightshiftd::steady_state_evidence::{
     SteadyStateEvidenceProfileV1, SteadyStateObservationHandoffV1, SteadyStateObservationVerifierV1,
 };
+use nightshiftd::substrate_origin::{
+    SubstrateOriginRequirementV1, SubstrateOriginVerifierV1, REQUIREMENT_SCHEMA_V1,
+};
 
 const MAX_EXACT_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -257,6 +260,25 @@ struct CycleRunArguments {
     standing_continuity_key_id: Option<String>,
     #[arg(long, requires_all = ["standing_continuity_public_key", "standing_continuity_key_id"])]
     standing_continuity_nq_audience: Option<String>,
+    /// Independently owned Ed25519 origin-attester public key. Supplying this
+    /// activates the relying-side V3 requirement for the exact subject; V1/V2
+    /// evidence cannot downgrade it.
+    #[arg(long)]
+    substrate_origin_public_key: Option<PathBuf>,
+    #[arg(long)]
+    substrate_origin_profile_id: Option<String>,
+    #[arg(long)]
+    substrate_origin_subject_ref: Option<String>,
+    #[arg(long)]
+    substrate_origin_issuer_id: Option<String>,
+    #[arg(long)]
+    substrate_origin_key_id: Option<String>,
+    #[arg(long)]
+    substrate_origin_namespace: Option<String>,
+    /// Exact first V3 coordinate allowed to establish history. Omit after
+    /// cutover; a successor key then requires prior history plus Standing.
+    #[arg(long, requires = "substrate_origin_public_key")]
+    substrate_origin_bootstrap_coordinate_ref: Option<String>,
     #[arg(long)]
     ag_loopctl: Option<PathBuf>,
     #[arg(long)]
@@ -469,6 +491,13 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 standing_continuity_public_key,
                 standing_continuity_key_id,
                 standing_continuity_nq_audience,
+                substrate_origin_public_key,
+                substrate_origin_profile_id,
+                substrate_origin_subject_ref,
+                substrate_origin_issuer_id,
+                substrate_origin_key_id,
+                substrate_origin_namespace,
+                substrate_origin_bootstrap_coordinate_ref,
                 ag_loopctl,
                 ag_database,
                 ag_observation_resolver,
@@ -610,6 +639,47 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 (None, None, None) => nq,
                 _ => bail!(
                     "Standing continuity verification requires public key, key id, and NQ audience"
+                ),
+            };
+            let nq = match (
+                substrate_origin_public_key,
+                substrate_origin_profile_id,
+                substrate_origin_subject_ref,
+                substrate_origin_issuer_id,
+                substrate_origin_key_id,
+                substrate_origin_namespace,
+            ) {
+                (
+                    Some(key),
+                    Some(profile_id),
+                    Some(subject_ref),
+                    Some(issuer_id),
+                    Some(key_id),
+                    Some(namespace),
+                ) => nq.with_substrate_origin_verifier(
+                    SubstrateOriginVerifierV1::from_public_key_file(
+                        SubstrateOriginRequirementV1 {
+                            schema: REQUIREMENT_SCHEMA_V1.into(),
+                            profile_id,
+                            subject_ref,
+                            bootstrap_coordinate_ref:
+                                substrate_origin_bootstrap_coordinate_ref,
+                            expected_issuer_id: issuer_id,
+                            expected_key_id: key_id,
+                            expected_namespace: namespace,
+                        },
+                        &key,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                ),
+                (None, None, None, None, None, None) => {
+                    if substrate_origin_bootstrap_coordinate_ref.is_some() {
+                        bail!("substrate-origin bootstrap coordinate requires the full verifier configuration");
+                    }
+                    nq
+                }
+                _ => bail!(
+                    "substrate-origin verification requires public key, profile id, subject, issuer id, key id, and namespace"
                 ),
             };
             let outcome = if has_proposal {

@@ -19,10 +19,15 @@ use crate::continuity_authority::{
 };
 use crate::diagnostic_execution_v2::{DiagnosticExecution, NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA};
 use crate::diagnostic_posture::{DiagnosticInputStatus, DiagnosticInputs};
+use crate::substrate_origin::{
+    SubstrateOriginAcquisitionProofV1, SubstrateOriginApplicabilityStatusV1,
+    SubstrateOriginApplicabilityV1, SubstrateOriginVerifierV1,
+};
 
 pub const NQ_ADMISSION_QUERY_SCHEMA_V1: &str = "nightshift.nq_admission_query.v1";
 pub const NQ_ADMISSION_PROVENANCE_SCHEMA_V1: &str = "nq.diagnostic_admission_provenance.v1";
 pub const NQ_ADMISSION_PROVENANCE_SCHEMA_V2: &str = "nq.diagnostic_admission_provenance.v2";
+pub const NQ_ADMISSION_PROVENANCE_SCHEMA_V3: &str = "nq.diagnostic_admission_provenance.v3";
 
 const NQ_ADMISSION_NONCLAIMS: [&str; 3] = [
     "admission establishes evidence eligibility only",
@@ -478,6 +483,154 @@ impl NqAdmissionProvenanceV2 {
     }
 }
 
+/// Immutable NQ-NG provenance whose acquisition committed independently
+/// signed substrate-origin evidence before provider invocation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NqAdmissionProvenanceV3 {
+    pub schema: String,
+    pub provenance_id: String,
+    pub source: NqAdmissionSourceV1,
+    pub artifact: NqAdmissionArtifactV1,
+    pub origin: NqAdmissionOriginV1,
+    pub provider: NqAdmissionProviderV1,
+    pub substrate_origin: SubstrateOriginAcquisitionProofV1,
+    pub disposition: NqSourceDispositionV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judgment: Option<NqAdmissionJudgmentV1>,
+    pub nonclaims: Vec<String>,
+}
+
+impl NqAdmissionProvenanceV3 {
+    pub fn computed_provenance_id(&self) -> Result<String, String> {
+        object_id(self, "provenance_id")
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != NQ_ADMISSION_PROVENANCE_SCHEMA_V3 {
+            return Err("unsupported NQ substrate-origin provenance schema".into());
+        }
+        require_digest("provenance_id", &self.provenance_id)?;
+        if self.source.kind != "local_nq_store" {
+            return Err("NQ admission provenance is not local-source custody".into());
+        }
+        require_token("source_id", &self.source.source_id)?;
+        require_digest("artifact_id", &self.artifact.artifact_id)?;
+        if self.artifact.contract_schema != NQ_DIAGNOSTIC_EXECUTION_V2_SCHEMA
+            || self.artifact.canonical_bytes_length == 0
+        {
+            return Err("NQ substrate-origin provenance requires diagnostic execution v2".into());
+        }
+        require_digest(
+            "canonical_bytes_sha256",
+            &self.artifact.canonical_bytes_sha256,
+        )?;
+        require_token("run_id", &self.origin.run_id)?;
+        if self
+            .origin
+            .evaluation_id
+            .as_ref()
+            .is_some_and(String::is_empty)
+            || DateTime::parse_from_rfc3339(&self.origin.completed_at).is_err()
+            || DateTime::parse_from_rfc3339(&self.origin.committed_at).is_err()
+        {
+            return Err("NQ admission origin is invalid".into());
+        }
+        require_token("provider_intake_id", &self.provider.provider_intake_id)?;
+        require_digest("raw_sha256", &self.provider.raw_sha256)?;
+        require_digest(
+            "provider_admission_id",
+            &self.provider.provider_admission_id,
+        )?;
+        require_token("source_admission_id", &self.provider.source_admission_id)?;
+        require_digest(
+            "admission_context_digest",
+            &self.provider.admission_context_digest,
+        )?;
+        require_digest("profile_semantic_id", &self.provider.profile_semantic_id)?;
+        self.substrate_origin.validate_shape()?;
+        if self.provider.provider_intake_id != self.substrate_origin.intent.intake_id
+            || self.origin.run_id != self.substrate_origin.intent.run_id
+        {
+            return Err("NQ origin proof substitutes the provider intake or run".into());
+        }
+        match (self.disposition, &self.judgment) {
+            (NqSourceDispositionV1::AdmittedReport, Some(judgment)) => {
+                require_token("report_id", &judgment.report_id)?;
+                if judgment.judgment_schema != "nq-ng.judgment.v1" {
+                    return Err("NQ admission judgment schema is unsupported".into());
+                }
+                require_digest("judgment_digest", &judgment.judgment_digest)?;
+            }
+            (NqSourceDispositionV1::AdmittedReport, None) => {
+                return Err("admitted NQ report lacks its exact judgment".into());
+            }
+            (_, None) => {}
+            (_, Some(_)) => {
+                return Err("non-admitted NQ source carries a report judgment".into());
+            }
+        }
+        if self.nonclaims
+            != NQ_ADMISSION_NONCLAIMS
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        {
+            return Err("NQ admission nonclaims differ from the closed contract".into());
+        }
+        if self.provenance_id != self.computed_provenance_id()? {
+            return Err("NQ substrate-origin provenance identity mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn validate_query_binding(&self, query: &NqAdmissionQueryV1) -> Result<(), String> {
+        if self.source.source_id != query.source_id
+            || self.artifact.artifact_id != query.artifact_id
+            || self.artifact.contract_schema != query.contract_schema
+            || self.artifact.canonical_bytes_sha256 != query.canonical_bytes_sha256
+            || self.artifact.canonical_bytes_length != query.canonical_bytes_length
+            || self.origin.run_id != query.run_id
+            || self.origin.completed_at != query.completed_at
+            || query
+                .profile_semantic_id
+                .as_ref()
+                .is_some_and(|expected| expected != &self.provider.profile_semantic_id)
+        {
+            return Err(
+                "NQ substrate-origin provenance does not bind the exact diagnostic artifact".into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn validate_for(
+        &self,
+        query: &NqAdmissionQueryV1,
+        artifact: &DiagnosticExecution,
+        verifier: &SubstrateOriginVerifierV1,
+        continuity_verifier: Option<&ContinuityAuthorityVerifierV1>,
+        predecessor: Option<&SubstrateOriginApplicabilityV1>,
+    ) -> Result<SubstrateOriginApplicabilityV1, String> {
+        query.validate()?;
+        self.validate()?;
+        self.validate_query_binding(query)?;
+        let provider_intake_ids = artifact.provider_intake_ids();
+        if provider_intake_ids.len() != 1 {
+            return Err("origin-bearing diagnostic must bind exactly one provider intake".into());
+        }
+        verifier.evaluate(
+            &self.substrate_origin,
+            &self.artifact.artifact_id,
+            &artifact.subject().id,
+            provider_intake_ids[0],
+            predecessor,
+            continuity_verifier,
+        )
+    }
+}
+
 /// Frozen wire union. V1 remains historical; V2 is the only variant that may
 /// carry the cross-office continuity prerequisite.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -485,6 +638,7 @@ impl NqAdmissionProvenanceV2 {
 pub enum NqAdmissionProvenance {
     V1(Box<NqAdmissionProvenanceV1>),
     V2(Box<NqAdmissionProvenanceV2>),
+    V3(Box<NqAdmissionProvenanceV3>),
 }
 
 impl NqAdmissionProvenance {
@@ -492,27 +646,7 @@ impl NqAdmissionProvenance {
         match self {
             Self::V1(value) => &value.artifact.artifact_id,
             Self::V2(value) => &value.artifact.artifact_id,
-        }
-    }
-
-    pub fn validate_for(
-        &self,
-        query: &NqAdmissionQueryV1,
-        artifact: &DiagnosticExecution,
-        verifier: Option<&ContinuityAuthorityVerifierV1>,
-    ) -> Result<Option<ContinuityApplicabilityV1>, String> {
-        match self {
-            Self::V1(value) => {
-                value.validate_for(query)?;
-                Ok(None)
-            }
-            Self::V2(value) => {
-                let verifier = verifier.ok_or_else(|| {
-                    "NQ continuity provenance arrived without a configured Standing verifier"
-                        .to_owned()
-                })?;
-                value.validate_for(query, artifact, verifier).map(Some)
-            }
+            Self::V3(value) => &value.artifact.artifact_id,
         }
     }
 }
@@ -522,6 +656,10 @@ pub trait NqAdmissionPortV1 {
     fn qualify(&mut self, query: &NqAdmissionQueryV1) -> Result<NqAdmissionProvenance, String>;
 
     fn continuity_verifier(&self) -> Option<&ContinuityAuthorityVerifierV1> {
+        None
+    }
+
+    fn substrate_origin_verifier(&self) -> Option<&SubstrateOriginVerifierV1> {
         None
     }
 }
@@ -534,6 +672,7 @@ pub struct CommandNqAdmissionPortV1 {
     config: PathBuf,
     source_id: String,
     continuity_verifier: Option<ContinuityAuthorityVerifierV1>,
+    substrate_origin_verifier: Option<SubstrateOriginVerifierV1>,
 }
 
 impl CommandNqAdmissionPortV1 {
@@ -552,11 +691,17 @@ impl CommandNqAdmissionPortV1 {
             config: config.into(),
             source_id,
             continuity_verifier: None,
+            substrate_origin_verifier: None,
         })
     }
 
     pub fn with_continuity_verifier(mut self, verifier: ContinuityAuthorityVerifierV1) -> Self {
         self.continuity_verifier = Some(verifier);
+        self
+    }
+
+    pub fn with_substrate_origin_verifier(mut self, verifier: SubstrateOriginVerifierV1) -> Self {
+        self.substrate_origin_verifier = Some(verifier);
         self
     }
 
@@ -611,6 +756,15 @@ impl NqAdmissionPortV1 for CommandNqAdmissionPortV1 {
                     );
                 }
             }
+            NqAdmissionProvenance::V3(value) => {
+                value.validate()?;
+                if self.substrate_origin_verifier.is_none() {
+                    return Err(
+                        "NQ substrate-origin provenance arrived without a configured origin verifier"
+                            .into(),
+                    );
+                }
+            }
         }
         Ok(provenance)
     }
@@ -618,18 +772,34 @@ impl NqAdmissionPortV1 for CommandNqAdmissionPortV1 {
     fn continuity_verifier(&self) -> Option<&ContinuityAuthorityVerifierV1> {
         self.continuity_verifier.as_ref()
     }
+
+    fn substrate_origin_verifier(&self) -> Option<&SubstrateOriginVerifierV1> {
+        self.substrate_origin_verifier.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QualifiedNqAdmissionsV1 {
     pub provenance: Vec<NqAdmissionProvenance>,
     pub continuity: Vec<ContinuityApplicabilityV1>,
+    pub substrate_origins: Vec<SubstrateOriginApplicabilityV1>,
 }
 
 /// Qualify each unique delivered artifact before Nightshift claims a slot.
 pub fn qualify_delivered_inputs(
     port: &mut impl NqAdmissionPortV1,
     inputs: &DiagnosticInputs,
+) -> Result<QualifiedNqAdmissionsV1, String> {
+    qualify_delivered_inputs_with_origin_history(port, inputs, &BTreeMap::new())
+}
+
+/// Qualify delivered artifacts against the exact admitted origin-chain head
+/// for each subject. The producer cannot select whether the configured V3
+/// requirement applies.
+pub fn qualify_delivered_inputs_with_origin_history(
+    port: &mut impl NqAdmissionPortV1,
+    inputs: &DiagnosticInputs,
+    origin_history: &BTreeMap<String, SubstrateOriginApplicabilityV1>,
 ) -> Result<QualifiedNqAdmissionsV1, String> {
     let mut queries = BTreeMap::new();
     for input in &inputs.inputs {
@@ -647,24 +817,69 @@ pub fn qualify_delivered_inputs(
     }
     let mut provenances = Vec::with_capacity(queries.len());
     let mut continuity = Vec::new();
+    let mut substrate_origins = Vec::new();
     for (query, artifact) in queries.into_values() {
         let provenance = port.qualify(&query)?;
-        if let Some(verdict) =
-            provenance.validate_for(&query, &artifact, port.continuity_verifier())?
-        {
-            if verdict.status != ContinuityApplicabilityStatusV1::Applicable {
-                return Err(format!(
-                    "continuity attribution is {:?}: {:?}",
-                    verdict.status, verdict.reason
-                ));
+        let required_origin = port
+            .substrate_origin_verifier()
+            .is_some_and(|verifier| verifier.requirement().subject_ref == artifact.subject().id);
+        match &provenance {
+            NqAdmissionProvenance::V1(value) => {
+                value.validate_for(&query)?;
+                if required_origin {
+                    return Err(
+                        "substrate-origin V3 is required; V1 configured identity cannot establish continuity"
+                            .into(),
+                    );
+                }
             }
-            continuity.push(verdict);
+            NqAdmissionProvenance::V2(value) => {
+                if required_origin {
+                    return Err(
+                        "substrate-origin V3 is required; V2 authority without origin proof cannot establish continuity"
+                            .into(),
+                    );
+                }
+                let verifier = port.continuity_verifier().ok_or_else(|| {
+                    "NQ continuity provenance arrived without a configured Standing verifier"
+                        .to_owned()
+                })?;
+                let verdict = value.validate_for(&query, &artifact, verifier)?;
+                if verdict.status != ContinuityApplicabilityStatusV1::Applicable {
+                    return Err(format!(
+                        "continuity attribution is {:?}: {:?}",
+                        verdict.status, verdict.reason
+                    ));
+                }
+                continuity.push(verdict);
+            }
+            NqAdmissionProvenance::V3(value) => {
+                let verifier = port.substrate_origin_verifier().ok_or_else(|| {
+                    "NQ substrate-origin provenance arrived without a configured origin verifier"
+                        .to_owned()
+                })?;
+                let verdict = value.validate_for(
+                    &query,
+                    &artifact,
+                    verifier,
+                    port.continuity_verifier(),
+                    origin_history.get(&artifact.subject().id),
+                )?;
+                if verdict.status != SubstrateOriginApplicabilityStatusV1::Applicable {
+                    return Err(format!(
+                        "substrate-origin attribution is {:?}: {:?}",
+                        verdict.status, verdict.reason
+                    ));
+                }
+                substrate_origins.push(verdict);
+            }
         }
         provenances.push(provenance);
     }
     Ok(QualifiedNqAdmissionsV1 {
         provenance: provenances,
         continuity,
+        substrate_origins,
     })
 }
 
@@ -674,6 +889,7 @@ pub fn validate_admission_cover(
     inputs: &DiagnosticInputs,
     provenance: &[NqAdmissionProvenance],
     continuity: &[ContinuityApplicabilityV1],
+    substrate_origins: &[SubstrateOriginApplicabilityV1],
 ) -> Result<(), String> {
     let mut expected = BTreeMap::new();
     for input in &inputs.inputs {
@@ -688,6 +904,7 @@ pub fn validate_admission_cover(
         );
     }
     let mut expected_continuity = BTreeMap::new();
+    let mut expected_origins = BTreeMap::new();
     for ((artifact_id, (query, artifact)), actual) in expected.into_iter().zip(provenance) {
         if actual.artifact_id() != artifact_id {
             return Err("NQ admission provenance is not in canonical artifact order".into());
@@ -707,6 +924,19 @@ pub fn validate_admission_cover(
                     );
                 }
                 expected_continuity.insert(artifact_id, &value.continuity);
+            }
+            NqAdmissionProvenance::V3(value) => {
+                value.validate()?;
+                value.validate_query_binding(&query)?;
+                let provider_intake_ids = artifact.provider_intake_ids();
+                if provider_intake_ids.len() != 1
+                    || provider_intake_ids[0] != value.substrate_origin.intent.intake_id
+                {
+                    return Err(
+                        "persisted origin proof substitutes the diagnostic provider intake".into(),
+                    );
+                }
+                expected_origins.insert(artifact_id, &value.substrate_origin);
             }
         }
     }
@@ -744,12 +974,45 @@ pub fn validate_admission_cover(
             return Err("continuity applicability substitutes its exact NQ source proof".into());
         }
     }
+    if expected_origins.len() != substrate_origins.len() {
+        return Err(
+            "substrate-origin applicability does not cover every V3 source admission exactly once"
+                .into(),
+        );
+    }
+    for ((artifact_id, proof), verdict) in expected_origins.into_iter().zip(substrate_origins) {
+        verdict.validate()?;
+        if verdict.diagnostic_artifact_id != artifact_id
+            || verdict.status != SubstrateOriginApplicabilityStatusV1::Applicable
+            || verdict.subject_ref != proof.intent.basis.subject_ref
+            || verdict.observed_coordinate_ref
+                != proof.intent.basis.expected_coordinate.coordinate_ref
+            || verdict.attestation_occurrence_ref
+                != proof.intent.attestation.payload.attestation_occurrence_ref
+            || verdict.acquisition_id != proof.intent.basis.acquisition_id
+            || verdict.provider_intake_ref != proof.intent.intake_id
+            || verdict.authority_occurrence_ref
+                != proof.intent.continuity_carrier.as_ref().map(|carrier| {
+                    carrier
+                        .authority
+                        .payload
+                        .authority_occurrence_ref
+                        .to_string()
+                })
+        {
+            return Err(
+                "substrate-origin applicability substitutes its exact NQ source proof".into(),
+            );
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::substrate_origin::{SubstrateOriginRequirementV1, REQUIREMENT_SCHEMA_V1};
+    use ed25519_dalek::SigningKey;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
@@ -822,7 +1085,13 @@ mod tests {
         let admitted = qualify_delivered_inputs(&mut FixedPort, &inputs).unwrap();
         assert_eq!(admitted.provenance.len(), 1);
         assert!(admitted.continuity.is_empty());
-        validate_admission_cover(&inputs, &admitted.provenance, &admitted.continuity).unwrap();
+        validate_admission_cover(
+            &inputs,
+            &admitted.provenance,
+            &admitted.continuity,
+            &admitted.substrate_origins,
+        )
+        .unwrap();
         let NqAdmissionProvenance::V1(provenance) = &admitted.provenance[0] else {
             panic!("legacy fixture is v1")
         };
@@ -830,6 +1099,48 @@ mod tests {
             provenance.source.source_id, "nq-node:fixture",
             "the source principal is preserved independently of its command path"
         );
+    }
+
+    #[test]
+    fn configured_origin_requirement_refuses_v1_identity_downgrade() {
+        struct OriginRequiredPort {
+            verifier: SubstrateOriginVerifierV1,
+        }
+
+        impl NqAdmissionPortV1 for OriginRequiredPort {
+            fn qualify(
+                &mut self,
+                query: &NqAdmissionQueryV1,
+            ) -> Result<NqAdmissionProvenance, String> {
+                Ok(NqAdmissionProvenance::V1(Box::new(provenance(query))))
+            }
+
+            fn substrate_origin_verifier(&self) -> Option<&SubstrateOriginVerifierV1> {
+                Some(&self.verifier)
+            }
+        }
+
+        let inputs = inputs();
+        let DiagnosticInputStatus::Delivered { artifact } = &inputs.inputs[0].status else {
+            panic!("delivered fixture");
+        };
+        let key = SigningKey::from_bytes(&[23; 32]);
+        let verifier = SubstrateOriginVerifierV1::from_public_key_hex(
+            SubstrateOriginRequirementV1 {
+                schema: REQUIREMENT_SCHEMA_V1.into(),
+                profile_id: "origin-profile:test".into(),
+                subject_ref: artifact.subject().id.clone(),
+                bootstrap_coordinate_ref: None,
+                expected_issuer_id: "origin-attester:test".into(),
+                expected_key_id: "origin-key:test".into(),
+                expected_namespace: "test.local".into(),
+            },
+            &hex::encode(key.verifying_key().as_bytes()),
+        )
+        .expect("origin verifier");
+        let error = qualify_delivered_inputs(&mut OriginRequiredPort { verifier }, &inputs)
+            .expect_err("V1 identity equality cannot downgrade an owner-required V3 path");
+        assert!(error.contains("V3 is required"), "{error}");
     }
 
     #[test]
