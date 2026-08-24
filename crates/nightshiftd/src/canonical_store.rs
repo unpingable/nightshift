@@ -3855,6 +3855,64 @@ mod tests {
     }
 
     #[test]
+    fn a_different_vantage_changes_policy_and_cannot_supersede_the_local_family() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();
+        let (local_policy, _, _) = example_policy_inputs_recurrence();
+        let local_slot = slot_with_ids(
+            &local_policy.policy_id,
+            "config-v1",
+            &local_policy.subject.id,
+            &local_policy.subject.scope.digest,
+            "nightshift-scheduler-1",
+            1,
+            RecurrenceTriggerV1::Scheduled,
+            None,
+        );
+        let local = record_test_observation(
+            &mut store,
+            local_slot,
+            "nightshift-scheduler-1",
+            &digest('a'),
+            time("2026-08-11T12:01:00Z"),
+        );
+
+        let mut remote_policy = local_policy.clone();
+        remote_policy.inventory[0].binding.vantage.id = "nq.vantage.remote.fixture".into();
+        remote_policy.inventory[0].binding.vantage.digest = digest('f');
+        remote_policy.policy_id.clear();
+        remote_policy.policy_id = remote_policy.computed_policy_id().unwrap();
+        remote_policy.validate().unwrap();
+        assert_ne!(remote_policy.policy_id, local_policy.policy_id);
+
+        let remote_slot = slot_with_ids(
+            &remote_policy.policy_id,
+            "config-v1",
+            &remote_policy.subject.id,
+            &remote_policy.subject.scope.digest,
+            "nightshift-scheduler-1",
+            99,
+            RecurrenceTriggerV1::Scheduled,
+            None,
+        );
+        record_test_observation(
+            &mut store,
+            remote_slot,
+            "nightshift-scheduler-1",
+            &digest('b'),
+            time("2026-08-11T13:39:00Z"),
+        );
+
+        let family = ObservationFamilyKeyV1::of_slot(&local.slot);
+        let latest = store
+            .latest_qualified_observation_in_family(&family)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.cycle_id, local.cycle_id);
+        assert_eq!(latest.slot.occurrence, 1);
+    }
+
+    #[test]
     fn missed_and_recovery_cycles_never_qualify_as_latest() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = CanonicalStore::open(directory.path().join("ns.sqlite")).unwrap();

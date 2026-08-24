@@ -7,6 +7,11 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=/etc/nightshift/observation-cycle.env
 
+# Refuse Debian's unrelated `nq` executable and pre-producer NQ-NG builds
+# before a recurrence attempt reaches the evidence-admission call.
+ExecStartPre=/usr/bin/env ${NIGHTSHIFT_NQ_PROGRAM} --help
+ExecStartPre=/usr/bin/env ${NIGHTSHIFT_NQ_PROGRAM} diagnostics qualify --help
+
 # The recurrence timer permits one observation attempt only. The request binds
 # the exact recurrence slot, complete diagnostic basis, and optional immutable
 # AG proposal. Empty NIGHTSHIFT_AG_FLAGS is valid for posture-only cycles.

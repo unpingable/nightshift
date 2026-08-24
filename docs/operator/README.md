@@ -26,6 +26,23 @@ One observation cycle requires:
   returns an exact query-bound `QualifiedSupportV1`;
 - an operator-owned Nightshift SQLite path.
 
+The NQ executable must be the NQ-NG operator CLI, not Debian's unrelated
+queueing utility of the same name and not Classic NQ's `nq-monitor`. Verify the
+closed read boundary before enabling a cycle:
+
+```sh
+/absolute/path/to/nq --help
+/absolute/path/to/nq diagnostics qualify --help
+```
+
+Both checks are intentional. Debian's unrelated queueing utility rejects the
+first even though it may return success for arbitrary trailing command words;
+an older NQ-NG build passes the first but refuses the second.
+
+NQ-NG's package intentionally conflicts with Debian's `nq` package rather
+than overwriting it. Selecting and installing NQ-NG remains an explicit
+deployment/cutover decision.
+
 If the request contains exact work, the cycle additionally requires paths to
 `ag-loopctl`, AG's database, AG's observation resolver and expected identity,
 and AG's deployment-owned runtime profile. Those are the only

@@ -17,6 +17,15 @@ authority, and any immutable exact-work proposal goes only to AG. Admission is
 not authorization. The unit has no Governor, Wicket, WLP, Docket, or executor
 option.
 
+The service first requires the configured program to support NQ-NG's global
+`--help`, then preflights the exact `diagnostics qualify` CLI surface before
+each cycle. Both checks are required: Debian's unrelated `/usr/bin/nq` happens
+to return success for some arbitrary command arguments, while rejecting
+`--help`; older NQ-NG builds support global help but predate the producer
+boundary. These capability checks do not establish source identity or
+authorize NQ-NG deployment; the configured store-genesis identity and separate
+deployment/cutover procedure remain load-bearing.
+
 Install as reference scaffolding after replacing every site-owned path:
 
 ```sh

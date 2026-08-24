@@ -159,6 +159,14 @@ fn only_nq_admission_present_support_and_ag_are_process_boundaries() {
 }
 
 #[test]
+fn reference_service_refuses_an_nq_binary_without_the_qualify_contract() {
+    let service = read(repo_root().join("deploy/systemd/nightshift-observation-cycle.service"));
+    assert!(service.contains("ExecStartPre=/usr/bin/env ${NIGHTSHIFT_NQ_PROGRAM} --help"));
+    assert!(service
+        .contains("ExecStartPre=/usr/bin/env ${NIGHTSHIFT_NQ_PROGRAM} diagnostics qualify --help"));
+}
+
+#[test]
 fn ag_genesis_carries_the_deployment_owned_runtime_profile() {
     let source = read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

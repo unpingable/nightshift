@@ -461,6 +461,9 @@ pub fn validate_admission_cover(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
     fn digest(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
     }
@@ -571,5 +574,103 @@ mod tests {
             .qualify(&query)
             .unwrap_err()
             .contains("does not match configured NQ source"));
+    }
+
+    #[cfg(unix)]
+    fn command_fixture(
+        response: &[u8],
+        exit_status: i32,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let response_path = root.path().join("response.json");
+        let arguments_path = root.path().join("arguments.txt");
+        let program = root.path().join("nq");
+        std::fs::write(&response_path, response).unwrap();
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat '{}'\nexit {}\n",
+                arguments_path.display(),
+                response_path.display(),
+                exit_status
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = root.path().join("nq.toml");
+        (root, program, config, arguments_path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_command_adapter_invokes_the_closed_nq_ng_boundary() {
+        let inputs = inputs();
+        let DiagnosticInputStatus::Delivered { artifact } = &inputs.inputs[0].status else {
+            panic!("delivered fixture");
+        };
+        let query = NqAdmissionQueryV1::from_artifact(artifact).unwrap();
+        let expected = provenance(&query);
+        let response = serde_json::to_vec(&expected).unwrap();
+        let (_root, program, config, arguments_path) = command_fixture(&response, 0);
+        let mut port =
+            CommandNqAdmissionPortV1::new(&program, &config, query.source_id.clone()).unwrap();
+
+        assert_eq!(port.qualify(&query).unwrap(), expected);
+        let arguments = std::fs::read_to_string(arguments_path).unwrap();
+        assert_eq!(
+            arguments.lines().collect::<Vec<_>>(),
+            [
+                "--config",
+                config.to_str().unwrap(),
+                "--json",
+                "diagnostics",
+                "qualify",
+                query.artifact_id.as_str(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_adapter_refuses_malformed_wrong_schema_trailing_and_failed_output() {
+        let inputs = inputs();
+        let DiagnosticInputStatus::Delivered { artifact } = &inputs.inputs[0].status else {
+            panic!("delivered fixture");
+        };
+        let query = NqAdmissionQueryV1::from_artifact(artifact).unwrap();
+
+        let cases = [
+            (b"not-json".to_vec(), 0, "invalid provenance"),
+            (
+                {
+                    let mut value = serde_json::to_value(provenance(&query)).unwrap();
+                    value["schema"] = serde_json::json!("nq.unknown.v1");
+                    serde_json::to_vec(&value).unwrap()
+                },
+                0,
+                "unsupported NQ admission provenance schema",
+            ),
+            (
+                {
+                    let mut bytes = serde_json::to_vec(&provenance(&query)).unwrap();
+                    bytes.extend_from_slice(b"\n{}");
+                    bytes
+                },
+                0,
+                "trailing data",
+            ),
+            (Vec::new(), 23, "refused admission provenance"),
+        ];
+
+        for (response, exit_status, expected_error) in cases {
+            let (_root, program, config, _) = command_fixture(&response, exit_status);
+            let mut port =
+                CommandNqAdmissionPortV1::new(program, config, query.source_id.clone()).unwrap();
+            let error = port.qualify(&query).unwrap_err();
+            assert!(
+                error.contains(expected_error),
+                "expected {expected_error:?}, got {error:?}"
+            );
+        }
     }
 }
