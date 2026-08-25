@@ -1,16 +1,16 @@
 # Present-evidence support source gate
 
-Status: canonical production boundary. This record closes the 2026-08-25
-Linode pulse-support audit without defining a new observation family or
-deploying a support producer.
+Status: canonical production boundary, closed for exactly
+`nq.host.load_pressure/v1` by the separately owned
+`pulse.nq_host_load_pressure.v1` family. No generic support-family law follows.
 
 ## Result
 
-The production command port and the final Nightshift decision boundary exist,
-but no production evidence source is qualified to answer the first Linode
-office's exact present-support question. The classification is:
+The production command port, one proposition-exact production support source,
+and the final Nightshift decision boundary now form one qualified path. The
+focused campaign classification is:
 
-> **SEMANTIC GAP — PRESENT SUPPORT SOURCE UNDEFINED**
+> **EXACT LOAD-PRESSURE SUPPORT QUALIFIED**
 
 `present_evidence_unavailable` means that the live cycle could not obtain an
 exact `nightshift.qualified_support.v1` response from its configured
@@ -18,9 +18,13 @@ present-evidence authority. It is an operational refusal at the external
 support port. It does not mean that the subject is unhealthy, that its NQ
 evidence is false, or that a diagnostic acquisition should be repeated.
 
-The missing executable is not the substantive gap. Installing a program that
-merely returns `current` would turn an unresolved observation meaning into a
-deployment choice. That is forbidden.
+The resolver did not become an observer. A dedicated producer independently
+reads the first token of `/proc/loadavg` and Rust
+`available_parallelism()`, derives the exact NQ v1 threshold proposition, and
+signs one append-only support occurrence. A separate receiver verifies that
+occurrence and fixes its exclusive receiver-clock expiry. The resolver only
+matches retained receiver custody to the exact live query. Nightshift still
+owns the resulting posture/currentness consequence.
 
 ## Existing ownership and contract
 
@@ -62,10 +66,35 @@ load and the NQ host threshold policy. Its V3 Linode origin chain establishes
 where that exact acquisition originated. It does not establish that the load
 claim remains true now.
 
-Any positive production support source for this question therefore needs an
-explicit, qualified law connecting its own independently acquired evidence to
-that exact diagnostic proposition, subject, watcher/vantage family, and
-decision policy. No such law currently exists.
+The qualified law now exists for this proposition only. It pins the exact NQ
+question, profile, profile-semantic, threshold-policy, subject, scope,
+vantage, diagnostic-input, and artifact identities. It does not define an
+implication from correlated health evidence.
+
+## Exact production family
+
+`pulse.nq_host_load_pressure.v1` observes the same raw basis and applies the
+same derivation as `nq.host.load_pressure/v1`:
+
+```text
+load1 = finite non-negative f64(first token of /proc/loadavg)
+capacity = positive Rust available_parallelism()
+present iff load1 / capacity >= 2.000
+```
+
+The signed evidence preserves both raw inputs, the derived state, exact
+semantic and policy identities, subject, vantage, producer, acquisition
+identity, and Linux boot-clock observation point. Receiver custody assigns the
+exclusive 300-second support horizon. Exact replay does not reread the host or
+move observation, receipt, or expiry. A deliberate new acquisition is a new
+support occurrence; it is not a new NQ diagnostic.
+
+The producer cannot read the canonical NQ artifact and the resolver cannot
+invoke either the producer or NQ. Wrong subject, scope, artifact basis,
+producer, signature, semantic policy, and support-family substitutions refuse.
+Contradictory current support is returned as `contradictory` with its exact
+evidence reference; the resolver does not fall back to an older agreeing
+occurrence.
 
 ## Candidate sources audited
 
@@ -119,32 +148,32 @@ replay(existing diagnostic acquisition)
 != resolve support applicability
 ```
 
-The present contract can validate exact query/response replay and strict
-receiver-clock expiry. It does not yet decide whether a later independent
-support occurrence may support this earlier load observation, because the
-required production support family and its applicability law are undefined.
-Selecting such a law is an observation-meaning decision, not resolver
-implementation.
+For this exact semantic-identity family, a later independent support occurrence
+may support the unchanged earlier diagnostic object. It establishes the same
+bounded proposition at its own later occurrence; it does not refresh or alter
+the diagnostic bytes or their evidence time. At receiver-clock expiry the
+support becomes `expired` while both evidence objects remain historical. A
+fresh independently acquired occurrence may restore only the support
+component. This law does not generalize to another proposition.
 
 ## Deployment consequence
 
-The Linode office remains installed and dormant. Its first cycle remains
-`recovery_required` for `present_evidence_unavailable`; no canonical
-observation was persisted. No pulse producer or resolver was installed, no
-new diagnostic acquisition occurred, and no timer was enabled.
+The original cycle `cycle:b6d91041-cbba-47e8-af88-f872c325aa11` remains
+append-only `recovery_required` for `present_evidence_unavailable`. A new
+ordinary manual Nightshift slot reused the unchanged exact NQ diagnostic
+artifact and consumed one current support occurrence. It persisted canonical
+observation
+`sha256:11dd56509e57e8f094aa03e1ace29889b92e014a1d3262b65b53a8762fce5ba2`
+in closed cycle `cycle:cb11146d-5d68-48b2-8b91-dda91b12f437` with `Clean`,
+current, complete posture.
 
-The next prerequisite is to ratify one production support family for an exact
-Nightshift decision. That ratification must state:
+No second NQ diagnostic acquisition occurred. The NQ acquisition unit did not
+run. Exact P1 replay preserved file bytes, mtimes, evidence identity, receipt
+identity, and expiry. After P1 expired, a deliberate P2 support occurrence had
+a distinct acquisition/evidence/receipt identity and independently restored
+support currentness without changing the NQ artifact.
 
-1. the independently owned support proposition and producer;
-2. exact subject, watcher/observation-family, vantage, source, and policy
-   bindings;
-3. the receiver-owned occurrence, replay, and expiry law;
-4. the exact implication from the support proposition to the diagnostic
-   proposition or decision being supported;
-5. authentication, custody, restart, and contradiction behavior; and
-6. whether later support may lawfully support an earlier diagnostic object.
-
-Only after that contract exists may a production resolver be implemented and
-deployed. Repeat diagnostic acquisition is a separate campaign and cannot be
-hidden inside this prerequisite.
+The installed producer and receiver are disabled/static one-shot units; no
+timer or generic monitor was introduced. Repeat diagnostic acquisition and a
+bounded continuing-office cadence remain separate campaigns. Continuous
+operation is not enabled.

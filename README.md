@@ -76,9 +76,11 @@ input set, recurrence evidence, and optional temporal policy.
 The resolver path is an external qualified-authority port, not an executable
 shipped by Nightshift. The repository fixture with that basename is not Pulse
 and is not deployable support. A site must first qualify a support family that
-actually applies to its exact diagnostic decision; the unresolved production
-gate is documented in
-[`PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md`](docs/PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md).
+actually applies to its exact diagnostic decision. That boundary and the one
+qualified proposition-specific production family are documented in
+[`PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md`](docs/PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md)
+and
+[`EXACT_LOAD_PRESSURE_SUPPORT_DEPLOYMENT.md`](docs/EXACT_LOAD_PRESSURE_SUPPORT_DEPLOYMENT.md).
 
 Before claiming the slot, Nightshift asks the configured NQ-NG source to
 qualify every delivered artifact. NQ-NG reopens verified local v2 history and
