@@ -573,6 +573,14 @@ prepared request.
 subprocess, never by operators, and takes its store, identity, and TTL from
 explicit arguments.
 
+Nightshift defines the exact `pulse-support-resolver` command grammar but does
+not ship a production support producer or resolver. The operational fixture
+qualifies the process boundary only. A deployment must not interpret that
+fixture, Classic NQ liveness, V3 origin custody, or NQ admission as present
+support. The production-source gate and the unresolved Linode decision are
+recorded in
+[`PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md`](PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md).
+
 ## Production exclusivity
 
 Cargo automatic binary discovery is disabled and the manifest declares

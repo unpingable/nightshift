@@ -26,6 +26,15 @@ One observation cycle requires:
   returns an exact query-bound `QualifiedSupportV1`;
 - an operator-owned Nightshift SQLite path.
 
+Nightshift does not ship that resolver or a production support source. The
+similarly named qualification fixture is not Pulse and must not be installed.
+Before configuring this port, the deployment needs a qualified support family
+whose independently produced proposition actually applies to the exact
+diagnostic decision; see
+[`../PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md`](../PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md).
+Origin verification, NQ admission, and Classic NQ liveness do not satisfy this
+requirement.
+
 The NQ executable must be the NQ-NG operator CLI, not Debian's unrelated
 queueing utility of the same name and not Classic NQ's `nq-monitor`. Verify the
 closed read boundary before enabling a cycle:

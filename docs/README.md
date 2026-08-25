@@ -20,6 +20,7 @@ Start with the canonical runtime record, then use `architecture/` and
 `working/` as explicitly historical design context.
 
 - [`CANONICAL_RUNTIME_C1.md`](CANONICAL_RUNTIME_C1.md) — current runtime contract and production topology
+- [`PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md`](PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md) — exact external support boundary and the unresolved production-source prerequisite
 - [`CONTINUITY_AUTHORITY_CARRIER_V1.md`](CONTINUITY_AUTHORITY_CARRIER_V1.md) — signed Standing warrant, pre-provider NQ commitment, and Nightshift applicability boundary
 - [`architecture/DESIGN.md`](architecture/DESIGN.md) — historical pre-C1 architecture and MVP scope
 - [`architecture/FLOW-tolerability-horizon.md`](architecture/FLOW-tolerability-horizon.md) — historical Governor-shaped horizon flow; temporal hold policy survives in the canonical store

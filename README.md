@@ -73,6 +73,13 @@ The request is a sealed `CanonicalCycleRequestV1` that binds the exact
 recurrence slot, observation identity, closed diagnostic policy, complete NQ
 input set, recurrence evidence, and optional temporal policy.
 
+The resolver path is an external qualified-authority port, not an executable
+shipped by Nightshift. The repository fixture with that basename is not Pulse
+and is not deployable support. A site must first qualify a support family that
+actually applies to its exact diagnostic decision; the unresolved production
+gate is documented in
+[`PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md`](docs/PRESENT_EVIDENCE_SUPPORT_SOURCE_GATE.md).
+
 Before claiming the slot, Nightshift asks the configured NQ-NG source to
 qualify every delivered artifact. NQ-NG reopens verified local v2 history and
 returns `nq.diagnostic_admission_provenance.v1`; Nightshift independently
