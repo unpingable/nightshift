@@ -454,6 +454,13 @@ if ! rg -q 'substrate_origin_head' crates/nightshiftd/src/canonical_store.rs \
     crates/nightshiftd/src/nq_admission.rs; then
     fail "append-only predecessor history or V1 downgrade refusal is missing"
 fi
+if ! rg -q 'LINODE_INSTANCE_METADATA_PROFILE_V1' "$substrate_origin_source" \
+    || ! rg -q 'host UUID is supplemental evidence and is not part of the qualified coordinate' \
+    "$substrate_origin_source" \
+    || ! rg -q 'expected_linode_instance_id_sha256' \
+    crates/nightshiftd/src/bin/nightshift.rs; then
+    fail "closed Linode logical-instance profile or exact relying-side pin is missing"
+fi
 if awk '/#\[cfg\(test\)\]/{exit} {print}' "$substrate_origin_source" \
     | rg -n 'SigningKey|Command::new|pub (hostname|dns|ip|boot_id|machine_id|current_substrate):' \
       >/tmp/nightshift_exclusivity_hits 2>/dev/null; then

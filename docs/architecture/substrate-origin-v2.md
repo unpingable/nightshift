@@ -6,7 +6,10 @@ Standing authorizes an exact `substrate_incarnation` edge. NQ commits that
 authenticated authority plus an independently signed expected-successor origin
 proof before provider invocation. Nightshift verifies both and records an
 append-only applicability verdict. Neither NQ nor Nightshift mints continuity
-authority. AG and Docket do not participate.
+authority. AG and Docket do not participate. Origin meaning is bounded by an
+exact profile: the software attester-key profile proves key possession only;
+`linode_instance_metadata_v1` proves only the exact logical Linode-instance
+coordinate reported through its separately qualified local helper chain.
 
 ```text
 Standing edge P1 → P2
@@ -31,7 +34,9 @@ an exact subject. Once present, the producer cannot choose a weaker path:
   signature, intake, and phase checks.
 
 Historical V1 evidence is not rewritten. The first V3 observation may establish
-the configured exact bootstrap coordinate. After cutover, bootstrap is omitted;
+the configured exact bootstrap coordinate. Bootstrap is an independently
+pinned deployment input, never the first runtime coordinate accepted merely
+because it was observed. After cutover, bootstrap is omitted;
 a different attester coordinate requires the unique prior admitted origin-chain
 head and exact Standing authority for that predecessor/successor edge.
 
@@ -72,16 +77,46 @@ generic runtime does not guess.
 
 ## Trust boundary and current qualification
 
-The concrete runtime verifies an Ed25519 attester-key coordinate. It proves that
-the exact pinned private key signed the exact pre-provider acquisition challenge.
-It does not prove that the key was non-exportable, co-located with a particular
-physical or virtual host, or protected from clone/reimage copying.
+The concrete runtime always verifies an Ed25519 signature over the exact
+pre-provider acquisition challenge. Under the software-key profile that proves
+only key possession. Under the Linode profile it additionally verifies the
+closed typed metadata evidence and exact independently pinned logical-instance
+coordinate. The metadata response itself is not provider-signed, so the latter
+also depends on separately qualified helper locality and provider routing. It
+does not prove that the helper key was non-exportable, physical-host identity,
+or guest-installation identity.
 
 Accordingly the protocol and relying-side cutover are locally qualified, while
-production physical-origin support remains unqualified until a deployment owns
-and qualifies an origin source (for example provider-signed identity or a
-hardware-backed enrolled key), its verifier roots, key custody, co-location,
-rotation/revocation, restart behavior, and clone/reimage semantics.
+production deployment support remains unqualified until a deployment owns and
+qualifies the fixed Linode source, its verifier root, helper/key custody,
+co-location and endpoint isolation, rotation/revocation, and restart behavior.
 
-No Linode-specific semantic, DNS alias rule, remote-command path, or deployment
-mechanic is introduced.
+The carrier itself adds no DNS alias rule, remote-command path, or deployment
+mechanic.
+
+## Linode logical-instance profile
+
+The closed profile `linode_instance_metadata_v1` reuses the V3 carrier. Its
+coordinate is `substrate:linode-instance:v1:<digest>` over namespace
+`akamai_linode` and the SHA-256 digest of the decimal provider instance ID.
+Nightshift requires the exact profile ID, namespace, instance-ID digest,
+helper issuer/key, and optional exact bootstrap coordinate. It rejects:
+
+* attester-key evidence substituted for the Linode profile;
+* Linode evidence with another instance-ID digest;
+* absent or malformed typed profile evidence;
+* V1/V2 downgrade once the exact subject has a V3 requirement;
+* runtime metadata attempting to choose its own bootstrap coordinate.
+
+The signed profile evidence retains a canonical metadata-response digest and
+optional hashed `host_uuid`. `host_uuid` is supplemental only because its
+lifecycle is not sufficiently documented; it is not used by applicability.
+The profile identifies one logical Linode object, not physical hypervisor
+placement, guest installation, boot, subject, or network name.
+
+The CLI flag `--substrate-origin-linode-instance-id-sha256` supplies the
+independently pinned exact logical-instance digest. The observed metadata
+cannot populate that flag. The public key remains the local helper's signing
+key: Linode metadata is instance-local but is not provider-signed portable
+attestation. Production helper isolation, fixed-endpoint routing, executable
+custody, service principal, and signing-key custody remain deployment gates.

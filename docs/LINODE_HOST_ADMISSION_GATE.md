@@ -101,9 +101,10 @@ already recorded in `NQ_PRODUCTION_EVIDENCE_CIRCUIT.md`.
    reimaged or migrated host remains the same governed subject. That question
    determines which fact is authoritative, and it must be answered before a
    persistent subject exists. The general substrate-discontinuity audit is
-   recorded in `SUBJECT_ATTRIBUTION_ACROSS_SUBSTRATE_DISCONTINUITY.md`; current
-   contracts cannot distinguish prior authority learned late from genuinely
-   ex-post authority without a new proof-bearing succession decision.
+   recorded in `SUBJECT_ATTRIBUTION_ACROSS_SUBSTRATE_DISCONTINUITY.md`.
+   Continuity authority and the V3 carrier can now prove prior exact warrant;
+   this host still lacks independently pinned origin genesis and a qualified
+   production-local origin helper.
 2. **NQ-NG is not installed on the host.** Classic NQ has no `diagnostics`
    subcommand (`error: unrecognized subcommand 'diagnostics'`, exit 2), emits
    no `nq.diagnostic_execution.v2`, and cannot answer the qualifier. Cutover is
@@ -117,6 +118,26 @@ already recorded in `NQ_PRODUCTION_EVIDENCE_CIRCUIT.md`.
 4. **Agent Governor credential.** The Basic-auth credential was redacted from
    the tree; operational rotation/revocation remains outstanding. No part of
    this circuit depends on it, and it was not used or recovered.
+
+## Linode-local metadata witness
+
+A second read-only reconnaissance on 2026-08-24 used the same pre-existing SSH
+key and already-known host key. No package, file, service, network, DNS, or
+configuration state was changed.
+
+The fixed `169.254.169.254` metadata token endpoint returned a bounded token,
+and `/v1/instance` returned HTTP 200 JSON with the documented fields `id`,
+`host_uuid`, `label`, `region`, `type`, `tags`, `specs`, `backups`,
+`account_euuid`, and `image`. Sensitive provider identifiers were inspected
+only as SHA-256 digests. The response reported region `ca-central`, type
+`g6-dedicated-4`, and image `linode/ubuntu22.04`.
+
+This establishes that the real host exposes the documented instance-local
+mechanism and response shape. It does not establish a governed subject,
+independently pinned genesis coordinate, isolated production helper,
+provider-signed attestation, or current observation. The selected V1 profile
+uses only the logical Linode instance-ID digest as coordinate; `host_uuid`
+remains supplemental because its lifecycle is undocumented.
 
 ## Executable-name collision, confirmed live
 

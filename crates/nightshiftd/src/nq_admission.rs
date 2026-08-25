@@ -1134,6 +1134,7 @@ mod tests {
                 expected_issuer_id: "origin-attester:test".into(),
                 expected_key_id: "origin-key:test".into(),
                 expected_namespace: "test.local".into(),
+                expected_linode_instance_id_sha256: None,
             },
             &hex::encode(key.verifying_key().as_bytes()),
         )

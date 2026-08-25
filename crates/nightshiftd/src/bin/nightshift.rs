@@ -275,6 +275,11 @@ struct CycleRunArguments {
     substrate_origin_key_id: Option<String>,
     #[arg(long)]
     substrate_origin_namespace: Option<String>,
+    /// SHA-256 digest of the independently pinned decimal Linode instance ID.
+    /// Supplying it selects the closed linode_instance_metadata_v1 profile;
+    /// metadata observed at runtime is never accepted as its own bootstrap pin.
+    #[arg(long, requires = "substrate_origin_public_key")]
+    substrate_origin_linode_instance_id_sha256: Option<String>,
     /// Exact first V3 coordinate allowed to establish history. Omit after
     /// cutover; a successor key then requires prior history plus Standing.
     #[arg(long, requires = "substrate_origin_public_key")]
@@ -497,6 +502,7 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 substrate_origin_issuer_id,
                 substrate_origin_key_id,
                 substrate_origin_namespace,
+                substrate_origin_linode_instance_id_sha256,
                 substrate_origin_bootstrap_coordinate_ref,
                 ag_loopctl,
                 ag_database,
@@ -648,6 +654,7 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                 substrate_origin_issuer_id,
                 substrate_origin_key_id,
                 substrate_origin_namespace,
+                substrate_origin_linode_instance_id_sha256,
             ) {
                 (
                     Some(key),
@@ -656,6 +663,7 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                     Some(issuer_id),
                     Some(key_id),
                     Some(namespace),
+                    linode_instance_id_sha256,
                 ) => nq.with_substrate_origin_verifier(
                     SubstrateOriginVerifierV1::from_public_key_file(
                         SubstrateOriginRequirementV1 {
@@ -667,12 +675,14 @@ fn run_cycle_command(store_path: &Path, command: CycleCommand) -> anyhow::Result
                             expected_issuer_id: issuer_id,
                             expected_key_id: key_id,
                             expected_namespace: namespace,
+                            expected_linode_instance_id_sha256:
+                                linode_instance_id_sha256,
                         },
                         &key,
                     )
                     .map_err(anyhow::Error::msg)?,
                 ),
-                (None, None, None, None, None, None) => {
+                (None, None, None, None, None, None, None) => {
                     if substrate_origin_bootstrap_coordinate_ref.is_some() {
                         bail!("substrate-origin bootstrap coordinate requires the full verifier configuration");
                     }

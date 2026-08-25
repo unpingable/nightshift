@@ -1,9 +1,11 @@
 //! Verification-only substrate-origin contract for NQ V3 acquisitions.
 //!
-//! This module verifies an independently signed attester-key coordinate that
-//! NQ committed before provider invocation. It does not claim bare-metal
-//! identity: the strength of attester-key custody and co-location is a
-//! deployment qualification owned outside Nightshift.
+//! This module verifies an independently signed, profile-bounded coordinate
+//! that NQ committed before provider invocation. The software-key profile
+//! proves key possession only. The Linode metadata profile proves only its
+//! logical provider-instance proposition under separately qualified helper
+//! locality and routing assumptions. Neither claims bare-metal or installation
+//! identity.
 
 use std::fs::OpenOptions;
 use std::io::Read as _;
@@ -35,17 +37,31 @@ const ATTESTATION_NONCLAIMS: [&str; 5] = [
     "origin attestation does not establish evidence truth, currentness, standing, or authority",
     "attester key custody and runtime co-location remain deployment qualifications",
 ];
+pub const LINODE_INSTANCE_METADATA_PROFILE_V1: &str = "linode_instance_metadata_v1";
+pub const LINODE_METADATA_NAMESPACE_V1: &str = "akamai_linode";
+pub const LINODE_METADATA_INSTANCE_ENDPOINT_V1: &str = "http://169.254.169.254/v1/instance";
+pub const LINODE_METADATA_EVIDENCE_SCHEMA_V1: &str = "nq.linode_instance_metadata_evidence.v1";
+const LINODE_METADATA_NONCLAIMS: [&str; 6] = [
+    "origin attestation proves the pinned helper reported an exact response under the closed Linode metadata profile for this acquisition basis",
+    "Linode metadata is instance-local but is not a provider-signed portable identity document",
+    "the qualified coordinate identifies one logical Linode instance, not physical host placement",
+    "host UUID is supplemental evidence and is not part of the qualified coordinate",
+    "origin attestation does not establish installation identity, evidence truth, currentness, standing, or authority",
+    "helper isolation, metadata routing, and runtime co-location remain deployment qualifications",
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubstrateCoordinateKindV1 {
     AttesterKey,
+    LinodeInstance,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubstrateOriginEvidenceMethodV1 {
     Ed25519AcquisitionChallenge,
+    LinodeInstanceMetadataV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -54,8 +70,12 @@ pub struct SubstrateCoordinateV1 {
     pub schema: String,
     pub kind: SubstrateCoordinateKindV1,
     pub namespace: String,
-    pub attester_key_id: String,
-    pub attester_public_key_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attester_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attester_public_key_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linode_instance_id_sha256: Option<String>,
     pub evidence_method: SubstrateOriginEvidenceMethodV1,
     pub coordinate_ref: String,
 }
@@ -68,9 +88,30 @@ impl SubstrateCoordinateV1 {
             schema: COORDINATE_SCHEMA_V1.into(),
             kind: SubstrateCoordinateKindV1::AttesterKey,
             namespace: namespace.into(),
-            attester_key_id: key_id.into(),
-            attester_public_key_sha256: format!("sha256:{:x}", Sha256::digest(key.as_bytes())),
+            attester_key_id: Some(key_id.into()),
+            attester_public_key_sha256: Some(format!(
+                "sha256:{:x}",
+                Sha256::digest(key.as_bytes())
+            )),
+            linode_instance_id_sha256: None,
             evidence_method: SubstrateOriginEvidenceMethodV1::Ed25519AcquisitionChallenge,
+            coordinate_ref: String::new(),
+        };
+        value.coordinate_ref = value.computed_ref()?;
+        value.validate()?;
+        Ok(value)
+    }
+
+    fn for_linode_instance_digest(instance_id_sha256: &str) -> Result<Self, String> {
+        require_digest("Linode instance id digest", instance_id_sha256)?;
+        let mut value = Self {
+            schema: COORDINATE_SCHEMA_V1.into(),
+            kind: SubstrateCoordinateKindV1::LinodeInstance,
+            namespace: LINODE_METADATA_NAMESPACE_V1.into(),
+            attester_key_id: None,
+            attester_public_key_sha256: None,
+            linode_instance_id_sha256: Some(instance_id_sha256.into()),
+            evidence_method: SubstrateOriginEvidenceMethodV1::LinodeInstanceMetadataV1,
             coordinate_ref: String::new(),
         };
         value.coordinate_ref = value.computed_ref()?;
@@ -84,10 +125,11 @@ impl SubstrateCoordinateV1 {
             .as_object_mut()
             .ok_or_else(|| "substrate coordinate is not an object".to_owned())?
             .remove("coordinate_ref");
-        Ok(format!(
-            "substrate:attester-key:v1:{:x}",
-            Sha256::digest(jcs(&value)?)
-        ))
+        let prefix = match self.kind {
+            SubstrateCoordinateKindV1::AttesterKey => "substrate:attester-key:v1",
+            SubstrateCoordinateKindV1::LinodeInstance => "substrate:linode-instance:v1",
+        };
+        Ok(format!("{prefix}:{:x}", Sha256::digest(jcs(&value)?)))
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -95,15 +137,84 @@ impl SubstrateCoordinateV1 {
             return Err("unsupported substrate coordinate schema".into());
         }
         require_token("coordinate namespace", &self.namespace)?;
-        require_token("attester key id", &self.attester_key_id)?;
-        require_digest(
-            "attester public key digest",
-            &self.attester_public_key_sha256,
-        )?;
+        match self.kind {
+            SubstrateCoordinateKindV1::AttesterKey => {
+                if self.evidence_method
+                    != SubstrateOriginEvidenceMethodV1::Ed25519AcquisitionChallenge
+                    || self.linode_instance_id_sha256.is_some()
+                {
+                    return Err("substrate coordinate profile mismatch".into());
+                }
+                require_token(
+                    "attester key id",
+                    self.attester_key_id
+                        .as_deref()
+                        .ok_or_else(|| "attester coordinate fields are absent".to_owned())?,
+                )?;
+                require_digest(
+                    "attester public key digest",
+                    self.attester_public_key_sha256
+                        .as_deref()
+                        .ok_or_else(|| "attester coordinate fields are absent".to_owned())?,
+                )?;
+            }
+            SubstrateCoordinateKindV1::LinodeInstance => {
+                if self.namespace != LINODE_METADATA_NAMESPACE_V1
+                    || self.evidence_method
+                        != SubstrateOriginEvidenceMethodV1::LinodeInstanceMetadataV1
+                    || self.attester_key_id.is_some()
+                    || self.attester_public_key_sha256.is_some()
+                {
+                    return Err("substrate coordinate profile mismatch".into());
+                }
+                require_digest(
+                    "Linode instance id digest",
+                    self.linode_instance_id_sha256
+                        .as_deref()
+                        .ok_or_else(|| "Linode instance coordinate is absent".to_owned())?,
+                )?;
+            }
+        }
         if self.coordinate_ref != self.computed_ref()? {
             return Err("substrate coordinate identity mismatch".into());
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinodeInstanceMetadataEvidenceV1 {
+    pub schema: String,
+    pub profile_id: String,
+    pub endpoint: String,
+    pub instance_id_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_uuid_sha256: Option<String>,
+    pub canonical_response_sha256: String,
+}
+
+impl LinodeInstanceMetadataEvidenceV1 {
+    fn validate(&self) -> Result<(), String> {
+        if self.schema != LINODE_METADATA_EVIDENCE_SCHEMA_V1
+            || self.profile_id != LINODE_INSTANCE_METADATA_PROFILE_V1
+            || self.endpoint != LINODE_METADATA_INSTANCE_ENDPOINT_V1
+        {
+            return Err("unsupported Linode metadata profile evidence".into());
+        }
+        require_digest("Linode instance id digest", &self.instance_id_sha256)?;
+        if let Some(value) = &self.host_uuid_sha256 {
+            require_digest("Linode host UUID digest", value)?;
+        }
+        require_digest(
+            "Linode canonical metadata response digest",
+            &self.canonical_response_sha256,
+        )
+    }
+
+    fn coordinate(&self) -> Result<SubstrateCoordinateV1, String> {
+        self.validate()?;
+        SubstrateCoordinateV1::for_linode_instance_digest(&self.instance_id_sha256)
     }
 }
 
@@ -159,6 +270,8 @@ pub struct SubstrateOriginAttestationV1 {
     pub acquisition_id: String,
     pub acquisition_basis_digest: String,
     pub coordinate: SubstrateCoordinateV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linode_metadata: Option<LinodeInstanceMetadataEvidenceV1>,
     pub attested_at: String,
     pub replay_identity: String,
     pub nonclaims: Vec<String>,
@@ -296,6 +409,8 @@ pub struct SubstrateOriginRequirementV1 {
     pub expected_issuer_id: String,
     pub expected_key_id: String,
     pub expected_namespace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_linode_instance_id_sha256: Option<String>,
 }
 
 impl SubstrateOriginRequirementV1 {
@@ -312,9 +427,24 @@ impl SubstrateOriginRequirementV1 {
         ] {
             require_token(name, value)?;
         }
+        let coordinate_prefix = if let Some(value) = &self.expected_linode_instance_id_sha256 {
+            if self.profile_id != LINODE_INSTANCE_METADATA_PROFILE_V1
+                || self.expected_namespace != LINODE_METADATA_NAMESPACE_V1
+            {
+                return Err("Linode metadata origin requirement profile mismatch".into());
+            }
+            require_digest("expected Linode instance id digest", value)?;
+            "substrate:linode-instance:v1:"
+        } else {
+            if self.profile_id == LINODE_INSTANCE_METADATA_PROFILE_V1 {
+                return Err(
+                    "Linode metadata origin requirement lacks an exact instance id digest".into(),
+                );
+            }
+            "substrate:attester-key:v1:"
+        };
         if self.bootstrap_coordinate_ref.as_ref().is_some_and(|value| {
-            !value.starts_with("substrate:attester-key:v1:")
-                || value.chars().any(char::is_whitespace)
+            !value.starts_with(coordinate_prefix) || value.chars().any(char::is_whitespace)
         }) {
             return Err("bootstrap coordinate uses an unsupported coordinate kind".into());
         }
@@ -516,11 +646,14 @@ impl SubstrateOriginVerifierV1 {
     }
 
     pub fn expected_coordinate(&self) -> Result<SubstrateCoordinateV1, String> {
-        SubstrateCoordinateV1::for_key(
-            &self.requirement.expected_namespace,
-            &self.requirement.expected_key_id,
-            &self.key,
-        )
+        match &self.requirement.expected_linode_instance_id_sha256 {
+            Some(instance_id) => SubstrateCoordinateV1::for_linode_instance_digest(instance_id),
+            None => SubstrateCoordinateV1::for_key(
+                &self.requirement.expected_namespace,
+                &self.requirement.expected_key_id,
+                &self.key,
+            ),
+        }
     }
 
     fn verify_attestation(
@@ -536,7 +669,8 @@ impl SubstrateOriginVerifierV1 {
             || signed.payload.coordinate != basis.expected_coordinate
             || signed.payload.acquisition_id != basis.acquisition_id
             || signed.payload.acquisition_basis_digest != basis.digest()?
-            || signed.payload.nonclaims != ATTESTATION_NONCLAIMS.map(str::to_owned).to_vec()
+            || signed.payload.nonclaims != expected_nonclaims(&signed.payload.coordinate)
+            || !profile_evidence_matches(&signed.payload)?
         {
             return Err("substrate-origin attestation binding mismatch".into());
         }
@@ -673,6 +807,27 @@ impl SubstrateOriginVerifierV1 {
     }
 }
 
+fn expected_nonclaims(coordinate: &SubstrateCoordinateV1) -> Vec<String> {
+    match coordinate.kind {
+        SubstrateCoordinateKindV1::AttesterKey => ATTESTATION_NONCLAIMS.map(str::to_owned).to_vec(),
+        SubstrateCoordinateKindV1::LinodeInstance => {
+            LINODE_METADATA_NONCLAIMS.map(str::to_owned).to_vec()
+        }
+    }
+}
+
+fn profile_evidence_matches(payload: &SubstrateOriginAttestationV1) -> Result<bool, String> {
+    match payload.coordinate.kind {
+        SubstrateCoordinateKindV1::AttesterKey => Ok(payload.linode_metadata.is_none()),
+        SubstrateCoordinateKindV1::LinodeInstance => {
+            let Some(evidence) = &payload.linode_metadata else {
+                return Ok(false);
+            };
+            Ok(evidence.coordinate()? == payload.coordinate)
+        }
+    }
+}
+
 fn require_token(name: &str, value: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > 512 || value.chars().any(char::is_whitespace) {
         return Err(format!("{name} must be a bounded non-whitespace token"));
@@ -727,6 +882,7 @@ mod tests {
             expected_issuer_id: "origin-attester:test".into(),
             expected_key_id: "origin-key:test".into(),
             expected_namespace: "test.local".into(),
+            expected_linode_instance_id_sha256: None,
         };
         let provisional = SubstrateOriginVerifierV1::from_public_key_hex(
             base.clone(),
@@ -774,6 +930,7 @@ mod tests {
             acquisition_id: acquisition_id.into(),
             acquisition_basis_digest: basis.digest().expect("basis digest"),
             coordinate: basis.expected_coordinate.clone(),
+            linode_metadata: None,
             attested_at: "2026-08-24T12:00:00Z".into(),
             replay_identity: format!("replay:{acquisition_id}"),
             nonclaims: ATTESTATION_NONCLAIMS.map(str::to_owned).to_vec(),
@@ -832,6 +989,7 @@ mod tests {
             expected_issuer_id: "origin-attester:test".into(),
             expected_key_id: "origin-key:test".into(),
             expected_namespace: "test.local".into(),
+            expected_linode_instance_id_sha256: None,
         };
         let provisional = SubstrateOriginVerifierV1::from_public_key_hex(
             base.clone(),
@@ -848,6 +1006,55 @@ mod tests {
             &hex::encode(key.verifying_key().as_bytes()),
         )
         .unwrap()
+    }
+
+    fn linode_verifier(key: &SigningKey, instance_digest: &str) -> SubstrateOriginVerifierV1 {
+        let base = SubstrateOriginRequirementV1 {
+            schema: REQUIREMENT_SCHEMA_V1.into(),
+            profile_id: LINODE_INSTANCE_METADATA_PROFILE_V1.into(),
+            subject_ref: "observer:test-office".into(),
+            bootstrap_coordinate_ref: None,
+            expected_issuer_id: "origin-attester:test".into(),
+            expected_key_id: "origin-key:test".into(),
+            expected_namespace: LINODE_METADATA_NAMESPACE_V1.into(),
+            expected_linode_instance_id_sha256: Some(instance_digest.into()),
+        };
+        let provisional = SubstrateOriginVerifierV1::from_public_key_hex(
+            base.clone(),
+            &hex::encode(key.verifying_key().as_bytes()),
+        )
+        .unwrap();
+        SubstrateOriginVerifierV1::from_public_key_hex(
+            SubstrateOriginRequirementV1 {
+                bootstrap_coordinate_ref: Some(
+                    provisional.expected_coordinate().unwrap().coordinate_ref,
+                ),
+                ..base
+            },
+            &hex::encode(key.verifying_key().as_bytes()),
+        )
+        .unwrap()
+    }
+
+    fn linode_proof(
+        verifier: &SubstrateOriginVerifierV1,
+        key: &SigningKey,
+        acquisition_id: &str,
+        instance_digest: &str,
+    ) -> SubstrateOriginAcquisitionProofV1 {
+        let mut value = proof(verifier, key, acquisition_id);
+        value.intent.attestation.payload.linode_metadata = Some(LinodeInstanceMetadataEvidenceV1 {
+            schema: LINODE_METADATA_EVIDENCE_SCHEMA_V1.into(),
+            profile_id: LINODE_INSTANCE_METADATA_PROFILE_V1.into(),
+            endpoint: LINODE_METADATA_INSTANCE_ENDPOINT_V1.into(),
+            instance_id_sha256: instance_digest.into(),
+            host_uuid_sha256: Some(format!("sha256:{}", "2".repeat(64))),
+            canonical_response_sha256: format!("sha256:{}", "3".repeat(64)),
+        });
+        value.intent.attestation.payload.nonclaims =
+            LINODE_METADATA_NONCLAIMS.map(str::to_owned).to_vec();
+        reseal_origin_proof(&mut value, key);
+        value
     }
 
     fn reseal_origin_proof(proof: &mut SubstrateOriginAcquisitionProofV1, key: &SigningKey) {
@@ -1042,5 +1249,75 @@ mod tests {
                 Some(&crate::continuity_authority::tests::verifier()),
             )
             .is_err());
+    }
+
+    #[test]
+    fn linode_logical_instance_profile_applies_and_refuses_profile_or_instance_substitution() {
+        let key = SigningKey::from_bytes(&[31; 32]);
+        let instance_digest = format!("sha256:{}", "1".repeat(64));
+        let verifier = linode_verifier(&key, &instance_digest);
+        let proof = linode_proof(&verifier, &key, "intake:linode", &instance_digest);
+        let verdict = verifier
+            .evaluate(
+                &proof,
+                &format!("sha256:{}", "4".repeat(64)),
+                "observer:test-office",
+                "intake:linode",
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            verdict.reason,
+            SubstrateOriginApplicabilityReasonV1::BootstrapOriginEstablished
+        );
+        assert!(verdict
+            .observed_coordinate_ref
+            .starts_with("substrate:linode-instance:v1:"));
+
+        let software_verifier = verifier_for_key(&key, true);
+        assert!(software_verifier
+            .evaluate(
+                &proof,
+                &format!("sha256:{}", "4".repeat(64)),
+                "observer:test-office",
+                "intake:linode",
+                None,
+                None,
+            )
+            .is_err());
+
+        let mut substituted = proof;
+        substituted
+            .intent
+            .attestation
+            .payload
+            .linode_metadata
+            .as_mut()
+            .unwrap()
+            .instance_id_sha256 = format!("sha256:{}", "9".repeat(64));
+        reseal_origin_proof(&mut substituted, &key);
+        assert!(verifier
+            .evaluate(
+                &substituted,
+                &format!("sha256:{}", "4".repeat(64)),
+                "observer:test-office",
+                "intake:linode",
+                None,
+                None,
+            )
+            .is_err());
+
+        let missing_coordinate = SubstrateOriginRequirementV1 {
+            schema: REQUIREMENT_SCHEMA_V1.into(),
+            profile_id: LINODE_INSTANCE_METADATA_PROFILE_V1.into(),
+            subject_ref: "observer:test-office".into(),
+            bootstrap_coordinate_ref: None,
+            expected_issuer_id: "origin-attester:test".into(),
+            expected_key_id: "origin-key:test".into(),
+            expected_namespace: LINODE_METADATA_NAMESPACE_V1.into(),
+            expected_linode_instance_id_sha256: None,
+        };
+        assert!(missing_coordinate.validate().is_err());
     }
 }
