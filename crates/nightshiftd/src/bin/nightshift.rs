@@ -33,6 +33,11 @@ use nightshiftd::external_observation::{
 use nightshiftd::nq_admission::{
     CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenance, NqAdmissionQueryV1,
 };
+use nightshiftd::project_predicate_attention::{
+    evaluate, read_json as read_attention_json, replay_attention, verify_pulse_receipt,
+    write_json as write_attention_json, AttentionPolicyV1, AttentionReplayBundleV1,
+    AttentionStoreV1, PulseReplayInputsV1,
+};
 use nightshiftd::steady_state_evidence::{
     SteadyStateEvidenceProfileV1, SteadyStateObservationHandoffV1, SteadyStateObservationVerifierV1,
 };
@@ -67,6 +72,70 @@ enum Command {
         #[command(subcommand)]
         command: ExternalObservationCommand,
     },
+    /// Operator-owned attention policy over exact verified Pulse
+    /// project-predicate support history. CLI invocation is not evidence.
+    Attention {
+        #[command(subcommand)]
+        command: AttentionCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AttentionCommand {
+    /// Validate and display one exact content-bound operator policy.
+    ValidatePolicy {
+        #[arg(long)]
+        policy: PathBuf,
+    },
+    /// Verify one exact Pulse receipt by replay, then append its distinct
+    /// evidence occurrence idempotently to the governed history.
+    Ingest(Box<AttentionIngestArguments>),
+    /// Evaluate stored history at one explicit occurrence and emit a replay
+    /// bundle containing the deterministic attention receipt.
+    Evaluate {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        evaluated_at: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Recompute an exact saved evaluation without reading or changing the
+    /// store and without refreshing upstream time.
+    Replay {
+        #[arg(long)]
+        bundle: PathBuf,
+    },
+    /// Concise read-only projection of an evaluation at an explicit
+    /// occurrence. This does not append evidence.
+    Status {
+        #[arg(long)]
+        policy: PathBuf,
+        #[arg(long)]
+        evaluated_at: String,
+    },
+}
+
+#[derive(Debug, ClapArgs)]
+struct AttentionIngestArguments {
+    #[arg(long)]
+    policy: PathBuf,
+    #[arg(long)]
+    pulse_receipt: PathBuf,
+    #[arg(long)]
+    pulse_program: PathBuf,
+    #[arg(long)]
+    pulse_support_policy: PathBuf,
+    #[arg(long)]
+    nq_executable: PathBuf,
+    #[arg(long)]
+    nq_receipt: PathBuf,
+    #[arg(long)]
+    inventory: PathBuf,
+    #[arg(long)]
+    catalog: PathBuf,
+    #[arg(long)]
+    support_evidence: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -369,6 +438,104 @@ fn main() -> anyhow::Result<()> {
         Command::Cycle { command } => run_cycle_command(&arguments.store, command),
         Command::ExternalObservation { command } => {
             run_external_observation_command(&arguments.store, command)
+        }
+        Command::Attention { command } => run_attention_command(&arguments.store, command),
+    }
+}
+
+fn run_attention_command(store_path: &Path, command: AttentionCommand) -> anyhow::Result<()> {
+    match command {
+        AttentionCommand::ValidatePolicy { policy } => {
+            let policy: AttentionPolicyV1 =
+                read_attention_json(&policy).map_err(anyhow::Error::msg)?;
+            policy.validate().map_err(anyhow::Error::msg)?;
+            write_exact(&policy)
+        }
+        AttentionCommand::Ingest(arguments) => {
+            let AttentionIngestArguments {
+                policy,
+                pulse_receipt,
+                pulse_program,
+                pulse_support_policy,
+                nq_executable,
+                nq_receipt,
+                inventory,
+                catalog,
+                support_evidence,
+            } = *arguments;
+            let policy: AttentionPolicyV1 =
+                read_attention_json(&policy).map_err(anyhow::Error::msg)?;
+            let receipt = verify_pulse_receipt(
+                &policy,
+                &pulse_receipt,
+                &PulseReplayInputsV1 {
+                    pulse_executable: pulse_program,
+                    pulse_policy: pulse_support_policy,
+                    nq_executable,
+                    nq_receipt,
+                    inventory,
+                    catalog,
+                    support_evidence,
+                },
+            )
+            .map_err(anyhow::Error::msg)?;
+            let mut store = AttentionStoreV1::open(store_path).map_err(anyhow::Error::msg)?;
+            write_exact(
+                &store
+                    .ingest_verified(&policy, receipt)
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
+        AttentionCommand::Evaluate {
+            policy,
+            evaluated_at,
+            output,
+        } => {
+            let policy: AttentionPolicyV1 =
+                read_attention_json(&policy).map_err(anyhow::Error::msg)?;
+            let store = AttentionStoreV1::open(store_path).map_err(anyhow::Error::msg)?;
+            let history = store.history(&policy).map_err(anyhow::Error::msg)?;
+            let bundle = evaluate(&policy, &history, parse_time(&evaluated_at)?)
+                .map_err(anyhow::Error::msg)?;
+            if let Some(output) = output {
+                write_attention_json(&output, &bundle).map_err(anyhow::Error::msg)
+            } else {
+                write_exact(&bundle)
+            }
+        }
+        AttentionCommand::Replay { bundle } => {
+            let bundle: AttentionReplayBundleV1 =
+                read_attention_json(&bundle).map_err(anyhow::Error::msg)?;
+            let replay = replay_attention(&bundle).map_err(anyhow::Error::msg)?;
+            write_exact(&replay)?;
+            if !replay.matches {
+                bail!("Nightshift attention replay did not reproduce the exact receipt");
+            }
+            Ok(())
+        }
+        AttentionCommand::Status {
+            policy,
+            evaluated_at,
+        } => {
+            let policy: AttentionPolicyV1 =
+                read_attention_json(&policy).map_err(anyhow::Error::msg)?;
+            let store = AttentionStoreV1::open(store_path).map_err(anyhow::Error::msg)?;
+            let history = store.history(&policy).map_err(anyhow::Error::msg)?;
+            let bundle = evaluate(&policy, &history, parse_time(&evaluated_at)?)
+                .map_err(anyhow::Error::msg)?;
+            let receipt = bundle.receipt;
+            println!("project: {}", receipt.project);
+            println!("concern: {}", receipt.concern);
+            println!("subject: {}", receipt.subject_id);
+            println!("disposition: {:?}", receipt.disposition);
+            println!("reason_class: {:?}", receipt.attention_reason_class);
+            println!(
+                "recurrence: {}/{} distinct occurrences",
+                receipt.qualifying_distinct_occurrences, receipt.required_distinct_occurrences
+            );
+            println!("evaluated_at: {}", receipt.evaluated_at);
+            println!("detail: {}", receipt.detail);
+            Ok(())
         }
     }
 }

@@ -130,7 +130,7 @@ fn retired_authority_stack_is_structurally_absent_from_production() {
 }
 
 #[test]
-fn only_nq_admission_present_support_and_ag_are_process_boundaries() {
+fn only_closed_upstream_verifiers_present_support_and_ag_are_process_boundaries() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut command_files = Vec::new();
     fn visit(directory: &Path, command_files: &mut Vec<String>) {
@@ -154,8 +154,23 @@ fn only_nq_admission_present_support_and_ag_are_process_boundaries() {
     command_files.sort();
     assert_eq!(
         command_files,
-        ["ag_port.rs", "currentness.rs", "nq_admission.rs"]
+        [
+            "ag_port.rs",
+            "currentness.rs",
+            "nq_admission.rs",
+            "project_predicate_attention.rs"
+        ]
     );
+
+    let generic_attention = read(src.join("project_predicate_attention.rs"));
+    assert!(generic_attention.contains("pulse-project-predicate-support"));
+    assert!(generic_attention.contains("\"replay\""));
+    for forbidden in ["\"qualify\"", "--at", "monitor-concerns", "project status"] {
+        assert!(
+            !generic_attention.contains(forbidden),
+            "generic attention verifier widened into upstream acquisition: {forbidden}"
+        );
+    }
 }
 
 #[test]

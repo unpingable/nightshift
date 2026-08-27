@@ -4,6 +4,11 @@
 Nightshift observes and records posture. It does not authorize or execute an
 effect.
 
+The separate generic project-predicate attention commands consume exact
+replay-verified Pulse receipts and never acquire project facts. Their policy,
+history, recurrence, currentness, and replay contract is documented in
+[`../GENERIC_PROJECT_PREDICATE_ATTENTION_V1.md`](../GENERIC_PROJECT_PREDICATE_ATTENTION_V1.md).
+
 ## Build contract
 
 ```sh

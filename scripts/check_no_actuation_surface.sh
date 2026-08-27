@@ -170,14 +170,15 @@ if rg -n '\.(post|put|delete|patch)\(' "$production_src" >/tmp/nightshift_exclus
 fi
 
 # The only process boundaries are exact, closed ports: read-only NQ admission
-# qualification, present-support resolution, and AG occurrence opening/status.
-# Any fourth site is a new runtime authority or execution surface and fails
-# closed.
+# qualification, present-support resolution, exact Pulse receipt replay, and
+# AG occurrence opening/status. Any fifth site is a new runtime authority or
+# execution surface and fails closed.
 mapfile -t command_files < <(rg -l 'Command::new' "$production_src" | sort)
 expected_command_files=(
     crates/nightshiftd/src/ag_port.rs
     crates/nightshiftd/src/currentness.rs
     crates/nightshiftd/src/nq_admission.rs
+    crates/nightshiftd/src/project_predicate_attention.rs
 )
 if [ "${command_files[*]}" != "${expected_command_files[*]}" ]; then
     fail "production subprocess files are not the exact closed port set: ${command_files[*]:-<none>}"
@@ -190,6 +191,9 @@ if [ "$(rg -c 'Command::new' crates/nightshiftd/src/currentness.rs || true)" -ne
 fi
 if [ "$(rg -c 'Command::new' crates/nightshiftd/src/nq_admission.rs || true)" -ne 1 ]; then
     fail "NQ admission port must contain exactly one subprocess site"
+fi
+if [ "$(rg -c 'Command::new' crates/nightshiftd/src/project_predicate_attention.rs || true)" -ne 1 ]; then
+    fail "generic attention Pulse verifier must contain exactly one subprocess site"
 fi
 if ! rg -q 'Some\("ag-loopctl"\)' crates/nightshiftd/src/ag_port.rs; then
     fail "AG port is not executable-name pinned to ag-loopctl"
@@ -209,6 +213,16 @@ fi
 if ! rg -q '\.arg\("qualify"\)' crates/nightshiftd/src/nq_admission.rs; then
     fail "NQ admission port lost its sole read-only qualification operation"
 fi
+if ! rg -q 'Some\("pulse-project-predicate-support"\)' crates/nightshiftd/src/project_predicate_attention.rs \
+    || ! rg -q '\.args\(\["replay"' crates/nightshiftd/src/project_predicate_attention.rs; then
+    fail "generic attention port is not pinned to exact Pulse replay"
+fi
+for forbidden_pulse_verb in qualify acquire collect produce sign; do
+    if rg -n "\.arg(s)?\(.*\"${forbidden_pulse_verb}\"" crates/nightshiftd/src/project_predicate_attention.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+        fail "generic attention Pulse port exposes forbidden verb ${forbidden_pulse_verb}:"
+        cat /tmp/nightshift_exclusivity_hits >&2
+    fi
+done
 for forbidden_nq_verb in execute import export watcher admit revoke collect; do
     if rg -n "\.arg\(\"${forbidden_nq_verb}\"\)" crates/nightshiftd/src/nq_admission.rs >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
         fail "Nightshift NQ admission port exposes forbidden verb ${forbidden_nq_verb}:"

@@ -21,6 +21,7 @@ pub mod external_observation;
 pub mod nq_admission;
 pub mod nq_disposition;
 pub mod observation_resolver;
+pub mod project_predicate_attention;
 pub mod steady_state_evidence;
 pub mod substrate_origin;
 

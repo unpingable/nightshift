@@ -1,0 +1,9 @@
+schema = "project.concerns/v1"
+project = "cogwheel-fixture"
+
+[[concerns]]
+id = "cogwheel.queue.high"
+question = "cogwheel.question.queue-high/v1"
+profile = "cogwheel.profile.queue-high-18/v1"
+required = true
+description = "Is the bounded queue depth at least 18?"

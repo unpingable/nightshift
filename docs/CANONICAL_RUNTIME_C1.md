@@ -37,7 +37,10 @@ The production executable surface is two binaries:
   consequence-adjacent port is `ag-loopctl`, restricted to `status`, `init`,
   `continue`, and `record-proposal`. It has no standing, authorization,
   dispatch, retry, reconciliation, Docket, executor, or human-disposition
-  command.
+  command. Its separate generic `attention` surface may invoke the exact
+  content-pinned `pulse-project-predicate-support replay` verifier and append
+  deduplicated upstream evidence history. That verifier is read-only with
+  respect to project facts and cannot acquire, qualify, authorize, or execute.
 - `nightshift-observation-resolver` — a one-shot, read-only evidence
   translator answering AG's observation-resolution requests against the
   canonical store. It opens the store strictly read-only and has no
@@ -572,6 +575,14 @@ prepared request.
 `nightshift-observation-resolver` is invoked by AG as a configured
 subprocess, never by operators, and takes its store, identity, and TTL from
 explicit arguments.
+
+The operator-owned generic project-predicate attention contract and its
+`attention validate-policy|ingest|evaluate|replay|status` surface are defined
+separately in
+[`GENERIC_PROJECT_PREDICATE_ATTENTION_V1.md`](GENERIC_PROJECT_PREDICATE_ATTENTION_V1.md).
+Attention ingestion accepts only a Pulse result reproduced by the exact Pulse
+replay verifier; it does not rerun Monitor collection, NQ admission, Pulse
+qualification, or project acquisition.
 
 Nightshift defines the exact `pulse-support-resolver` command grammar but does
 not ship a production support producer or resolver. The operational fixture
