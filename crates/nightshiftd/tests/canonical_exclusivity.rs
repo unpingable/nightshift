@@ -158,7 +158,8 @@ fn only_closed_upstream_verifiers_present_support_and_ag_are_process_boundaries(
             "ag_port.rs",
             "currentness.rs",
             "nq_admission.rs",
-            "project_predicate_attention.rs"
+            "project_predicate_attention.rs",
+            "repository_qualification.rs"
         ]
     );
 
@@ -169,6 +170,22 @@ fn only_closed_upstream_verifiers_present_support_and_ag_are_process_boundaries(
         assert!(
             !generic_attention.contains(forbidden),
             "generic attention verifier widened into upstream acquisition: {forbidden}"
+        );
+    }
+
+    let repository_qualification = read(src.join("repository_qualification.rs"));
+    assert!(repository_qualification.contains("Some(\"nq-monitor\")"));
+    assert!(repository_qualification.contains("\"campaign-stage-qualification\""));
+    assert!(repository_qualification.contains("\"replay\""));
+    for forbidden in [
+        "\"evaluate\"",
+        "\"execute\"",
+        "\"authorize\"",
+        "\"continue\"",
+    ] {
+        assert!(
+            !repository_qualification.contains(forbidden),
+            "repository qualification widened beyond exact replay: {forbidden}"
         );
     }
 }
