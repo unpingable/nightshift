@@ -42,6 +42,10 @@ use nightshiftd::repository_qualification::{
     NqMonitorQualificationVerifierV1, QualificationApplicabilityProfileV1,
     QualificationReceiptStoreV1,
 };
+use nightshiftd::reservation_qualification::{
+    NqMonitorReservationVerifierV1, ReservationApplicabilityProfileV1,
+    ReservationRealizationStoreV1,
+};
 use nightshiftd::steady_state_evidence::{
     SteadyStateEvidenceProfileV1, SteadyStateObservationHandoffV1, SteadyStateObservationVerifierV1,
 };
@@ -87,6 +91,12 @@ enum Command {
     RepositoryQualification {
         #[command(subcommand)]
         command: RepositoryQualificationCommand,
+    },
+    /// Exact NQ reservation-realization receipt ingress. Replays and retains
+    /// evidence only; it creates no observation or continuation act.
+    ReservationQualification {
+        #[command(subcommand)]
+        command: ReservationQualificationCommand,
     },
 }
 
@@ -168,6 +178,25 @@ struct RepositoryQualificationIngestArguments {
     nq_monitor: PathBuf,
 }
 
+#[derive(Debug, Subcommand)]
+enum ReservationQualificationCommand {
+    /// Replay one exact NQ realization receipt, then retain its one-use slot.
+    Ingest(Box<ReservationQualificationIngestArguments>),
+}
+
+#[derive(Debug, ClapArgs)]
+struct ReservationQualificationIngestArguments {
+    #[arg(long)]
+    applicability: PathBuf,
+    #[arg(long)]
+    nq_profile: PathBuf,
+    #[arg(long)]
+    nq_evidence: PathBuf,
+    #[arg(long)]
+    nq_receipt: PathBuf,
+    #[arg(long)]
+    nq_monitor: PathBuf,
+}
 #[derive(Debug, Subcommand)]
 enum ExternalObservationCommand {
     /// Authenticate and durably retain one exact candidate handoff.
@@ -473,6 +502,9 @@ fn main() -> anyhow::Result<()> {
         Command::RepositoryQualification { command } => {
             run_repository_qualification_command(&arguments.store, command)
         }
+        Command::ReservationQualification { command } => {
+            run_reservation_qualification_command(&arguments.store, command)
+        }
     }
 }
 
@@ -497,6 +529,35 @@ fn run_repository_qualification_command(
                 NqMonitorQualificationVerifierV1::new(nq_monitor).map_err(anyhow::Error::msg)?;
             let mut store =
                 QualificationReceiptStoreV1::open(store_path).map_err(anyhow::Error::msg)?;
+            let retained = store
+                .ingest(&applicability, &profile, &evidence, &receipt, &mut verifier)
+                .map_err(anyhow::Error::msg)?;
+            write_exact(&retained)
+        }
+    }
+}
+
+fn run_reservation_qualification_command(
+    store_path: &Path,
+    command: ReservationQualificationCommand,
+) -> anyhow::Result<()> {
+    match command {
+        ReservationQualificationCommand::Ingest(arguments) => {
+            let ReservationQualificationIngestArguments {
+                applicability,
+                nq_profile,
+                nq_evidence,
+                nq_receipt,
+                nq_monitor,
+            } = *arguments;
+            let applicability: ReservationApplicabilityProfileV1 = read_exact(&applicability)?;
+            let profile: serde_json::Value = read_exact(&nq_profile)?;
+            let evidence: serde_json::Value = read_exact(&nq_evidence)?;
+            let receipt: serde_json::Value = read_exact(&nq_receipt)?;
+            let mut verifier =
+                NqMonitorReservationVerifierV1::new(nq_monitor).map_err(anyhow::Error::msg)?;
+            let mut store =
+                ReservationRealizationStoreV1::open(store_path).map_err(anyhow::Error::msg)?;
             let retained = store
                 .ingest(&applicability, &profile, &evidence, &receipt, &mut verifier)
                 .map_err(anyhow::Error::msg)?;

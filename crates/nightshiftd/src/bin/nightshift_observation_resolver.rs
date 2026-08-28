@@ -23,6 +23,10 @@ use nightshiftd::repository_qualification::{
     QualificationApplicabilityOutcomeV1, QualificationApplicabilityProfileV1,
     QualificationReceiptStoreV1,
 };
+use nightshiftd::reservation_qualification::{
+    ReservationApplicabilityOutcomeV1, ReservationApplicabilityProfileV1,
+    ReservationRealizationStoreV1,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
@@ -46,6 +50,10 @@ struct Arguments {
     /// is disabled.
     #[arg(long)]
     repository_qualification_binding: Option<PathBuf>,
+    /// Exact reservation realization/source binding. Mutually exclusive with
+    /// the V1 repository-qualification binding.
+    #[arg(long)]
+    reservation_qualification_binding: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -57,6 +65,13 @@ struct RepositoryQualificationResolverBindingV0 {
     receipt_id: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReservationQualificationResolverBindingV1 {
+    schema: String,
+    applicability: ReservationApplicabilityProfileV1,
+    source: AgOccurrenceReferenceV1,
+}
 fn main() -> anyhow::Result<()> {
     let arguments = Arguments::parse();
     let mut input = String::new();
@@ -66,7 +81,64 @@ fn main() -> anyhow::Result<()> {
     let request: AgObservationRequestV1 =
         serde_json::from_str(&input).context("parse observation request")?;
     request.validate().map_err(anyhow::Error::msg)?;
-    let body = if let Some(binding_path) = arguments.repository_qualification_binding {
+    if arguments.repository_qualification_binding.is_some()
+        && arguments.reservation_qualification_binding.is_some()
+    {
+        bail!("qualification resolver bindings are mutually exclusive");
+    }
+    let body = if let Some(binding_path) = arguments.reservation_qualification_binding {
+        let binding_bytes = std::fs::read(&binding_path)
+            .with_context(|| format!("read {}", binding_path.display()))?;
+        let binding: ReservationQualificationResolverBindingV1 =
+            serde_json::from_slice(&binding_bytes).context("parse reservation binding")?;
+        if serde_jcs::to_vec(&binding).context("canonicalize reservation binding")? != binding_bytes
+        {
+            bail!("reservation qualification binding must be exact canonical JSON");
+        }
+        if binding.schema != "nightshift.repository-qualification-reservation-resolver-binding/v1"
+            || binding.applicability.resolver_id != arguments.resolver_id
+        {
+            bail!("reservation qualification resolver binding/identity mismatch");
+        }
+        let key = request
+            .key
+            .as_object()
+            .context("AG occurrence key must be an object")?;
+        if key.len() != 2 {
+            bail!("AG occurrence key must contain exactly campaign and occurrence");
+        }
+        let target_campaign = key
+            .get("campaign")
+            .and_then(serde_json::Value::as_str)
+            .context("AG occurrence key has no campaign")?;
+        let target_occurrence = key
+            .get("occurrence")
+            .and_then(serde_json::Value::as_str)
+            .context("AG occurrence key has no occurrence")?;
+        let store = ReservationRealizationStoreV1::open_read_only(&arguments.store)
+            .map_err(anyhow::Error::msg)
+            .context("open reservation realization store read-only")?;
+        match store
+            .resolve_applicability(
+                &binding.applicability,
+                &binding.source,
+                target_campaign,
+                target_occurrence,
+                &request.observation,
+                &request.subject,
+                request.now_unix_ms,
+            )
+            .map_err(anyhow::Error::msg)?
+        {
+            ReservationApplicabilityOutcomeV1::Observation(resolution) => {
+                serde_jcs::to_vec(&resolution).context("canonicalize reservation resolution")?
+            }
+            ReservationApplicabilityOutcomeV1::RetainedOnly { .. }
+            | ReservationApplicabilityOutcomeV1::Absent => {
+                bail!("reservation has no unique current qualified realization")
+            }
+        }
+    } else if let Some(binding_path) = arguments.repository_qualification_binding {
         let binding_bytes = std::fs::read(&binding_path)
             .with_context(|| format!("read {}", binding_path.display()))?;
         let binding: RepositoryQualificationResolverBindingV0 =
