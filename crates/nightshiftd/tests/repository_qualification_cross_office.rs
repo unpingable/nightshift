@@ -2,7 +2,8 @@
 //! environment paths are absent; the campaign qualification invokes it with
 //! the exact freshly built NQ evaluator and an external output path.
 
-use std::process::Command;
+use std::io::Write as _;
+use std::process::{Command, Stdio};
 
 use nightshiftd::canonical_store::{
     AgOccurrenceReferenceV1, AgProgramCounterV1, AG_REFERENCE_SCHEMA_V1,
@@ -201,5 +202,83 @@ fn factual_nq_receipt_becomes_exact_nightshift_ag_basis() {
         panic!()
     };
     assert_eq!(resolution.status, AgTypedObservationStatusV1::Current);
+
+    let applicability_path = temp.path().join("applicability.json");
+    let cli_store = temp.path().join("qualification-cli.db");
+    std::fs::write(
+        &applicability_path,
+        serde_jcs::to_vec(&applicability).unwrap(),
+    )
+    .unwrap();
+    let ingress = Command::new(env!("CARGO_BIN_EXE_nightshift"))
+        .arg("--store")
+        .arg(&cli_store)
+        .args(["repository-qualification", "ingest", "--applicability"])
+        .arg(&applicability_path)
+        .arg("--nq-profile")
+        .arg(&profile_path)
+        .arg("--nq-evidence")
+        .arg(&evidence_path)
+        .arg("--nq-receipt")
+        .arg(&receipt_path)
+        .arg("--nq-monitor")
+        .arg(&nq_program)
+        .output()
+        .unwrap();
+    assert!(
+        ingress.status.success(),
+        "Nightshift qualification ingress failed: {}",
+        String::from_utf8_lossy(&ingress.stderr)
+    );
+
+    let binding_path = temp.path().join("resolver-binding.json");
+    std::fs::write(
+        &binding_path,
+        serde_jcs::to_vec(&serde_json::json!({
+            "schema": "nightshift.repository-qualification-resolver-binding/v0",
+            "applicability": applicability,
+            "source": source,
+            "receipt_id": retained.receipt_id,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let request = serde_jcs::to_vec(&serde_json::json!({
+        "schema": "ag.governed-loop.observation-request/v1",
+        "key": {"campaign": ag_digest("campaign"), "occurrence": "00000000-0000-0000-0000-000000000001"},
+        "observation": observation,
+        "subject": ag_digest("subject"),
+        "now_unix_ms": 1300,
+    }))
+    .unwrap();
+    let mut resolver = Command::new(env!("CARGO_BIN_EXE_nightshift-observation-resolver"))
+        .arg("--store")
+        .arg(&cli_store)
+        .args([
+            "--resolver-id",
+            "nightshift.repository-qualification-resolver/v1",
+        ])
+        .args(["--default-ttl-ms", "1"])
+        .arg("--repository-qualification-binding")
+        .arg(&binding_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    resolver.stdin.take().unwrap().write_all(&request).unwrap();
+    let resolved = resolver.wait_with_output().unwrap();
+    assert!(
+        resolved.status.success(),
+        "Nightshift qualification resolver failed: {}",
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+    assert_eq!(
+        resolved
+            .stdout
+            .strip_suffix(b"\n")
+            .unwrap_or(&resolved.stdout),
+        serde_jcs::to_vec(&resolution).unwrap()
+    );
     std::fs::write(output_path, serde_jcs::to_vec(&resolution).unwrap()).unwrap();
 }

@@ -38,6 +38,10 @@ use nightshiftd::project_predicate_attention::{
     write_json as write_attention_json, AttentionPolicyV1, AttentionReplayBundleV1,
     AttentionStoreV1, PulseReplayInputsV1,
 };
+use nightshiftd::repository_qualification::{
+    NqMonitorQualificationVerifierV1, QualificationApplicabilityProfileV1,
+    QualificationReceiptStoreV1,
+};
 use nightshiftd::steady_state_evidence::{
     SteadyStateEvidenceProfileV1, SteadyStateObservationHandoffV1, SteadyStateObservationVerifierV1,
 };
@@ -77,6 +81,12 @@ enum Command {
     Attention {
         #[command(subcommand)]
         command: AttentionCommand,
+    },
+    /// Exact NQ repository-qualification receipt ingress. This command only
+    /// replays and retains NQ evidence; it creates no observation or AG act.
+    RepositoryQualification {
+        #[command(subcommand)]
+        command: RepositoryQualificationCommand,
     },
 }
 
@@ -136,6 +146,26 @@ struct AttentionIngestArguments {
     catalog: PathBuf,
     #[arg(long)]
     support_evidence: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum RepositoryQualificationCommand {
+    /// Replay one exact NQ receipt with the pinned evaluator, then retain it.
+    Ingest(Box<RepositoryQualificationIngestArguments>),
+}
+
+#[derive(Debug, ClapArgs)]
+struct RepositoryQualificationIngestArguments {
+    #[arg(long)]
+    applicability: PathBuf,
+    #[arg(long)]
+    nq_profile: PathBuf,
+    #[arg(long)]
+    nq_evidence: PathBuf,
+    #[arg(long)]
+    nq_receipt: PathBuf,
+    #[arg(long)]
+    nq_monitor: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -440,6 +470,38 @@ fn main() -> anyhow::Result<()> {
             run_external_observation_command(&arguments.store, command)
         }
         Command::Attention { command } => run_attention_command(&arguments.store, command),
+        Command::RepositoryQualification { command } => {
+            run_repository_qualification_command(&arguments.store, command)
+        }
+    }
+}
+
+fn run_repository_qualification_command(
+    store_path: &Path,
+    command: RepositoryQualificationCommand,
+) -> anyhow::Result<()> {
+    match command {
+        RepositoryQualificationCommand::Ingest(arguments) => {
+            let RepositoryQualificationIngestArguments {
+                applicability,
+                nq_profile,
+                nq_evidence,
+                nq_receipt,
+                nq_monitor,
+            } = *arguments;
+            let applicability: QualificationApplicabilityProfileV1 = read_exact(&applicability)?;
+            let profile: serde_json::Value = read_exact(&nq_profile)?;
+            let evidence: serde_json::Value = read_exact(&nq_evidence)?;
+            let receipt: serde_json::Value = read_exact(&nq_receipt)?;
+            let mut verifier =
+                NqMonitorQualificationVerifierV1::new(nq_monitor).map_err(anyhow::Error::msg)?;
+            let mut store =
+                QualificationReceiptStoreV1::open(store_path).map_err(anyhow::Error::msg)?;
+            let retained = store
+                .ingest(&applicability, &profile, &evidence, &receipt, &mut verifier)
+                .map_err(anyhow::Error::msg)?;
+            write_exact(&retained)
+        }
     }
 }
 

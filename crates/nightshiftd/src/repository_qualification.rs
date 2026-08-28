@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -340,7 +340,7 @@ impl QualificationReceiptVerifierV1 for NqMonitorQualificationVerifierV1 {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RetainedQualificationReceiptV1 {
     pub receipt_id: String,
     pub receipt_sha256: String,
@@ -372,6 +372,17 @@ impl QualificationReceiptStoreV1 {
                  );",
             )
             .map_err(|error| error.to_string())?;
+        Ok(Self { connection })
+    }
+
+    /// Open an already-initialized receipt store without write or migration
+    /// capability. Applicability resolution cannot create retained evidence.
+    pub fn open_read_only(path: &Path) -> Result<Self, String> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| error.to_string())?;
         Ok(Self { connection })
     }
 
