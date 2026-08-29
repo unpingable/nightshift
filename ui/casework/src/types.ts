@@ -72,7 +72,10 @@ export interface WorkItem {
   outcome: {
     state: string;
     result_classification: string;
-    repositories: Array<{ repository: string; branch: string; head: string; push_status: string }>;
+    repositories: {
+      canonical_json: string;
+      recognized_rows: Array<{ repository: string; branch: string; head: string; push_status: string }> | null;
+    };
     tests: string[];
     evidence: string[];
     live_or_production_mutations: string[];

@@ -134,11 +134,16 @@ function RunCaseView({ digest }: { digest: string }) {
   const questionItems = useMemo(() => new Set(run?.human_questions.map((question) => question.work_item) ?? []), [run]);
   const states = useMemo(() => [...new Set(run?.work_items.map((item) => item.outcome.state) ?? [])].sort(), [run]);
   const tracks = useMemo(() => [...new Set(run?.work_items.map((item) => item.track) ?? [])].sort(), [run]);
-  const items = useMemo(() => run?.work_items.filter((item) =>
-    (!stateFilter || item.outcome.state === stateFilter)
-    && (!trackFilter || item.track === trackFilter)
-    && (questionFilter === "all" || (questionFilter === "with" ? questionItems.has(item.id) : !questionItems.has(item.id))))),
-  [run, stateFilter, trackFilter, questionFilter, questionItems]);
+  const items = useMemo(() => {
+    if (!run) return undefined;
+    return run.work_items.filter((item) => {
+      const questionMatches = questionFilter === "all"
+        || (questionFilter === "with" ? questionItems.has(item.id) : !questionItems.has(item.id));
+      return (!stateFilter || item.outcome.state === stateFilter)
+        && (!trackFilter || item.track === trackFilter)
+        && questionMatches;
+    });
+  }, [run, stateFilter, trackFilter, questionFilter, questionItems]);
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   return (
     <main id="main" className="page wide">
@@ -198,7 +203,8 @@ function WorkItemView({ digest, id }: { digest: string; id: string }) {
       </section>
       <section className="case-column outcome"><header><p className="eyebrow">Receipt snapshot</p><h2>Recorded outcome</h2></header>
         <DefinitionGrid><Field label="Exact state"><Exact wrap>{item.outcome.state}</Exact></Field><Field label="Exact classification"><Exact wrap>{item.outcome.result_classification}</Exact></Field></DefinitionGrid>
-        <h3>Resulting repositories and custody</h3>{item.outcome.repositories.length ? <div className="record-stack">{item.outcome.repositories.map((row, index) => <DefinitionGrid key={`${row.repository}-${index}`}><Field label="Repository"><Exact>{row.repository}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Head"><Exact wrap>{row.head}</Exact></Field><Field label="Push status"><Exact wrap>{row.push_status}</Exact></Field></DefinitionGrid>)}</div> : <p className="empty">None recorded</p>}
+        <h3>Resulting repositories and custody</h3>{item.outcome.repositories.recognized_rows ? <div className="record-stack">{item.outcome.repositories.recognized_rows.map((row, index) => <DefinitionGrid key={index}><Field label="Repository"><Exact>{row.repository}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Head"><Exact wrap>{row.head}</Exact></Field><Field label="Push status"><Exact wrap>{row.push_status}</Exact></Field></DefinitionGrid>)}</div> : <p className="empty">Receipt value does not have the recognized repository-row shape.</p>}
+        <h3>Canonical renderer JSON</h3><pre className="inline-json" tabIndex={0}>{item.outcome.repositories.canonical_json}</pre>
         <div className="list-block"><h3>Tests</h3><StringList values={item.outcome.tests} /></div><div className="list-block"><h3>Evidence</h3><StringList values={item.outcome.evidence} /></div><div className="list-block"><h3>Live or production mutations</h3><StringList values={item.outcome.live_or_production_mutations} /></div>
         <h3>Remaining trigger</h3><p><Exact wrap>{item.outcome.remaining_trigger}</Exact></p><h3>Next lawful action</h3><p><Exact wrap>{item.outcome.next_lawful_action}</Exact></p>
       </section>
