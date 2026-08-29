@@ -481,6 +481,7 @@ dependencies = [
  "chrono",
  "clap",
  "nightshiftd",
+ "rustix",
  "serde",
  "serde_jcs",
  "serde_json",
