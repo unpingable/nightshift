@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -70,10 +70,21 @@ pub struct RepositoryCustodyV1 {
     pub path: String,
     pub branch: String,
     pub commit: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub remote: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub remote_commit: Option<String>,
     pub worktree_clean: bool,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub discrepancy: Option<String>,
+}
+
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

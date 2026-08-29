@@ -348,6 +348,42 @@ fn substituted_type_and_nested_unknown_field_fail_closed() {
 }
 
 #[test]
+fn custody_nullable_fields_are_required_and_explicit_null_is_accepted() {
+    let explicit_null =
+        include_bytes!("../../../qualification/nightshift-packet-v1/fixtures/positive.v1.json");
+    let decoded = NightshiftPacketV1::from_slice(explicit_null).unwrap();
+    assert_eq!(decoded.repository_custody[0].remote, None);
+    assert_eq!(decoded.repository_custody[0].remote_commit, None);
+    assert_eq!(decoded.repository_custody[0].discrepancy, None);
+
+    let directory = tempfile::tempdir().unwrap();
+    for field in ["remote", "remote_commit", "discrepancy"] {
+        let mut missing = serde_json::to_value(fixture()).unwrap();
+        missing["packet_digest"] = Value::String(String::new());
+        missing["switchyard"]["plan_ref"] = Value::String(String::new());
+        missing["repository_custody"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let bytes = serde_json::to_vec(&missing).unwrap();
+        assert!(matches!(
+            NightshiftPacketV1::from_slice(&bytes),
+            Err(PacketError::Json(_))
+        ));
+
+        let path = directory.path().join(format!("missing-{field}.json"));
+        std::fs::write(&path, bytes).unwrap();
+        let seal = Command::new(env!("CARGO_BIN_EXE_nightshift"))
+            .args(["packet", "seal", "--packet"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(!seal.status.success(), "field {field}");
+        assert!(seal.stdout.is_empty(), "field {field}");
+    }
+}
+
+#[test]
 fn committed_fixtures_have_expected_dispositions() {
     fn load(bytes: &[u8]) -> NightshiftPacketV1 {
         NightshiftPacketV1::from_slice(bytes).unwrap()

@@ -17,7 +17,7 @@ scripts/check_no_actuation_surface.sh
 
 ## Observed results
 
-- Rust packet tests: 16 passed, 0 failed.
+- Rust packet tests: 17 passed, 0 failed.
 - Receipt/report tests: 3 passed, 0 failed.
 - Exact packet validation:
   `VALID_NON_AUTHORIZING_ORIENTATION_PACKET`, authority effect `NONE`,
@@ -29,6 +29,8 @@ scripts/check_no_actuation_surface.sh
 - Seal output is exact JCS with no trailing byte; redirected output validates
   without normalization.
 - Independent checked-in JSON Schema validation: passed.
+- Required nullable custody keys: explicit null accepted; all three omission
+  cases refused by the decoder and sealing CLI with empty stdout.
 - Structural no-actuation gate and its deterministic negative control: passed.
 
 ## Classification

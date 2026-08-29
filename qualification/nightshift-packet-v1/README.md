@@ -37,6 +37,8 @@ The Rust suite covers:
 - byte-exact seal-to-file-to-validate interoperability;
 - empty strings/collections, substituted field types, and nested unknown
   fields fail closed at the shared schema boundary;
+- required nullable custody fields accept explicit null and refuse omission at
+  both the library decoder and zero-output sealing boundary;
 - packet-digest mismatch fails closed;
 - plan-reference mismatch fails closed;
 - unknown JSON fields fail closed;
