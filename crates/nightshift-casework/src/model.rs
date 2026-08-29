@@ -112,12 +112,19 @@ pub struct ModelRoutingV1 {
 pub struct WorkItemOutcomeV1 {
     pub state: String,
     pub result_classification: String,
-    pub repositories: Vec<ResultRepositoryV1>,
+    pub repositories: RenderedRepositoriesV1,
     pub tests: Vec<String>,
     pub evidence: Vec<String>,
     pub live_or_production_mutations: Vec<String>,
     pub remaining_trigger: String,
     pub next_lawful_action: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenderedRepositoriesV1 {
+    pub canonical_json: String,
+    pub recognized_rows: Option<Vec<ResultRepositoryV1>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
