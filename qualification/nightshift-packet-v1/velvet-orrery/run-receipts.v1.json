@@ -1,7 +1,7 @@
 {
   "schema": "nightshift.run-receipts/v1",
   "packet_digest": "sha256:01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7",
-  "updated_at": "2026-08-29T17:22:22Z",
+  "updated_at": "2026-08-29T22:20:44Z",
   "work_items": [
     {
       "id": "packet-v1",
@@ -11,276 +11,521 @@
         {
           "repository": "nightshift",
           "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
-          "head": "3bc85acda4be9362ffd9b2ca77f4225740623c92",
-          "push_status": "remote verified"
+          "head": "ce6dd8ed84f6ba53edcf58788f90f5162cbc9844",
+          "push_status": "remote verified; packet implementation accepted at 8f858f2d942ff569d8422c0c9c66975a1a45fd1f"
         }
       ],
       "tests": [
-        "cargo test --locked: passed",
-        "cargo clippy --locked --all-targets -- -D warnings: passed",
-        "check_no_actuation_surface.sh: passed",
-        "packet tests: 9 passed",
-        "report tests: 3 passed"
+        "packet tests: 17 passed",
+        "full cargo test --locked: passed",
+        "clippy all targets -D warnings: passed",
+        "report tests: 3 passed",
+        "schema, exact seal, domain digest, and no-actuation controls: passed"
       ],
       "evidence": [
-        "qualification/nightshift-packet-v1/velvet-orrery/validation-receipt.v1.json"
+        "qualification/nightshift-packet-v1/velvet-orrery/validation-receipt.v1.json",
+        "qualification/nightshift-packet-v1/velvet-orrery/QUALIFICATION.md",
+        "docs/working/roadmaps/falling_piano_resilience_validation.md"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "independent packet audit",
-      "next_lawful_action": "run independent audit, then retain classification if no material finding"
+      "remaining_trigger": "optional promotion review; packet remains non-authorizing",
+      "next_lawful_action": "review the campaign branch and promotion dispositions without changing the sealed packet"
     },
     {
       "id": "switchyard-transport",
-      "state": "AUDIT-IN-PROGRESS",
-      "result_classification": "WORKER-REPORTED-QUALIFIED-WITH-CUSTODY-LIMITATION",
+      "state": "QUALIFIED-WITH-CUSTODY-LIMITATION",
+      "result_classification": "repaired-qualified-with-custody-limitation",
       "repositories": [
         {
           "repository": "switchyard",
           "branch": "campaign/quiet-bridge-switchyard-explicit-plan-ref-transport-v1",
-          "head": "4ff054c07246cc880656abee05616547acd7d096",
-          "push_status": "not pushed; no authoritative remote"
+          "head": "053e561b0fed5af15de04b1d25f09ecea639d3fd",
+          "push_status": "sole local; configured origin is an absent bundle and no authoritative remote is registered"
         }
       ],
       "tests": [
-        "worker pytest: 35 passed",
-        "worker compileall: passed",
-        "worker git diff --check: passed"
+        "pytest: 51 passed",
+        "installed-wheel packet validation: passed",
+        "packet/schema binding and nonce replay/concurrent-claim controls: passed",
+        "service disabled/inactive; no process/listener"
       ],
       "evidence": [
-        "docs/campaigns/quiet-bridge-switchyard-explicit-plan-ref-transport-v1.md"
+        "switchyard:docs/campaigns/quiet-bridge-switchyard-explicit-plan-ref-transport-v1.md"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "independent audit and correction of any findings",
-      "next_lawful_action": "accept, repair, or refuse after independent audit"
+      "remaining_trigger": "authoritative private remote and branch policy for Switchyard",
+      "next_lawful_action": "publish only after repository ownership and destination are registered; leave service disabled"
     },
     {
       "id": "authorization-continuation",
-      "state": "IN-PROGRESS",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED-CODE-INTEGRATION-STOPPED",
+      "result_classification": "EXACT-OCCURRENCE-AUTHORIZATION-CONTINUATION-QUALIFIED-DIRECT-EFFECT-STOPPED",
+      "repositories": [
+        {
+          "repository": "ag_ng",
+          "branch": "campaign/iron-chorus-ag-codex-exact-occurrence-authorization-continuation-v1",
+          "head": "b55d8e93cf5275d06d7688c5fa4aa794ecd4d3d4",
+          "push_status": "remote verified"
+        },
+        {
+          "repository": "codex",
+          "branch": "campaign/iron-chorus-ag-codex-exact-occurrence-authorization-continuation-v1",
+          "head": "0e42c8d4a6362cb7ddd0c04a24d3a94f9241803b",
+          "push_status": "remote verified"
+        },
+        {
+          "repository": "docket",
+          "branch": "campaign/c2-governed-loop-layering",
+          "head": "c49ad8d0f26fb2a13b9dbafdde84d7abfe1f867b",
+          "push_status": "pinned contract source; unchanged"
+        }
+      ],
+      "tests": [
+        "AG external authorization: 46 passed",
+        "Codex authorization/reviewer: 44 and 94 passed",
+        "real AG/Codex interop and Docket corpus: passed",
+        "Refused, Indeterminate, OutcomeUnknown, native-denial, unsupported-handler, and hosted-file zero-effect cases: passed"
+      ],
       "evidence": [
-        "foundation SHAs and remotes independently verified"
+        "ag_ng:qualification/iron-chorus-auth-continuation-v1/",
+        "ag_ng:docs/external-authorization-continuation-v1.md",
+        "codex:codex-rs/core/src/authorization_continuation.rs"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "large-model worker result",
-      "next_lawful_action": "inspect paired diffs and run independent authority audit"
+      "remaining_trigger": "canonical Codex-to-Docket custody seam; root/userns host cases are sealed as unsupported here",
+      "next_lawful_action": "connect canonical Docket custody under separate exact work; never execute directly from Authorized"
     },
     {
       "id": "worker-vm-custody",
-      "state": "IN-PROGRESS",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED",
+      "result_classification": "WORKER-VM-CUSTODY-ADMISSION-SUCCESSOR-QUALIFIED-ZERO-AUTHORITY",
+      "repositories": [
+        {
+          "repository": "porter",
+          "branch": "campaign/worker-vm-custody-admission-successor-v1",
+          "head": "49d539c6a21a2cb81aa631d98521b3e9ae15b511",
+          "push_status": "remote verified"
+        },
+        {
+          "repository": "ag_ng",
+          "branch": "campaign/worker-vm-custody-admission-successor-v1-ag",
+          "head": "cb85d363e2495a75f78c28fb8ce9b46af1f289c0",
+          "push_status": "remote verified"
+        },
+        {
+          "repository": "campaign-driver-ng",
+          "branch": "campaign/worker-vm-custody-admission-successor-v1",
+          "head": "ff2b6562b3a19c9f5c1b669109ef3c836c614da4",
+          "push_status": "sole local; no authoritative remote"
+        }
+      ],
+      "tests": [
+        "driver Python: 36 passed",
+        "Porter: 33 passed",
+        "campaign-driver Rust: 33 passed, 1 ignored",
+        "focused admission/start/reconcile ordering: 8 passed",
+        "independent pre-admission and wrong-run controls: passed"
+      ],
       "evidence": [
-        "GLASS-HERON false-success path reproduced from retained evidence"
+        "ag_ng:qualification/governed-campaign-loop-v1/silver-kingfisher/result-record.v1.json",
+        "campaign-driver-ng:docs/QUALIFICATION.md"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "worker result",
-      "next_lawful_action": "inspect Porter and campaign-driver-ng receipts"
+      "remaining_trigger": "authoritative campaign-driver-ng remote",
+      "next_lawful_action": "publish the exact driver head only after repository ownership is established; never reopen GLASS-HERON R1"
     },
     {
       "id": "caliper-mode-contract",
-      "state": "SCHEDULED",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED",
+      "result_classification": "implementation_qualified_local_fixture",
+      "repositories": [
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/group-anchor-generation-store-mode-contract-successor-v1",
+          "head": "a56342762a8b46f4c01b5885c7d7c5728ab27a60",
+          "push_status": "remote verified"
+        }
+      ],
+      "tests": [
+        "nq-passive-load-helper: 34 passed, 1 ignored",
+        "process permission boundary: 3 passed",
+        "clippy -D warnings and diff check: passed"
+      ],
       "evidence": [
-        "CALIPER C3 terminal report"
+        "nq-ng:audit/receipts/run-2026-08-29-group-anchor-generation-store-mode-contract-successor-v1/result.v1.json"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "shared nq-ng integration slot",
-      "next_lawful_action": "start GROUP-ANCHOR from canonical main in isolated worktree"
+      "remaining_trigger": "none; resolved invariant admits 0750 and inherited 02750 only when group/other write is absent",
+      "next_lawful_action": "preserve GROUP-ANCHOR as the qualified semantic predecessor"
     },
     {
       "id": "caliper-authority-lifecycle",
-      "state": "WAITING-PREREQUISITE",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "TERMINAL-NOT-QUALIFIED",
+      "result_classification": "PASSIVE-VM-AUTHORITY-LIFECYCLE-NOT-QUALIFIED",
+      "repositories": [
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/crowned-store-caliper-authority-lifecycle-successor-v1",
+          "head": "a5490642aa3d102a564183ea019de075632a34b8",
+          "push_status": "remote verified"
+        }
+      ],
+      "tests": [
+        "release manifests and two-assembly reproducibility: passed",
+        "v1 pre-authority refusal and v2 terminal evidence: passed",
+        "private-key exclusion: passed",
+        "independent terminal audit accepted the NOT-QUALIFIED classification"
+      ],
       "evidence": [
-        "CALIPER C3 terminal report"
+        "nq-ng:audit/receipts/run-2026-08-29-crowned-store-caliper-authority-lifecycle-successor-v1/REPORT.md",
+        "nq-ng:audit/receipts/run-2026-08-29-crowned-store-caliper-authority-lifecycle-successor-v1/result.v1.json"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "GROUP-ANCHOR independently qualified",
-      "next_lawful_action": "mint fresh occurrence only after prerequisite"
+      "remaining_trigger": "fresh successor fixture with exact ProviderConfigV1 TOML carrier; v2 occurrence is consumed",
+      "next_lawful_action": "start only a distinct successor after qualifying the TOML carrier before authority"
     },
     {
       "id": "lanternwake-port",
-      "state": "SCHEDULED",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED-LOCAL-LIVE-ROUTE-UNQUALIFIED",
+      "result_classification": "native_identity_boundary_qualified_local_fixture_live_route_unqualified",
+      "repositories": [
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/amber-compass-reported-host-binding-successor-v1",
+          "head": "b35afd050ca484809a0b82d99fa9039ce0b79851",
+          "push_status": "remote verified"
+        }
+      ],
+      "tests": [
+        "native reported-subject binding and alternate-identity refusal: passed",
+        "zero admitted observations and zero authority: passed",
+        "independent local qualification: accepted"
+      ],
       "evidence": [
-        "Lanternwake successor handoff"
+        "nq-ng:audit/receipts/run-2026-08-29-amber-compass-reported-host-binding-successor-v1/result.v1.json"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "shared nq-ng integration slot",
-      "next_lawful_action": "start AMBER-COMPASS from canonical main; do not touch Classic or GLASSHOPPER"
+      "remaining_trigger": "a separate authorized successor-NQ live route; GLASSHOPPER is forbidden",
+      "next_lawful_action": "qualify live only on a separately authorized route; leave Classic and GLASSHOPPER unchanged"
     },
     {
       "id": "copper-artifact-custody",
-      "state": "SCHEDULED",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED-LOCAL-CUSTODY",
+      "result_classification": "MATCHED-K-N-RELEASE-CUSTODY-QUALIFIED",
+      "repositories": [
+        {
+          "repository": "civild",
+          "branch": "campaign/forge-vault-matched-k-n-release-custody-successor-v1",
+          "head": "0f70fd18ca94996e8d56798c34f15acd69913999",
+          "push_status": "sole local; private-origin ownership/trust not established"
+        }
+      ],
+      "tests": [
+        "native FreeBSD K/N buildworld, buildkernel, installkernel: passed",
+        "complete K/N layouts: 856 modules each",
+        "offline verifier: 3481 entries and 1750225232 bytes passed",
+        "missing-file and content-substitution controls refused",
+        "independent reopening and teardown census: passed"
+      ],
       "evidence": [
-        "COPPER-LANTERN and TURNSTILE retained provenance"
+        "civild:research/state-transition/matched-k-n-release-custody-successor-v1/receipt.toml",
+        "civild:research/state-transition/matched-k-n-release-custody-successor-v1/summary.md",
+        "bundle manifest sha256:f3bf9e9e94f264ee75425980d691dd427d3e107246763e823807a4a32f606c38"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "mutating worker slot and FreeBSD fixture census",
-      "next_lawful_action": "start FORGE-VAULT inventory/offline verifier before any rebuild"
+      "remaining_trigger": "authoritative civild publication destination; powered-off rebuild overlays remain declared local checkpoints",
+      "next_lawful_action": "publish only after repository ownership is established; do not substitute these bytes for COPPER-LANTERN"
     },
     {
       "id": "copper-deployment",
-      "state": "WAITING-PREREQUISITE",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "ENTRY-BLOCKED-NOT-STARTED",
+      "result_classification": "ENTRY-BLOCKED-PRIVILEGED-REFERENCE-HOST-UNAVAILABLE",
+      "repositories": [
+        {
+          "repository": "civild",
+          "branch": "campaign/twin-harbor-same-version-reference-deployment-successor-v1",
+          "head": "21c33de9d9106e9f59663c4cbfdbedf22f1707c5",
+          "push_status": "sole local; private-origin ownership/trust not established"
+        }
+      ],
+      "tests": [
+        "FORGE-VAULT prerequisite reopening: passed",
+        "authorized reference fixture census: none found",
+        "zero deployment occurrence, VM, listener, private key, and target mutation: passed"
+      ],
       "evidence": [
-        "COPPER-LANTERN terminal result"
+        "civild:research/state-transition/same-version-reference-deployment-successor-v1/entry-evaluation.toml",
+        "civild:research/state-transition/same-version-reference-deployment-successor-v1/receipt.toml"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "FORGE-VAULT complete K/N bundle qualification",
-      "next_lawful_action": "start a distinct deployment campaign only after artifact custody"
+      "remaining_trigger": "an authorized disposable FreeBSD 15.1 reference fixture or separate authority to create one",
+      "next_lawful_action": "resume from entry only after exact fixture authority exists; do not repurpose FORGE rebuild overlays"
     },
     {
       "id": "bedrock-docket-executor",
-      "state": "SCHEDULED",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "TERMINAL-NOT-QUALIFIED",
+      "result_classification": "NOT-QUALIFIED-IDENTITY-CONTRACT-SUCCESSOR-REQUIRED",
+      "repositories": [
+        {
+          "repository": "docket",
+          "branch": "campaign/live-docket-executor-prerequisite-v1",
+          "head": "13d37da4dbff3164e96d555172f4cf4d3c961117",
+          "push_status": "remote verified; Docket host half qualified"
+        },
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/river-clerk-bedrock-docket-adapter-prerequisite-v1",
+          "head": "6e921bfa6f033096ca9d8f5c0c3a1986ba19beab",
+          "push_status": "remote verified; composed prerequisite not qualified"
+        }
+      ],
+      "tests": [
+        "Docket process host: 17 focused cases passed",
+        "Docket workspace, release, clippy, and frozen corpus: passed",
+        "NQ GRANITE consumption: 10 plus real CLI passed",
+        "identity-cycle analysis stopped before adapter implementation or live effect"
+      ],
       "evidence": [
-        "BEDROCK B5 terminal report"
+        "docket:conformance/live-docket-executor-prerequisite-v1/result.json",
+        "nq-ng:audit/receipts/run-2026-08-29-river-clerk-bedrock-docket-adapter-prerequisite-v1/REPORT.md",
+        "nq-ng:audit/receipts/run-2026-08-29-river-clerk-bedrock-docket-adapter-prerequisite-v1/result.json"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "large-model architecture slot and canonical Docket custody",
-      "next_lawful_action": "resolve Docket source custody and implement RIVER-CLERK"
+      "remaining_trigger": "separately authorized versioned NQ prepared-occurrence contract binding NQ plan and Docket executor-plan identities without circularity",
+      "next_lawful_action": "authorize a distinct NQ contract successor; preserve Docket V1 and NQ V1 without weakening either"
     },
     {
       "id": "bedrock-runtime-carrier",
-      "state": "SCHEDULED",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED-VIA-SUCCESSOR",
+      "result_classification": "QUALIFIED-SUCCESSOR-RETAINED-OCI-RELEASE-CUSTODY-V1",
+      "repositories": [
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/quiet-ember-release-custody-successor-v1",
+          "head": "d762b45d7ebef0dc343988d9049245cd72c48a95",
+          "push_status": "remote verified; refused predecessor f7cdf9e9c87faccb42cc6c0f9191b24be650a6d4 preserved"
+        }
+      ],
+      "tests": [
+        "carrier: 9 focused plus real parent-death integration passed",
+        "full workspace and clippy -D warnings: passed",
+        "18-file release verifier and retained-input byte-exact rebuild: passed",
+        "same-size helper mutation refused before output",
+        "independent custody audit: accepted"
+      ],
       "evidence": [
-        "BEDROCK B5 terminal report"
+        "nq-ng:audit/receipts/run-2026-08-29-quiet-ember-release-custody-successor-v1/REPORT.md",
+        "nq-ng:audit/receipts/run-2026-08-29-quiet-ember-release-custody-successor-v1/result.json",
+        "OCI manifest sha256:94c82c5b69b94660918ad34be401217c42d9f4888489bd15f26b5f6ad306181a"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "shared nq-ng integration slot",
-      "next_lawful_action": "implement QUIET-EMBER inert carrier independently"
+      "remaining_trigger": "none for this prerequisite; Bedrock live remains blocked by RIVER",
+      "next_lawful_action": "preserve the qualified successor and do not infer OPEN-QUARRY readiness"
     },
     {
       "id": "bedrock-claim-fence",
-      "state": "SCHEDULED",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
-      "repositories": [],
-      "tests": [],
+      "state": "QUALIFIED",
+      "result_classification": "QUALIFIED-PREREQUISITE-DURABLE-STANDALONE-NQ-CLAIM-FENCE-V1",
+      "repositories": [
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/granite-fence-durable-nq-claim-fence-prerequisite-v1",
+          "head": "6050c8128d5c60f3358436319913df93e02e373b",
+          "push_status": "remote verified"
+        }
+      ],
+      "tests": [
+        "focused library: 10 passed",
+        "real CLI integration: passed",
+        "full workspace/doc tests: passed",
+        "strict clippy, fmt, diff, and zero-live-effect checks: passed"
+      ],
       "evidence": [
-        "BEDROCK B5 terminal report"
+        "nq-ng:audit/receipts/run-2026-08-29-granite-fence-durable-nq-claim-fence-prerequisite-v1/REPORT.md",
+        "nq-ng:audit/receipts/run-2026-08-29-granite-fence-durable-nq-claim-fence-prerequisite-v1/result.json"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "large-model architecture slot and shared nq-ng owner",
-      "next_lawful_action": "implement GRANITE-FENCE independently"
+      "remaining_trigger": "none for this prerequisite",
+      "next_lawful_action": "consume only from a separately qualified exact executor integration"
     },
     {
       "id": "bedrock-first-live",
-      "state": "WAITING-PREREQUISITES",
-      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "state": "NOT-STARTED-BLOCKED-PREREQUISITE",
+      "result_classification": "NONE-NO-OCCURRENCE",
       "repositories": [],
-      "tests": [],
+      "tests": [
+        "entry gate: RIVER composed executor prerequisite not qualified",
+        "zero AG issuance, Docket attempt, NQ occurrence, Pod, cluster, or route change"
+      ],
       "evidence": [
-        "BEDROCK B5 terminal report"
+        "nq-ng:audit/receipts/run-2026-08-29-river-clerk-bedrock-docket-adapter-prerequisite-v1/result.json",
+        "BEDROCK B5 terminal result remains immutable"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "authorization continuation plus all three Bedrock prerequisites independently qualified",
-      "next_lawful_action": "no live occurrence before every dependency qualifies"
+      "remaining_trigger": "all prerequisites independently qualified; RIVER currently refuses",
+      "next_lawful_action": "do not start OPEN-QUARRY until a versioned executor successor independently qualifies and privileged cluster authority exists"
     },
     {
       "id": "glasshopper-closeout",
-      "state": "WAITING-FIXED-BOUNDARY",
-      "result_classification": "NO-NEW-CAMPAIGN-RESULT-YET",
+      "state": "CLOSEOUT-COMPLETE-NOT-QUALIFIED",
+      "result_classification": "CLOSEOUT-COMPLETE-CAMPAIGN-NOT-QUALIFIED",
       "repositories": [
         {
           "repository": "nq-ng",
           "branch": "campaign/passive-linode-canonical-relation-relaunch-v1",
-          "head": "460d97c01fedb507ffad090c46437a8d833f93e7",
-          "push_status": "campaign branch absent remotely at entry"
+          "head": "e16336fea0a13349b2305105d7b3908fe5226200",
+          "push_status": "local, tracking, and remote verified exact"
         }
       ],
-      "tests": [],
+      "tests": [
+        "closeout timer fired at 2026-08-29T21:45:05.009070Z and service completed",
+        "ledger: created 213, starts 210, successes 209, outcome_unknown 1",
+        "G4 remained outcome_unknown/fenced with zero reconciliation or retry",
+        "slot 71 remained created-only with zero coordination",
+        "timers disabled/inactive; no process/listener; SQLite integrity passed"
+      ],
       "evidence": [
-        "read-only snapshot retained at 2026-08-29T06:50:15.680Z"
+        "nq-ng:audit/receipts/run-2026-08-29-passive-linode-glasshopper-terminal/REPORT.md",
+        "nq-ng:audit/receipts/run-2026-08-29-passive-linode-glasshopper-terminal/terminal-result.json",
+        "G4 outcome event sha256:c07ac56461a2eb96907f0199c6d7d5cca12ce5b48eb2dd75749a63fe984204a7",
+        "G4 fence event sha256:4acd97a10439b6dfba51309a49dceea0db9970a2669530be7be9abb8a4b4fe20"
       ],
       "live_or_production_mutations": [],
-      "remaining_trigger": "2026-08-29T21:45:05Z closeout boundary",
-      "next_lawful_action": "at or after boundary run only established closeout if entry predicates hold"
+      "remaining_trigger": "fresh successor only after separate reconciliation authority; this occurrence is terminal",
+      "next_lawful_action": "preserve the fenced outcome_unknown; no backfill, catch-up, retry, or inferred success"
     }
   ],
   "human_questions": [
     {
       "work_item": "switchyard-transport",
       "exact_question": "What is the authoritative private remote/destination and canonical branch policy for /data/git/switchyard?",
-      "evidence_exhausted": "The configured origin is /data/git/switchyard/switchyard-codex-session-foreman-mvp.bundle, that bundle is absent, git ls-remote fails, and Cartography has no Switchyard repository row.",
-      "safe_default": "Do not invent or change a remote; retain the clean local campaign commit and report sole-local custody.",
-      "consequences": "Providing the registered private destination permits a campaign-branch push and SHA verification. Leaving it unspecified keeps Interlock and QUIET-BRIDGE locally custodied only.",
-      "resume_point": "Verify destination identity against Cartography/repository policy, configure a non-destructive remote, push master Interlock and the QUIET-BRIDGE campaign branch, then verify exact SHAs."
+      "evidence_exhausted": "The configured origin is an absent local bundle, ls-remote fails, and Cartography has no Switchyard repository row.",
+      "safe_default": "Do not invent a remote; retain the clean local commits and leave the service disabled.",
+      "consequences": "Interlock and QUIET-BRIDGE remain sole-local until a registered destination exists.",
+      "resume_point": "Verify repository identity and branch policy, configure the registered remote, push exact commits, and verify SHAs."
+    },
+    {
+      "work_item": "worker-vm-custody",
+      "exact_question": "What is the authoritative private remote for campaign-driver-ng?",
+      "evidence_exhausted": "No authoritative remote is configured; accepted head ff2b6562b3a19c9f5c1b669109ef3c836c614da4 is clean and sole-local.",
+      "safe_default": "Retain the exact local head and do not invent a destination.",
+      "consequences": "Porter and AG are published but the composed repair retains one sole-local repository.",
+      "resume_point": "Register the repository destination, push the exact campaign branch without rewriting, and verify SHA."
+    },
+    {
+      "work_item": "copper-artifact-custody",
+      "exact_question": "Is git@github-unpingable:unpingable/civild.git the authorized publication destination for FORGE-VAULT and TWIN-HARBOR?",
+      "evidence_exhausted": "The remote is configured, but environment review did not establish ownership/trust and blocked publication before remote mutation.",
+      "safe_default": "Keep both clean exact heads local and do not retry or work around the block.",
+      "consequences": "The qualified bundle and blocked entry record remain sole-local.",
+      "resume_point": "Confirm ownership and branch policy, then push 0f70fd18ca94996e8d56798c34f15acd69913999 and 21c33de9d9106e9f59663c4cbfdbedf22f1707c5 exactly."
+    },
+    {
+      "work_item": "copper-deployment",
+      "exact_question": "Which existing disposable FreeBSD 15.1 reference fixture is authorized for TWIN-HARBOR, or is distinct fixture creation separately authorized?",
+      "evidence_exhausted": "No exact-work reference, repository fixture record, libvirt domain, or authorized overlay identifies a target; KVM availability is not authority.",
+      "safe_default": "Do not create or repurpose infrastructure; keep TWIN-HARBOR not started.",
+      "consequences": "Install, boot, runtime, reboot, removal, and reinstall qualification cannot begin.",
+      "resume_point": "Record exact fixture identity and authority, rerun entry, then mint a fresh deployment occurrence."
+    },
+    {
+      "work_item": "lanternwake-port",
+      "exact_question": "Which separate successor-NQ live route is authorized for AMBER-COMPASS?",
+      "evidence_exhausted": "The local identity boundary qualifies, but no separate live route is recorded and GLASSHOPPER is forbidden.",
+      "safe_default": "Keep live-route status unqualified and do not touch Classic or GLASSHOPPER.",
+      "consequences": "The port remains qualified locally without a live qualification claim.",
+      "resume_point": "Provide exact route and fixture authority, then run a distinct live occurrence."
+    },
+    {
+      "work_item": "bedrock-docket-executor",
+      "exact_question": "May a separate successor campaign design a versioned NQ prepared-occurrence contract with an explicit Docket executor-plan binding?",
+      "evidence_exhausted": "Docket V1 binds AG/dispatch work to its content-bound executor plan, while NQ V1 binds AG work to PreparedOccurrenceV1.plan_id; equality would require circularity or misrepresentation.",
+      "safe_default": "Preserve both V1 contracts, keep the composed prerequisite not qualified, and do not start OPEN-QUARRY.",
+      "consequences": "A versioned successor can represent both identities; weakening V1 would violate exactness law.",
+      "resume_point": "Authorize and scope a distinct NQ contract successor, then independently requalify the composed adapter before any live occurrence."
     }
   ],
   "repository_custody": [
     {
       "repository": "nightshift",
-      "branch_head": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829@3bc85acda4be9362ffd9b2ca77f4225740623c92",
+      "branch_head": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829@ce6dd8ed84f6ba53edcf58788f90f5162cbc9844 before containing closeout commit",
       "push_custody": "remote verified exact",
-      "dirty": "no",
+      "dirty": "no before report generation",
       "live_runtime": "none",
       "secrets": "none added",
       "teardown": "none"
     },
     {
       "repository": "switchyard",
-      "branch_head": "campaign/quiet-bridge-switchyard-explicit-plan-ref-transport-v1@4ff054c07246cc880656abee05616547acd7d096",
+      "branch_head": "campaign/quiet-bridge-switchyard-explicit-plan-ref-transport-v1@053e561b0fed5af15de04b1d25f09ecea639d3fd",
       "push_custody": "sole local; authoritative remote absent",
       "dirty": "no",
-      "live_runtime": "none activated",
+      "live_runtime": "service disabled/inactive; no process/listener",
       "secrets": "none added",
       "teardown": "none"
     },
     {
-      "repository": "AG/Codex continuation",
-      "branch_head": "worker in progress from 4f36e957/5de6a333",
-      "push_custody": "foundation remote verified; continuation pending",
-      "dirty": "isolated worker clones only",
-      "live_runtime": "none reported",
-      "secrets": "none reported",
-      "teardown": "pending worker closeout"
+      "repository": "AG/Codex authorization",
+      "branch_head": "ag_ng@b55d8e93cf5275d06d7688c5fa4aa794ecd4d3d4; codex@0e42c8d4a6362cb7ddd0c04a24d3a94f9241803b",
+      "push_custody": "both remote verified",
+      "dirty": "no",
+      "live_runtime": "no authorizer, Docket, effectd, or relevant listener",
+      "secrets": "none added",
+      "teardown": "temporary fixtures removed"
     },
     {
-      "repository": "Porter/campaign-driver-ng",
-      "branch_head": "worker in progress from a838501d/0823f1b1",
-      "push_custody": "pending",
-      "dirty": "isolated worker worktrees only",
-      "live_runtime": "none reported",
-      "secrets": "none reported",
-      "teardown": "pending worker closeout"
+      "repository": "Porter/AG/campaign-driver-ng",
+      "branch_head": "porter@49d539c6a21a2cb81aa631d98521b3e9ae15b511; ag_ng@cb85d363e2495a75f78c28fb8ce9b46af1f289c0; driver@ff2b6562b3a19c9f5c1b669109ef3c836c614da4",
+      "push_custody": "Porter and AG remote verified; driver sole-local/no remote",
+      "dirty": "no",
+      "live_runtime": "no worker VM, campaign process, or listener",
+      "secrets": "none added",
+      "teardown": "none"
     },
     {
-      "repository": "nq-ng shared worktrees",
-      "branch_head": "unchanged entry snapshots",
-      "push_custody": "several campaign refs absent remotely",
-      "dirty": "canonical primary retains pre-existing untracked records",
-      "live_runtime": "no local campaign QEMU/listener at entry census",
-      "secrets": "none observed",
-      "teardown": "GLASSHOPPER boundary pending"
+      "repository": "nq-ng campaign successors",
+      "branch_head": "GROUP a563427; CROWNED a549064; AMBER b35afd0; RIVER 6e921bf; QUIET d762b45; GRANITE 6050c81; GLASSHOPPER e16336f",
+      "push_custody": "all listed branches remote verified",
+      "dirty": "campaign worktrees clean; canonical primary retains pre-existing untracked records",
+      "live_runtime": "no campaign VM/container/process/listener; GLASSHOPPER timers disabled",
+      "secrets": "no private key retained in campaign evidence",
+      "teardown": "CROWNED state removed; GLASSHOPPER raw audit removed; no hidden obligation"
+    },
+    {
+      "repository": "Docket",
+      "branch_head": "campaign/live-docket-executor-prerequisite-v1@13d37da4dbff3164e96d555172f4cf4d3c961117",
+      "push_custody": "remote verified exact",
+      "dirty": "no in isolated clone",
+      "live_runtime": "no executor process/listener",
+      "secrets": "none added",
+      "teardown": "temporary fixtures removed"
+    },
+    {
+      "repository": "civild FORGE/TWIN",
+      "branch_head": "FORGE@0f70fd18ca94996e8d56798c34f15acd69913999; TWIN@21c33de9d9106e9f59663c4cbfdbedf22f1707c5",
+      "push_custody": "both sole-local pending remote confirmation",
+      "dirty": "no",
+      "live_runtime": "zero QEMU/libvirt/listeners; ports 24122/24123 closed",
+      "secrets": "ephemeral private key removed",
+      "teardown": "powered-off FORGE overlays retained as declared checkpoints; no TWIN fixture created"
     },
     {
       "repository": "Cartography",
       "branch_head": "campaign/axolotl-design-custody-2026-08-27@9bdaae8587a2d6419c12d83ed136a4ee7da0a048",
-      "push_custody": "current branch verified; separate branch has sole local commit 48255df1",
+      "push_custody": "both current campaign branch and campaign-constellation-cartography-2026-08@48255df101670ae43514b2b1475aeb8900195c8b are live-remote exact",
       "dirty": "four pre-existing untracked files",
       "live_runtime": "none",
       "secrets": "not inspected as content",
-      "teardown": "none"
+      "teardown": "starting-state discrepancy preserved"
+    },
+    {
+      "repository": "pre-existing host temporary residues",
+      "branch_head": "not repository content",
+      "push_custody": "not applicable",
+      "dirty": "older /tmp/glasshopper-{prior-package,musl-toolchain,241af7c-release,f249176c,evidence-f249176c} and /tmp/trackc-docket-{target,clean-target} predate this run",
+      "live_runtime": "no associated process, listener, VM, domain, or active service",
+      "secrets": "not inspected as content",
+      "teardown": "not this run's artifacts; disclosed and left untouched"
     }
   ]
 }
