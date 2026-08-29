@@ -4,6 +4,26 @@ use serde::{Deserialize, Serialize};
 
 pub const CASEWORK_RUN_SCHEMA_V1: &str = "nightshift.casework-run/v1";
 pub const RUN_RECEIPTS_SCHEMA_V1: &str = "nightshift.run-receipts/v1";
+pub const CASEWORK_RUN_DIGEST_DOMAIN_V1: &[u8] = b"nightshift.casework-run.digest/v1\0";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibleValueV1 {
+    pub recognized_string: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RendererJoinedValueV1 {
+    pub recognized_strings: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompatibleTimestampV1 {
+    pub recognized_string: Option<String>,
+    pub recognized_rfc3339: Option<String>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +49,7 @@ pub struct PacketCaseV1 {
     pub source_bytes_digest: String,
     pub integrity: String,
     pub currentness_at_receipt_snapshot: String,
+    pub currentness_evaluated_at: String,
     pub currentness_now: String,
     pub repository_custody: Vec<StartingCustodyV1>,
 }
@@ -37,7 +58,7 @@ pub struct PacketCaseV1 {
 #[serde(deny_unknown_fields)]
 pub struct ReceiptSnapshotV1 {
     pub schema: String,
-    pub updated_at: String,
+    pub updated_at: CompatibleTimestampV1,
     pub source_bytes_digest: String,
     pub validation: String,
 }
@@ -47,6 +68,7 @@ pub struct ReceiptSnapshotV1 {
 pub struct RunSummaryV1 {
     pub work_item_count: usize,
     pub state_counts: BTreeMap<String, usize>,
+    pub unrecognized_state_count: usize,
     pub human_question_count: usize,
     pub packet_custody_discrepancy_count: usize,
 }
@@ -110,20 +132,19 @@ pub struct ModelRoutingV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkItemOutcomeV1 {
-    pub state: String,
-    pub result_classification: String,
+    pub state: CompatibleValueV1,
+    pub result_classification: CompatibleValueV1,
     pub repositories: RenderedRepositoriesV1,
-    pub tests: Vec<String>,
-    pub evidence: Vec<String>,
-    pub live_or_production_mutations: Vec<String>,
-    pub remaining_trigger: String,
-    pub next_lawful_action: String,
+    pub tests: RendererJoinedValueV1,
+    pub evidence: RendererJoinedValueV1,
+    pub live_or_production_mutations: RendererJoinedValueV1,
+    pub remaining_trigger: CompatibleValueV1,
+    pub next_lawful_action: CompatibleValueV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderedRepositoriesV1 {
-    pub canonical_json: String,
     pub recognized_rows: Option<Vec<ResultRepositoryV1>>,
 }
 
@@ -139,13 +160,15 @@ pub struct ResultRepositoryV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HumanQuestionV1 {
-    pub derived_id: String,
+    pub derived_id: Option<String>,
+    pub navigation_id: String,
+    pub source_ordinal: usize,
     pub work_item: String,
-    pub exact_question: String,
-    pub evidence_exhausted: String,
-    pub safe_default: String,
-    pub consequences: String,
-    pub resume_point: String,
+    pub exact_question: CompatibleValueV1,
+    pub evidence_exhausted: CompatibleValueV1,
+    pub safe_default: CompatibleValueV1,
+    pub consequences: CompatibleValueV1,
+    pub resume_point: CompatibleValueV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -167,12 +190,12 @@ pub struct StartingCustodyV1 {
 pub struct FinalCustodyV1 {
     pub derived_id: String,
     pub repository: String,
-    pub branch_head: String,
-    pub push_custody: String,
-    pub dirty: String,
-    pub live_runtime: String,
-    pub secrets: String,
-    pub teardown: String,
+    pub branch_head: CompatibleValueV1,
+    pub push_custody: CompatibleValueV1,
+    pub dirty: CompatibleValueV1,
+    pub live_runtime: CompatibleValueV1,
+    pub secrets: CompatibleValueV1,
+    pub teardown: CompatibleValueV1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -189,7 +212,7 @@ pub struct RunIndexEntryV1 {
     pub projection_digest: String,
     pub packet_id: String,
     pub packet_digest: String,
-    pub receipt_updated_at: String,
+    pub receipt_updated_at: CompatibleTimestampV1,
     pub summary: RunSummaryV1,
     pub packet_integrity: String,
     pub packet_currentness_at_receipt_snapshot: String,

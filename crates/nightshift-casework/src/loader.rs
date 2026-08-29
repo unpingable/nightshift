@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use chrono::{DateTime, Utc};
 use nightshiftd::packet::NightshiftPacketV1;
+use rustix::fs::{open, openat, Mode, OFlags};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -86,19 +88,14 @@ pub fn load_run_at(
     run_dir: &Path,
     evaluated_now: DateTime<Utc>,
 ) -> Result<LoadedRun, CaseworkError> {
-    let metadata = fs::symlink_metadata(run_dir)
-        .map_err(|error| CaseworkError::InvalidRunDirectory(error.to_string()))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(CaseworkError::InvalidRunDirectory(
-            run_dir.display().to_string(),
-        ));
-    }
-    let root = fs::canonicalize(run_dir)
-        .map_err(|error| CaseworkError::InvalidRunDirectory(error.to_string()))?;
-    let packet_path = exact_input_path(&root, PACKET_FILE)?;
-    let receipts_path = exact_input_path(&root, RECEIPTS_FILE)?;
-    let packet_bytes = read(&packet_path)?;
-    let receipt_bytes = read(&receipts_path)?;
+    let directory = open(
+        run_dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|error| CaseworkError::InvalidRunDirectory(error.to_string()))?;
+    let packet_bytes = read_exact_input(&directory, PACKET_FILE)?;
+    let receipt_bytes = read_exact_input(&directory, RECEIPTS_FILE)?;
 
     let packet = NightshiftPacketV1::from_slice(&packet_bytes)
         .map_err(|error| CaseworkError::Packet(error.to_string()))?;
@@ -120,35 +117,46 @@ pub fn load_run_at(
     })
 }
 
-fn exact_input_path(root: &Path, filename: &str) -> Result<PathBuf, CaseworkError> {
-    let candidate = root.join(filename);
-    let metadata = fs::symlink_metadata(&candidate)
-        .map_err(|_| CaseworkError::InvalidInputPath(candidate.display().to_string()))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(CaseworkError::InvalidInputPath(
-            candidate.display().to_string(),
-        ));
+fn open_exact_input(
+    directory: &rustix::fd::OwnedFd,
+    filename: &str,
+) -> Result<File, CaseworkError> {
+    let descriptor = openat(
+        directory,
+        filename,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|_| CaseworkError::InvalidInputPath(filename.to_owned()))?;
+    let file = File::from(descriptor);
+    let metadata = file.metadata().map_err(|source| CaseworkError::Read {
+        path: filename.to_owned(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(CaseworkError::InvalidInputPath(filename.to_owned()));
     }
-    let canonical = fs::canonicalize(&candidate)
-        .map_err(|_| CaseworkError::InvalidInputPath(candidate.display().to_string()))?;
-    if canonical.parent() != Some(root) {
-        return Err(CaseworkError::InvalidInputPath(
-            candidate.display().to_string(),
-        ));
-    }
-    Ok(canonical)
+    Ok(file)
 }
 
-fn read(path: &Path) -> Result<Vec<u8>, CaseworkError> {
-    fs::read(path).map_err(|source| CaseworkError::Read {
-        path: path.display().to_string(),
-        source,
-    })
+fn read_exact_input(
+    directory: &rustix::fd::OwnedFd,
+    filename: &str,
+) -> Result<Vec<u8>, CaseworkError> {
+    let mut file = open_exact_input(directory, filename)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|source| CaseworkError::Read {
+            path: filename.to_owned(),
+            source,
+        })?;
+    Ok(bytes)
 }
 
 #[derive(Debug)]
 struct ParsedReceipts {
-    updated_at: DateTime<Utc>,
+    updated_at: CompatibleTimestampV1,
+    updated_at_instant: Option<DateTime<Utc>>,
     items: BTreeMap<String, ParsedReceiptItem>,
     questions: Vec<ParsedQuestion>,
     custody: Vec<ParsedCustody>,
@@ -156,35 +164,35 @@ struct ParsedReceipts {
 
 #[derive(Debug)]
 struct ParsedReceiptItem {
-    state: String,
-    classification: String,
+    state: CompatibleValueV1,
+    classification: CompatibleValueV1,
     repositories: RenderedRepositoriesV1,
-    tests: Vec<String>,
-    evidence: Vec<String>,
-    mutations: Vec<String>,
-    remaining_trigger: String,
-    next_lawful_action: String,
+    tests: RendererJoinedValueV1,
+    evidence: RendererJoinedValueV1,
+    mutations: RendererJoinedValueV1,
+    remaining_trigger: CompatibleValueV1,
+    next_lawful_action: CompatibleValueV1,
 }
 
 #[derive(Debug)]
 struct ParsedQuestion {
     work_item: String,
-    exact_question: String,
-    evidence_exhausted: String,
-    safe_default: String,
-    consequences: String,
-    resume_point: String,
+    exact_question: CompatibleValueV1,
+    evidence_exhausted: CompatibleValueV1,
+    safe_default: CompatibleValueV1,
+    consequences: CompatibleValueV1,
+    resume_point: CompatibleValueV1,
 }
 
 #[derive(Debug)]
 struct ParsedCustody {
     repository: String,
-    branch_head: String,
-    push_custody: String,
-    dirty: String,
-    live_runtime: String,
-    secrets: String,
-    teardown: String,
+    branch_head: CompatibleValueV1,
+    push_custody: CompatibleValueV1,
+    dirty: CompatibleValueV1,
+    live_runtime: CompatibleValueV1,
+    secrets: CompatibleValueV1,
+    teardown: CompatibleValueV1,
 }
 
 fn parse_receipts(
@@ -199,9 +207,7 @@ fn parse_receipts(
     if string(&doc.packet_digest, "packet_digest")? != packet.packet_digest {
         return Err(receipt("receipt packet digest mismatch"));
     }
-    let updated_at = DateTime::parse_from_rfc3339(string(&doc.updated_at, "updated_at")?)
-        .map_err(|_| receipt("updated_at must be an RFC 3339 timestamp"))?
-        .with_timezone(&Utc);
+    let (updated_at, updated_at_instant) = compatible_timestamp(&doc.updated_at);
     let packet_ids: BTreeSet<&str> = packet
         .work_items
         .iter()
@@ -221,26 +227,17 @@ fn parse_receipts(
         items.insert(
             id,
             ParsedReceiptItem {
-                state: string(&item.state, "work_items.state")?.to_owned(),
-                classification: string(
-                    &item.result_classification,
-                    "work_items.result_classification",
-                )?
-                .to_owned(),
-                repositories: parse_repositories(&item.repositories)?,
-                tests: strings(&item.tests, "work_items.tests")?,
-                evidence: strings(&item.evidence, "work_items.evidence")?,
-                mutations: strings(
+                state: compatible_value(&item.state),
+                classification: compatible_value(&item.result_classification),
+                repositories: parse_repositories(&item.repositories),
+                tests: renderer_joined(&item.tests, "work_items.tests")?,
+                evidence: renderer_joined(&item.evidence, "work_items.evidence")?,
+                mutations: renderer_joined(
                     &item.live_or_production_mutations,
                     "work_items.live_or_production_mutations",
                 )?,
-                remaining_trigger: string(&item.remaining_trigger, "work_items.remaining_trigger")?
-                    .to_owned(),
-                next_lawful_action: string(
-                    &item.next_lawful_action,
-                    "work_items.next_lawful_action",
-                )?
-                .to_owned(),
+                remaining_trigger: compatible_value(&item.remaining_trigger),
+                next_lawful_action: compatible_value(&item.next_lawful_action),
             },
         );
     }
@@ -257,15 +254,14 @@ fn parse_receipts(
     }
     Ok(ParsedReceipts {
         updated_at,
+        updated_at_instant,
         items,
         questions: parse_questions(&doc.human_questions, &packet_ids)?,
         custody: parse_custody(&doc.repository_custody)?,
     })
 }
 
-fn parse_repositories(value: &Value) -> Result<RenderedRepositoriesV1, CaseworkError> {
-    let canonical_json = serde_jcs::to_string(value)
-        .map_err(|error| receipt(format!("work_items.repositories: {error}")))?;
+fn parse_repositories(value: &Value) -> RenderedRepositoriesV1 {
     let recognized_rows = value.as_array().and_then(|rows| {
         rows.iter()
             .map(|row| {
@@ -279,10 +275,7 @@ fn parse_repositories(value: &Value) -> Result<RenderedRepositoriesV1, CaseworkE
             })
             .collect::<Option<Vec<_>>>()
     });
-    Ok(RenderedRepositoriesV1 {
-        canonical_json,
-        recognized_rows,
-    })
+    RenderedRepositoriesV1 { recognized_rows }
 }
 
 fn parse_questions(
@@ -301,11 +294,31 @@ fn parse_questions(
             }
             Ok(ParsedQuestion {
                 work_item,
-                exact_question: object_string(object, "exact_question", "human_questions")?,
-                evidence_exhausted: object_string(object, "evidence_exhausted", "human_questions")?,
-                safe_default: object_string(object, "safe_default", "human_questions")?,
-                consequences: object_string(object, "consequences", "human_questions")?,
-                resume_point: object_string(object, "resume_point", "human_questions")?,
+                exact_question: compatible_value(object_required(
+                    object,
+                    "exact_question",
+                    "human_questions",
+                )?),
+                evidence_exhausted: compatible_value(object_required(
+                    object,
+                    "evidence_exhausted",
+                    "human_questions",
+                )?),
+                safe_default: compatible_value(object_required(
+                    object,
+                    "safe_default",
+                    "human_questions",
+                )?),
+                consequences: compatible_value(object_required(
+                    object,
+                    "consequences",
+                    "human_questions",
+                )?),
+                resume_point: compatible_value(object_required(
+                    object,
+                    "resume_point",
+                    "human_questions",
+                )?),
             })
         })
         .collect()
@@ -318,12 +331,32 @@ fn parse_custody(value: &Value) -> Result<Vec<ParsedCustody>, CaseworkError> {
             let object = object(row, "repository_custody row")?;
             Ok(ParsedCustody {
                 repository: object_string(object, "repository", "repository_custody")?,
-                branch_head: object_string(object, "branch_head", "repository_custody")?,
-                push_custody: object_string(object, "push_custody", "repository_custody")?,
-                dirty: object_string(object, "dirty", "repository_custody")?,
-                live_runtime: object_string(object, "live_runtime", "repository_custody")?,
-                secrets: object_string(object, "secrets", "repository_custody")?,
-                teardown: object_string(object, "teardown", "repository_custody")?,
+                branch_head: compatible_value(object_required(
+                    object,
+                    "branch_head",
+                    "repository_custody",
+                )?),
+                push_custody: compatible_value(object_required(
+                    object,
+                    "push_custody",
+                    "repository_custody",
+                )?),
+                dirty: compatible_value(object_required(object, "dirty", "repository_custody")?),
+                live_runtime: compatible_value(object_required(
+                    object,
+                    "live_runtime",
+                    "repository_custody",
+                )?),
+                secrets: compatible_value(object_required(
+                    object,
+                    "secrets",
+                    "repository_custody",
+                )?),
+                teardown: compatible_value(object_required(
+                    object,
+                    "teardown",
+                    "repository_custody",
+                )?),
             })
         })
         .collect()
@@ -371,13 +404,18 @@ fn project(
         .filter(|row| row.discrepancy.is_some())
         .count();
     let mut state_counts = BTreeMap::new();
+    let mut unrecognized_state_count = 0;
     let mut work_items = Vec::with_capacity(packet.work_items.len());
     for item in &packet.work_items {
         let outcome = receipts
             .items
             .remove(&item.id)
             .expect("one-to-one receipt validation established linkage");
-        *state_counts.entry(outcome.state.clone()).or_insert(0) += 1;
+        if let Some(state) = &outcome.state.recognized_string {
+            *state_counts.entry(state.clone()).or_insert(0) += 1;
+        } else {
+            unrecognized_state_count += 1;
+        }
         work_items.push(CaseworkItemV1 {
             derived_id: derived_id(
                 "nightshift.casework.work-item/v1",
@@ -439,21 +477,33 @@ fn project(
     let questions = receipts
         .questions
         .into_iter()
-        .map(|question| HumanQuestionV1 {
-            derived_id: derived_id(
-                "nightshift.casework.question/v1",
-                &[
-                    &packet_digest,
-                    &question.work_item,
-                    &question.exact_question,
-                ],
-            ),
-            work_item: question.work_item,
-            exact_question: question.exact_question,
-            evidence_exhausted: question.evidence_exhausted,
-            safe_default: question.safe_default,
-            consequences: question.consequences,
-            resume_point: question.resume_point,
+        .enumerate()
+        .map(|(index, question)| {
+            let base_id = question
+                .exact_question
+                .recognized_string
+                .as_deref()
+                .map(|text| {
+                    derived_id(
+                        "nightshift.casework.question/v1",
+                        &[&packet_digest, &question.work_item, text],
+                    )
+                });
+            let navigation_id = derived_id(
+                "nightshift.casework.question-row/v1",
+                &[&packet_digest, &question.work_item, &index.to_string()],
+            );
+            HumanQuestionV1 {
+                derived_id: base_id,
+                navigation_id,
+                source_ordinal: index,
+                work_item: question.work_item,
+                exact_question: question.exact_question,
+                evidence_exhausted: question.evidence_exhausted,
+                safe_default: question.safe_default,
+                consequences: question.consequences,
+                resume_point: question.resume_point,
+            }
         })
         .collect::<Vec<_>>();
     let final_custody = receipts
@@ -479,7 +529,10 @@ fn project(
             teardown: row.teardown,
         })
         .collect();
-    let snapshot_currentness = currentness(packet, receipts.updated_at);
+    let snapshot_currentness = receipts
+        .updated_at_instant
+        .map(|instant| currentness(packet, instant))
+        .unwrap_or("UNAVAILABLE");
     let now_currentness = currentness(packet, evaluated_now);
     let mut projection = CaseworkRunV1 {
         schema: CASEWORK_RUN_SCHEMA_V1.to_owned(),
@@ -493,18 +546,20 @@ fn project(
             source_bytes_digest: bytes_digest(packet_bytes),
             integrity: "VALID_PACKET_INTEGRITY".to_owned(),
             currentness_at_receipt_snapshot: snapshot_currentness.to_owned(),
+            currentness_evaluated_at: evaluated_now.to_rfc3339(),
             currentness_now: now_currentness.to_owned(),
             repository_custody: starting_custody,
         },
         receipts: ReceiptSnapshotV1 {
             schema: RUN_RECEIPTS_SCHEMA_V1.to_owned(),
-            updated_at: receipts.updated_at.to_rfc3339(),
+            updated_at: receipts.updated_at,
             source_bytes_digest: bytes_digest(receipt_bytes),
             validation: "VALID_RENDERER_COMPATIBLE_RECEIPT_SNAPSHOT".to_owned(),
         },
         summary: RunSummaryV1 {
             work_item_count: work_items.len(),
             state_counts,
+            unrecognized_state_count,
             human_question_count: questions.len(),
             packet_custody_discrepancy_count: discrepancy_count,
         },
@@ -526,6 +581,42 @@ fn currentness(packet: &NightshiftPacketV1, instant: DateTime<Utc>) -> &'static 
     }
 }
 
+fn compatible_value(value: &Value) -> CompatibleValueV1 {
+    CompatibleValueV1 {
+        recognized_string: value.as_str().map(ToOwned::to_owned),
+    }
+}
+
+fn compatible_timestamp(value: &Value) -> (CompatibleTimestampV1, Option<DateTime<Utc>>) {
+    let recognized_string = value.as_str().map(ToOwned::to_owned);
+    let instant = recognized_string
+        .as_deref()
+        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+        .map(|instant| instant.with_timezone(&Utc));
+    (
+        CompatibleTimestampV1 {
+            recognized_string,
+            recognized_rfc3339: instant.map(|instant| instant.to_rfc3339()),
+        },
+        instant,
+    )
+}
+
+fn renderer_joined(value: &Value, field: &str) -> Result<RendererJoinedValueV1, CaseworkError> {
+    let recognized_strings = match value {
+        Value::Array(values) => Some(
+            values
+                .iter()
+                .map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| receipt(format!("{field} is not renderer-joinable")))?,
+        ),
+        Value::String(_) | Value::Object(_) => None,
+        _ => return Err(receipt(format!("{field} is not renderer-joinable"))),
+    };
+    Ok(RendererJoinedValueV1 { recognized_strings })
+}
+
 fn derived_id(domain: &str, components: &[&str]) -> String {
     let canonical = serde_jcs::to_vec(components).expect("strings have a JCS representation");
     let mut digest = Sha256::new();
@@ -544,7 +635,10 @@ fn projection_digest(projection: &CaseworkRunV1) -> Result<String, CaseworkError
         .remove("projection_digest");
     let canonical =
         serde_jcs::to_vec(&value).map_err(|error| CaseworkError::Projection(error.to_string()))?;
-    Ok(bytes_digest(&canonical))
+    let mut digest = Sha256::new();
+    digest.update(CASEWORK_RUN_DIGEST_DOMAIN_V1);
+    digest.update(canonical);
+    Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
 fn bytes_digest(bytes: &[u8]) -> String {
@@ -565,13 +659,6 @@ fn string<'a>(value: &'a Value, field: &str) -> Result<&'a str, CaseworkError> {
         .ok_or_else(|| receipt(format!("{field} must be a string")))
 }
 
-fn strings(value: &Value, field: &str) -> Result<Vec<String>, CaseworkError> {
-    array(value, field)?
-        .iter()
-        .map(|value| string(value, field).map(ToOwned::to_owned))
-        .collect()
-}
-
 fn array<'a>(value: &'a Value, field: &str) -> Result<&'a [Value], CaseworkError> {
     value
         .as_array()
@@ -588,6 +675,16 @@ fn object<'a>(
         .ok_or_else(|| receipt(format!("{field} must be an object")))
 }
 
+fn object_required<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+    field: &str,
+) -> Result<&'a Value, CaseworkError> {
+    object
+        .get(key)
+        .ok_or_else(|| receipt(format!("{field} missing required field {key}")))
+}
+
 fn object_string(
     object: &serde_json::Map<String, Value>,
     key: &str,
@@ -600,4 +697,48 @@ fn object_string(
         &format!("{field}.{key}"),
     )
     .map(ToOwned::to_owned)
+}
+#[cfg(test)]
+mod descriptor_tests {
+    use super::*;
+
+    #[test]
+    fn opened_file_descriptor_is_stable_across_pathname_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(PACKET_FILE);
+        std::fs::write(&path, b"original bytes").unwrap();
+        let directory_fd = open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .unwrap();
+        let mut opened = open_exact_input(&directory_fd, PACKET_FILE).unwrap();
+        std::fs::rename(&path, directory.path().join("packet.original")).unwrap();
+        std::fs::write(&path, b"substituted bytes").unwrap();
+        let mut bytes = Vec::new();
+        opened.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"original bytes");
+    }
+
+    #[test]
+    fn directory_handle_is_stable_across_run_directory_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let run_dir = parent.path().join("run");
+        std::fs::create_dir(&run_dir).unwrap();
+        std::fs::write(run_dir.join(PACKET_FILE), b"original directory").unwrap();
+        let directory_fd = open(
+            &run_dir,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .unwrap();
+        std::fs::rename(&run_dir, parent.path().join("run.original")).unwrap();
+        std::fs::create_dir(&run_dir).unwrap();
+        std::fs::write(run_dir.join(PACKET_FILE), b"substituted directory").unwrap();
+        assert_eq!(
+            read_exact_input(&directory_fd, PACKET_FILE).unwrap(),
+            b"original directory"
+        );
+    }
 }

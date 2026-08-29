@@ -120,13 +120,9 @@ pub fn serve(listener: TcpListener, api: Api) -> std::io::Result<()> {
         ));
     }
     for stream in listener.incoming() {
-        match stream {
-            Ok(mut stream) => {
-                if let Err(error) = handle_stream(&mut stream, &api) {
-                    eprintln!("nightshift-casework request error: {error}");
-                }
-            }
-            Err(error) => return Err(error),
+        let mut stream = stream?;
+        if let Err(error) = handle_stream(&mut stream, &api) {
+            eprintln!("nightshift-casework request error: {error}");
         }
     }
     Ok(())
@@ -216,6 +212,7 @@ fn index_entry(run: &LoadedRun) -> RunIndexEntryV1 {
         summary: RunSummaryV1 {
             work_item_count: projection.summary.work_item_count,
             state_counts: projection.summary.state_counts.clone(),
+            unrecognized_state_count: projection.summary.unrecognized_state_count,
             human_question_count: projection.summary.human_question_count,
             packet_custody_discrepancy_count: projection.summary.packet_custody_discrepancy_count,
         },
@@ -247,4 +244,82 @@ fn quoted_etag(identity: &str) -> String {
         "\"{}\"",
         identity.strip_prefix("sha256:").unwrap_or(identity)
     )
+}
+#[cfg(test)]
+mod wire_tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+        path::Path,
+        thread,
+    };
+
+    use chrono::{TimeZone, Utc};
+
+    use super::*;
+    use crate::load_runs_at;
+
+    const GOLDEN: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../qualification/nightshift-packet-v1/velvet-orrery"
+    );
+
+    fn api() -> (Api, String, Vec<u8>) {
+        let runs = load_runs_at(
+            &[Path::new(GOLDEN).to_path_buf()],
+            Utc.with_ymd_and_hms(2026, 8, 31, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+        let run = runs.values().next().unwrap();
+        (
+            Api::new(runs.clone()),
+            run.projection.run_id.clone(),
+            run.packet_bytes.clone(),
+        )
+    }
+
+    fn wire_request(api: Api, request: &[u8]) -> Vec<u8> {
+        let listener = bind_loopback("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            handle_stream(&mut stream, &api).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(request).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        worker.join().unwrap();
+        response
+    }
+
+    #[test]
+    fn bounded_wire_requests_preserve_headers_raw_bytes_and_405() {
+        let (api, run_id, packet) = api();
+        let request =
+            format!("GET /api/v1/runs/{run_id}/raw/packet HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let response = wire_request(api.clone(), request.as_bytes());
+        let boundary = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        let headers = std::str::from_utf8(&response[..boundary]).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains("\r\nETag: "));
+        assert!(headers.contains("\r\nContent-Security-Policy: "));
+        assert!(headers.contains("\r\nCross-Origin-Resource-Policy: same-origin\r\n"));
+        assert!(headers.contains("\r\nX-Content-Type-Options: nosniff\r\n"));
+        assert!(!headers
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"));
+        assert_eq!(&response[boundary..], packet);
+
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            let request =
+                format!("{method} /api/v1/runs/{run_id} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let response = wire_request(api.clone(), request.as_bytes());
+            assert!(response.starts_with(b"HTTP/1.1 405 Method Not Allowed\r\n"));
+        }
+    }
 }

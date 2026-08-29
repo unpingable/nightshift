@@ -4,8 +4,11 @@ use std::{
 };
 
 use chrono::{TimeZone, Utc};
-use nightshift_casework::{load_run_at, load_runs_at, CaseworkError};
+use nightshift_casework::{
+    load_run_at, load_runs_at, CaseworkError, CaseworkRunV1, CASEWORK_RUN_DIGEST_DOMAIN_V1,
+};
 use serde_json::{json, Value};
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
 const GOLDEN: &str = concat!(
@@ -63,10 +66,17 @@ fn velvet_projects_exact_golden_counts_and_historical_currentness() {
         .iter()
         .find(|item| item.campaign.codename == "GLASSHOPPER")
         .unwrap();
-    assert_eq!(glasshopper.outcome.state, "CLOSEOUT-COMPLETE-NOT-QUALIFIED");
     assert_eq!(
-        glasshopper.outcome.result_classification,
-        "CLOSEOUT-COMPLETE-CAMPAIGN-NOT-QUALIFIED"
+        glasshopper.outcome.state.recognized_string.as_deref(),
+        Some("CLOSEOUT-COMPLETE-NOT-QUALIFIED")
+    );
+    assert_eq!(
+        glasshopper
+            .outcome
+            .result_classification
+            .recognized_string
+            .as_deref(),
+        Some("CLOSEOUT-COMPLETE-CAMPAIGN-NOT-QUALIFIED")
     );
 }
 
@@ -81,6 +91,127 @@ fn projection_and_derived_ids_are_deterministic() {
         .work_items
         .iter()
         .all(|item| item.derived_id.starts_with("sha256:")));
+}
+
+fn independently_derived_id(domain: &str, components: &[&str]) -> String {
+    let canonical = serde_jcs::to_vec(components).unwrap();
+    let mut digest = Sha256::new();
+    digest.update(domain.as_bytes());
+    digest.update([0]);
+    digest.update(canonical);
+    format!("sha256:{:x}", digest.finalize())
+}
+
+#[test]
+fn checked_in_projection_and_exact_identity_vectors_are_independently_recalculated() {
+    let run = load_run_at(Path::new(GOLDEN), instant()).unwrap();
+    let checked_in_bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../qualification/nightshift-casework-mvp-20260829/velvet-orrery.casework-run.v1.json"
+    ));
+    let checked_in: CaseworkRunV1 = serde_json::from_slice(checked_in_bytes).unwrap();
+    assert_eq!(checked_in, run.projection);
+
+    let projection = &run.projection;
+    let packet_digest = projection.packet.packet_digest.as_str();
+    let first_item = &projection.work_items[0];
+    assert_eq!(
+        first_item.derived_id,
+        "sha256:ca0c5713fb4fde3ef1e013e928a28346d437ea53222338834ad66a502e5f5fac"
+    );
+    assert_eq!(
+        first_item.derived_id,
+        independently_derived_id(
+            "nightshift.casework.work-item/v1",
+            &[packet_digest, first_item.id.as_str()],
+        )
+    );
+
+    let first_question = &projection.human_questions[0];
+    let exact_question = first_question
+        .exact_question
+        .recognized_string
+        .as_deref()
+        .unwrap();
+    let independent_question_id = independently_derived_id(
+        "nightshift.casework.question/v1",
+        &[
+            packet_digest,
+            first_question.work_item.as_str(),
+            exact_question,
+        ],
+    );
+    assert_eq!(
+        first_question.derived_id.as_deref(),
+        Some("sha256:e299a26068a20631a8c4985fbb249cbc991a3d141be7c2f9cf253a0c11b3e088")
+    );
+    assert_eq!(
+        first_question.derived_id.as_deref(),
+        Some(independent_question_id.as_str())
+    );
+    assert_eq!(
+        first_question.navigation_id,
+        "sha256:c0dfdec93ec2b2e4700e133f6496b8e40a048838508f97b455d3d45e0776d29b"
+    );
+    assert_eq!(
+        first_question.navigation_id,
+        independently_derived_id(
+            "nightshift.casework.question-row/v1",
+            &[packet_digest, first_question.work_item.as_str(), "0"],
+        )
+    );
+
+    let first_starting = &projection.packet.repository_custody[0];
+    assert_eq!(
+        first_starting.derived_id,
+        "sha256:6b1ea0f47b73aa697c60ed5562b5429d505e4ec767d00c0c4511f1107be2adb4"
+    );
+    assert_eq!(
+        first_starting.derived_id,
+        independently_derived_id(
+            "nightshift.casework.custody-row/v1",
+            &[
+                packet_digest,
+                "packet",
+                first_starting.repository.as_str(),
+                "0"
+            ],
+        )
+    );
+
+    let first_final = &projection.final_repository_custody[0];
+    assert_eq!(
+        first_final.derived_id,
+        "sha256:01c5dda9a9208668481eb54dfb06cf8eebd829217478f3dbb12d5ed64904648f"
+    );
+    assert_eq!(
+        first_final.derived_id,
+        independently_derived_id(
+            "nightshift.casework.custody-row/v1",
+            &[
+                packet_digest,
+                "receipts",
+                first_final.repository.as_str(),
+                "0"
+            ],
+        )
+    );
+
+    let mut digest_value = serde_json::to_value(projection).unwrap();
+    digest_value
+        .as_object_mut()
+        .unwrap()
+        .remove("projection_digest");
+    let canonical = serde_jcs::to_vec(&digest_value).unwrap();
+    let mut digest = Sha256::new();
+    digest.update(CASEWORK_RUN_DIGEST_DOMAIN_V1);
+    digest.update(canonical);
+    let independent_projection_digest = format!("sha256:{:x}", digest.finalize());
+    assert_eq!(
+        projection.projection_digest,
+        "sha256:150cfb77cfa62113ff65da66b4f14017a5542721ba2859fbcf865dc415aec111"
+    );
+    assert_eq!(projection.projection_digest, independent_projection_digest);
 }
 
 #[test]
@@ -107,7 +238,6 @@ fn renderer_accepted_repository_json_is_not_retroactively_rejected() {
     });
     let run = load_run_at(dir.path(), instant()).unwrap();
     let repositories = &run.projection.work_items[0].outcome.repositories;
-    assert_eq!(repositories.canonical_json, r#"{"future_shape":[1,2,3]}"#);
     assert_eq!(repositories.recognized_rows, None);
 }
 
@@ -115,17 +245,25 @@ fn renderer_accepted_repository_json_is_not_retroactively_rejected() {
 fn unknown_state_and_classification_remain_verbatim() {
     let dir = fixture();
     mutate_receipts(dir.path(), |value| {
-        value["work_items"][0]["state"] = json!("STATE-NOT-IN-ANY-TAXONOMY");
-        value["work_items"][0]["result_classification"] = json!("UNCLASSIFIED-LITERAL");
+        value["work_items"][0]["state"] = json!(Some("STATE-NOT-IN-ANY-TAXONOMY"));
+        value["work_items"][0]["result_classification"] = json!(Some("UNCLASSIFIED-LITERAL"));
     });
     let run = load_run_at(dir.path(), instant()).unwrap();
     assert_eq!(
-        run.projection.work_items[0].outcome.state,
-        "STATE-NOT-IN-ANY-TAXONOMY"
+        run.projection.work_items[0]
+            .outcome
+            .state
+            .recognized_string
+            .as_deref(),
+        Some("STATE-NOT-IN-ANY-TAXONOMY")
     );
     assert_eq!(
-        run.projection.work_items[0].outcome.result_classification,
-        "UNCLASSIFIED-LITERAL"
+        run.projection.work_items[0]
+            .outcome
+            .result_classification
+            .recognized_string
+            .as_deref(),
+        Some("UNCLASSIFIED-LITERAL")
     );
 }
 
@@ -189,12 +327,15 @@ fn malformed_question_and_custody_are_refused() {
 
     let custody = fixture();
     mutate_receipts(custody.path(), |value| {
-        value["repository_custody"][0]["dirty"] = Value::Bool(false);
+        value["repository_custody"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("dirty");
     });
     assert!(load_run_at(custody.path(), instant())
         .unwrap_err()
         .to_string()
-        .contains("repository_custody.dirty"));
+        .contains("missing required field dirty"));
 }
 
 #[test]
@@ -236,4 +377,87 @@ fn symlinked_input_file_is_refused() {
         .unwrap_err()
         .to_string()
         .contains("non-symlink"));
+}
+#[test]
+fn renderer_loose_scalars_and_joinables_are_accepted_but_not_promoted() {
+    let dir = fixture();
+    mutate_receipts(dir.path(), |value| {
+        value["work_items"][0]["state"] = json!(17);
+        value["work_items"][0]["result_classification"] = json!({"future": true});
+        value["work_items"][0]["remaining_trigger"] = json!(false);
+        value["work_items"][0]["next_lawful_action"] = json!(["not", "text"]);
+        value["work_items"][0]["tests"] = json!("ab");
+        value["work_items"][0]["evidence"] = json!({"second": 2, "first": 1});
+    });
+    let run = load_run_at(dir.path(), instant()).unwrap();
+    let outcome = &run.projection.work_items[0].outcome;
+    assert_eq!(outcome.state.recognized_string, None);
+    assert_eq!(outcome.result_classification.recognized_string, None);
+    assert_eq!(outcome.remaining_trigger.recognized_string, None);
+    assert_eq!(outcome.next_lawful_action.recognized_string, None);
+    assert_eq!(outcome.tests.recognized_strings, None);
+    assert_eq!(outcome.evidence.recognized_strings, None);
+    assert_eq!(run.projection.summary.unrecognized_state_count, 1);
+}
+
+#[test]
+fn renderer_loose_question_and_custody_cells_remain_raw_only() {
+    let dir = fixture();
+    mutate_receipts(dir.path(), |value| {
+        value["human_questions"][0]["exact_question"] = json!({"future": "question"});
+        value["human_questions"][0]["safe_default"] = json!(false);
+        value["repository_custody"][0]["dirty"] = json!(false);
+        value["repository_custody"][0]["teardown"] = json!(["none"]);
+    });
+    let run = load_run_at(dir.path(), instant()).unwrap();
+    let question = &run.projection.human_questions[0];
+    assert_eq!(question.derived_id, None);
+    assert_eq!(question.exact_question.recognized_string, None);
+    assert_eq!(question.safe_default.recognized_string, None);
+    assert_eq!(
+        run.projection.final_repository_custody[0]
+            .dirty
+            .recognized_string,
+        None
+    );
+    assert_eq!(
+        run.projection.final_repository_custody[0]
+            .teardown
+            .recognized_string,
+        None
+    );
+}
+
+#[test]
+fn non_rfc3339_snapshot_time_is_accepted_with_unavailable_currentness() {
+    let dir = fixture();
+    mutate_receipts(dir.path(), |value| {
+        value["updated_at"] = json!({"future_clock": 1});
+    });
+    let run = load_run_at(dir.path(), instant()).unwrap();
+    assert_eq!(run.projection.receipts.updated_at.recognized_string, None);
+    assert_eq!(run.projection.receipts.updated_at.recognized_rfc3339, None);
+    assert_eq!(
+        run.projection.packet.currentness_at_receipt_snapshot,
+        "UNAVAILABLE"
+    );
+}
+
+#[test]
+fn duplicate_questions_keep_base_identity_and_unique_navigation_ids() {
+    let dir = fixture();
+    mutate_receipts(dir.path(), |value| {
+        let duplicate = value["human_questions"][0].clone();
+        value["human_questions"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+    });
+    let run = load_run_at(dir.path(), instant()).unwrap();
+    assert_eq!(run.projection.human_questions.len(), 7);
+    let first = &run.projection.human_questions[0];
+    let duplicate = &run.projection.human_questions[6];
+    assert_eq!(first.derived_id, duplicate.derived_id);
+    assert_ne!(first.navigation_id, duplicate.navigation_id);
+    assert_ne!(first.source_ordinal, duplicate.source_ordinal);
 }

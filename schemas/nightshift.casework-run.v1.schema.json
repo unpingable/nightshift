@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://unpingable.github.io/nightshift/schemas/nightshift.casework-run.v1.schema.json",
   "title": "NightshiftCaseworkRunV1",
-  "description": "Closed deterministic read-only projection of one exact orientation packet and run-receipt snapshot. It creates no aggregate result or authority.",
+  "description": "Closed deterministic read-only projection of one exact orientation packet and run-receipt snapshot. Unknown compatible source values remain only in raw bytes.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -65,6 +65,66 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "compatibleValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recognized_string"
+      ],
+      "properties": {
+        "recognized_string": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "rendererJoinedValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recognized_strings"
+      ],
+      "properties": {
+        "recognized_strings": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "compatibleTimestamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recognized_string",
+        "recognized_rfc3339"
+      ],
+      "properties": {
+        "recognized_string": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recognized_rfc3339": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
       }
     },
     "campaign": {
@@ -189,13 +249,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "canonical_json",
         "recognized_rows"
       ],
       "properties": {
-        "canonical_json": {
-          "type": "string"
-        },
         "recognized_rows": {
           "oneOf": [
             {
@@ -204,7 +260,9 @@
                 "$ref": "#/$defs/resultRepository"
               }
             },
-            {"type": "null"}
+            {
+              "type": "null"
+            }
           ]
         }
       }
@@ -224,28 +282,28 @@
       ],
       "properties": {
         "state": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "result_classification": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "repositories": {
           "$ref": "#/$defs/renderedRepositories"
         },
         "tests": {
-          "$ref": "#/$defs/strings"
+          "$ref": "#/$defs/rendererJoinedValue"
         },
         "evidence": {
-          "$ref": "#/$defs/strings"
+          "$ref": "#/$defs/rendererJoinedValue"
         },
         "live_or_production_mutations": {
-          "$ref": "#/$defs/strings"
+          "$ref": "#/$defs/rendererJoinedValue"
         },
         "remaining_trigger": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "next_lawful_action": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         }
       }
     },
@@ -404,22 +462,22 @@
           "type": "string"
         },
         "branch_head": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "push_custody": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "dirty": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "live_runtime": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "secrets": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "teardown": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         }
       }
     },
@@ -434,6 +492,7 @@
         "source_bytes_digest",
         "integrity",
         "currentness_at_receipt_snapshot",
+        "currentness_evaluated_at",
         "currentness_now",
         "repository_custody"
       ],
@@ -464,8 +523,13 @@
           "enum": [
             "NOT_YET_CURRENT",
             "CURRENT",
-            "EXPIRED"
+            "EXPIRED",
+            "UNAVAILABLE"
           ]
+        },
+        "currentness_evaluated_at": {
+          "type": "string",
+          "format": "date-time"
         },
         "currentness_now": {
           "enum": [
@@ -496,8 +560,7 @@
           "const": "nightshift.run-receipts/v1"
         },
         "updated_at": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/compatibleTimestamp"
         },
         "source_bytes_digest": {
           "type": "string",
@@ -514,6 +577,7 @@
       "required": [
         "work_item_count",
         "state_counts",
+        "unrecognized_state_count",
         "human_question_count",
         "packet_custody_discrepancy_count"
       ],
@@ -528,6 +592,10 @@
             "type": "integer",
             "minimum": 1
           }
+        },
+        "unrecognized_state_count": {
+          "type": "integer",
+          "minimum": 0
         },
         "human_question_count": {
           "type": "integer",
@@ -544,6 +612,8 @@
       "additionalProperties": false,
       "required": [
         "derived_id",
+        "navigation_id",
+        "source_ordinal",
         "work_item",
         "exact_question",
         "evidence_exhausted",
@@ -553,26 +623,41 @@
       ],
       "properties": {
         "derived_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "navigation_id": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "source_ordinal": {
+          "type": "integer",
+          "minimum": 0
         },
         "work_item": {
           "type": "string"
         },
         "exact_question": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "evidence_exhausted": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "safe_default": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "consequences": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "resume_point": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         }
       }
     }
