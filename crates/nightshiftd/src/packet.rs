@@ -14,6 +14,8 @@ use thiserror::Error;
 
 pub const NIGHTSHIFT_PACKET_SCHEMA_V1: &str = "nightshift.orientation-packet/v1";
 pub const EXACT_WORK_PROPOSAL_SCHEMA_V1: &str = "ag.governed-loop.exact-work-proposal/v1";
+pub const NIGHTSHIFT_PACKET_DIGEST_DOMAIN_V1: &[u8] = b"nightshift.orientation-packet.digest/v1\0";
+pub const NIGHTSHIFT_PACKET_DIGEST_PREIMAGE_V1: &str = "domain prefix nightshift.orientation-packet.digest/v1 NUL, then packet object with packet_digest and switchyard.plan_ref omitted as RFC8785-JCS";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -206,9 +208,12 @@ impl NightshiftPacketV1 {
             .and_then(Value::as_object_mut)
             .ok_or(PacketError::InvalidField("switchyard"))?;
         switchyard.remove("plan_ref");
-        let preimage =
+        let canonical_packet =
             serde_jcs::to_vec(&value).map_err(|error| PacketError::Json(error.to_string()))?;
-        Ok(format!("sha256:{:x}", Sha256::digest(preimage)))
+        let mut digest = Sha256::new();
+        digest.update(NIGHTSHIFT_PACKET_DIGEST_DOMAIN_V1);
+        digest.update(canonical_packet);
+        Ok(format!("sha256:{:x}", digest.finalize()))
     }
 
     pub fn seal(&mut self) -> Result<(), PacketError> {
@@ -219,6 +224,7 @@ impl NightshiftPacketV1 {
                 .strip_prefix("sha256:")
                 .ok_or(PacketError::InvalidField("packet_digest"))?
         );
+        self.validate_structure()?;
         Ok(())
     }
 
@@ -226,32 +232,102 @@ impl NightshiftPacketV1 {
         &self,
         evaluated_at: DateTime<Utc>,
     ) -> Result<PacketValidationReceiptV1, PacketError> {
+        self.validate_structure()?;
+        if self.computed_digest()? != self.packet_digest {
+            return Err(PacketError::DigestMismatch);
+        }
+        if evaluated_at < self.created_at || evaluated_at > self.current_until {
+            return Err(PacketError::NotCurrent);
+        }
+        let ids = self.work_items.iter().map(|item| item.id.clone()).collect();
+        validate_dag(&self.work_items, &ids)?;
+        Ok(PacketValidationReceiptV1 {
+            schema: "nightshift.orientation-packet-validation/v1".into(),
+            packet_id: self.packet_id.clone(),
+            packet_digest: self.packet_digest.clone(),
+            evaluated_at,
+            work_item_count: self.work_items.len(),
+            disposition: "VALID_NON_AUTHORIZING_ORIENTATION_PACKET".into(),
+            authority_effect: "NONE".into(),
+        })
+    }
+
+    /// Enforce the complete closed-schema constraints that are not already
+    /// guaranteed by serde's typed, required-field, deny-unknown-fields
+    /// decoding, plus the packet's semantic graph and reference rules.
+    /// Both sealing and admission use this single boundary.
+    fn validate_structure(&self) -> Result<(), PacketError> {
         if self.schema != NIGHTSHIFT_PACKET_SCHEMA_V1 {
             return Err(PacketError::ForeignSchema);
         }
         if !valid_id(&self.packet_id) {
             return Err(PacketError::InvalidField("packet_id"));
         }
+        require_digest(&self.packet_digest)?;
         if self.canonicalization.algorithm != "RFC8785-JCS"
             || self.canonicalization.digest_algorithm != "SHA-256"
-            || self.canonicalization.digest_preimage
-                != "packet object with packet_digest and switchyard.plan_ref omitted"
+            || self.canonicalization.digest_preimage != NIGHTSHIFT_PACKET_DIGEST_PREIMAGE_V1
         {
             return Err(PacketError::InvalidField("canonicalization"));
         }
         require_nonempty("authoring.agent", &self.authoring.agent)?;
         require_nonempty("authoring.session", &self.authoring.session)?;
         require_nonempty("authoring.authority_basis", &self.authoring.authority_basis)?;
-        if self.created_at >= self.current_until
-            || evaluated_at < self.created_at
-            || evaluated_at > self.current_until
+        if self.created_at >= self.current_until {
+            return Err(PacketError::InvalidField("currentness interval"));
+        }
+
+        require_nonempty_slice(
+            "global_constraints.allowed_actions",
+            &self.global_constraints.allowed_actions,
+        )?;
+        require_nonempty_slice(
+            "global_constraints.forbidden_actions",
+            &self.global_constraints.forbidden_actions,
+        )?;
+        require_nonempty_slice(
+            "global_constraints.invariants",
+            &self.global_constraints.invariants,
+        )?;
+        require_nonempty_slice("human_question_criteria", &self.human_question_criteria)?;
+        if self.source_evidence.is_empty()
+            || self.repository_custody.is_empty()
+            || self.work_items.is_empty()
         {
-            return Err(PacketError::NotCurrent);
+            return Err(PacketError::InvalidField("required collection"));
         }
-        require_digest(&self.packet_digest)?;
-        if self.computed_digest()? != self.packet_digest {
-            return Err(PacketError::DigestMismatch);
+
+        for source in &self.source_evidence {
+            require_nonempty("source_evidence.repository", &source.repository)?;
+            require_nonempty("source_evidence.path", &source.path)?;
+            require_nonempty(
+                "source_evidence.predecessor_classification",
+                &source.predecessor_classification,
+            )?;
+            require_commit(&source.commit)?;
+            require_digest(&source.file_digest)?;
         }
+        for custody in &self.repository_custody {
+            require_nonempty("repository_custody.repository", &custody.repository)?;
+            require_nonempty("repository_custody.path", &custody.path)?;
+            require_commit(&custody.commit)?;
+            if let Some(remote_commit) = &custody.remote_commit {
+                require_commit(remote_commit)?;
+            }
+        }
+
+        if self.worker_budget.maximum_concurrent_mutating_workers == 0
+            || self.worker_budget.maximum_concurrent_mutating_workers > 4
+            || !self.worker_budget.recursive_worker_swarms_forbidden
+        {
+            return Err(PacketError::InvalidField("worker_budget"));
+        }
+        require_nonempty(
+            "worker_budget.reserve_posture",
+            &self.worker_budget.reserve_posture,
+        )?;
+
+        require_nonempty("switchyard.alias", &self.switchyard.alias)?;
         let expected_plan_ref = format!(
             "nightshift-packet://{}",
             self.packet_digest
@@ -262,36 +338,6 @@ impl NightshiftPacketV1 {
             || self.switchyard.transport_fields != ["alias", "plan_ref", "nonce"]
         {
             return Err(PacketError::InvalidField("switchyard"));
-        }
-        require_nonempty("switchyard.alias", &self.switchyard.alias)?;
-        if self.worker_budget.maximum_concurrent_mutating_workers == 0
-            || self.worker_budget.maximum_concurrent_mutating_workers > 4
-            || !self.worker_budget.recursive_worker_swarms_forbidden
-        {
-            return Err(PacketError::InvalidField("worker_budget"));
-        }
-        if self.source_evidence.is_empty()
-            || self.repository_custody.is_empty()
-            || self.work_items.is_empty()
-            || self.global_constraints.allowed_actions.is_empty()
-            || self.global_constraints.forbidden_actions.is_empty()
-            || self.human_question_criteria.is_empty()
-        {
-            return Err(PacketError::InvalidField("required collection"));
-        }
-
-        for source in &self.source_evidence {
-            require_nonempty("source_evidence.repository", &source.repository)?;
-            require_nonempty("source_evidence.path", &source.path)?;
-            require_commit(&source.commit)?;
-            require_digest(&source.file_digest)?;
-        }
-        for custody in &self.repository_custody {
-            require_nonempty("repository_custody.repository", &custody.repository)?;
-            require_commit(&custody.commit)?;
-            if let Some(remote_commit) = &custody.remote_commit {
-                require_commit(remote_commit)?;
-            }
         }
 
         let mut ids = BTreeSet::new();
@@ -309,20 +355,40 @@ impl NightshiftPacketV1 {
             {
                 return Err(PacketError::InvalidField("work_items.campaign"));
             }
-            if item.entry_predicates.is_empty()
-                || item.allowed_mutation_surfaces.is_empty()
-                || item.forbidden_actions.is_empty()
-                || item.acceptance_tests.is_empty()
-                || item.stop_conditions.is_empty()
-                || item.expected_receipts.is_empty()
-                || item.closeout_requirements.is_empty()
-            {
-                return Err(PacketError::InvalidField("work_items contract"));
+            require_nonempty("work_items.track", &item.track)?;
+            require_nonempty_slice("work_items.entry_predicates", &item.entry_predicates)?;
+            require_nonempty_slice(
+                "work_items.allowed_mutation_surfaces",
+                &item.allowed_mutation_surfaces,
+            )?;
+            require_nonempty_slice("work_items.forbidden_actions", &item.forbidden_actions)?;
+            require_nonempty_slice("work_items.acceptance_tests", &item.acceptance_tests)?;
+            require_nonempty_slice("work_items.stop_conditions", &item.stop_conditions)?;
+            require_nonempty_slice("work_items.expected_receipts", &item.expected_receipts)?;
+            require_nonempty_slice(
+                "work_items.closeout_requirements",
+                &item.closeout_requirements,
+            )?;
+            require_nonempty("work_items.model_routing.class", &item.model_routing.class)?;
+            require_nonempty(
+                "work_items.model_routing.reason",
+                &item.model_routing.reason,
+            )?;
+            let mut dependencies = BTreeSet::new();
+            for dependency in &item.dependencies {
+                if !valid_id(dependency) || !dependencies.insert(dependency) {
+                    return Err(PacketError::InvalidField("work_items.dependencies"));
+                }
             }
             if item.model_routing.maximum_mutating_workers > 1 {
                 return Err(PacketError::InvalidField("work_items.model_routing"));
             }
             for predecessor in &item.predecessor_lineage {
+                require_nonempty("predecessor_lineage.campaign", &predecessor.campaign)?;
+                require_nonempty(
+                    "predecessor_lineage.classification",
+                    &predecessor.classification,
+                )?;
                 require_commit(&predecessor.commit)?;
             }
             for proposal in &item.exact_work_refs {
@@ -336,21 +402,13 @@ impl NightshiftPacketV1 {
                 if !valid_contract {
                     return Err(PacketError::InvalidField("exact_work_refs.contract"));
                 }
+                require_nonempty("exact_work_refs.repository", &proposal.repository)?;
+                require_nonempty("exact_work_refs.path", &proposal.path)?;
                 require_commit(&proposal.commit)?;
                 require_digest(&proposal.proposal_ref)?;
             }
         }
-        validate_dag(&self.work_items, &ids)?;
-
-        Ok(PacketValidationReceiptV1 {
-            schema: "nightshift.orientation-packet-validation/v1".into(),
-            packet_id: self.packet_id.clone(),
-            packet_digest: self.packet_digest.clone(),
-            evaluated_at,
-            work_item_count: self.work_items.len(),
-            disposition: "VALID_NON_AUTHORIZING_ORIENTATION_PACKET".into(),
-            authority_effect: "NONE".into(),
-        })
+        Ok(())
     }
 
     pub fn render_markdown(&self) -> String {
@@ -437,6 +495,14 @@ fn validate_dag(items: &[WorkItemV1], ids: &BTreeSet<String>) -> Result<(), Pack
 
 fn require_nonempty(field: &'static str, value: &str) -> Result<(), PacketError> {
     if value.trim().is_empty() {
+        Err(PacketError::InvalidField(field))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_nonempty_slice(field: &'static str, values: &[String]) -> Result<(), PacketError> {
+    if values.is_empty() || values.iter().any(|value| value.trim().is_empty()) {
         Err(PacketError::InvalidField(field))
     } else {
         Ok(())

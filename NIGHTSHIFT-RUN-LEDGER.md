@@ -1,7 +1,7 @@
 # Nightshift run ledger
 
 - Packet: `nightshift-20260829-autonomous-convergence`
-- Packet digest: `sha256:9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b`
+- Packet digest: `sha256:01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7`
 - Receipt snapshot: `2026-08-29T17:22:22Z`
 - Aggregate verdict: none; every campaign retains its own classification.
 

@@ -14,9 +14,11 @@ Packet v0 remains historical and is not repurposed.
 
 - Packet ID: `nightshift-20260829-autonomous-convergence`
 - Packet digest:
-  `sha256:9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b`
+  `sha256:01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7`
 - Plan reference:
-  `nightshift-packet://9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b`
+  `nightshift-packet://01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7`
+- Schema file SHA-256:
+  `6b71b4ec182811c376c4b852bc6ae540e1c063d5db43d1cacefaeead9636c50f`
 - Creation: `2026-08-29T17:00:00Z`
 - Currentness boundary: `2026-08-30T12:00:00Z`
 - Work items: 14
@@ -31,6 +33,10 @@ The Rust suite covers:
 
 - valid sealing, validation, and non-authorizing rendering;
 - mutation of a normative field changes the digest;
+- deterministic packet-specific domain-framed digest vector;
+- byte-exact seal-to-file-to-validate interoperability;
+- empty strings/collections, substituted field types, and nested unknown
+  fields fail closed at the shared schema boundary;
 - packet-digest mismatch fails closed;
 - plan-reference mismatch fails closed;
 - unknown JSON fields fail closed;

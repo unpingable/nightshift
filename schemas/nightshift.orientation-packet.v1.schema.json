@@ -45,7 +45,7 @@
         "algorithm": {"const": "RFC8785-JCS"},
         "digest_algorithm": {"const": "SHA-256"},
         "digest_preimage": {
-          "const": "packet object with packet_digest and switchyard.plan_ref omitted"
+          "const": "domain prefix nightshift.orientation-packet.digest/v1 NUL, then packet object with packet_digest and switchyard.plan_ref omitted as RFC8785-JCS"
         }
       }
     },

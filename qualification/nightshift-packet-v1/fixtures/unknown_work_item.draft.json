@@ -12,7 +12,7 @@
   "canonicalization": {
     "algorithm": "RFC8785-JCS",
     "digest_algorithm": "SHA-256",
-    "digest_preimage": "packet object with packet_digest and switchyard.plan_ref omitted"
+    "digest_preimage": "domain prefix nightshift.orientation-packet.digest/v1 NUL, then packet object with packet_digest and switchyard.plan_ref omitted as RFC8785-JCS"
   },
   "source_evidence": [
     {

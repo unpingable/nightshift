@@ -3,10 +3,10 @@
 > This rendering is an orientation and scheduling aid. It grants no authority, approval, retry, execution custody, or settlement.
 
 - Packet: `nightshift-20260829-autonomous-convergence`
-- Digest: `sha256:9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b`
+- Digest: `sha256:01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7`
 - Current: `2026-08-29 17:00:00 UTC` through `2026-08-30 12:00:00 UTC`
 - Switchyard alias: `nightshift-convergence-20260829`
-- Immutable plan reference: `nightshift-packet://9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b`
+- Immutable plan reference: `nightshift-packet://01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7`
 
 ## Campaign DAG
 

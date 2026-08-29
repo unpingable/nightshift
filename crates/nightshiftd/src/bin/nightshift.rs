@@ -2,7 +2,7 @@
 //! to AG; it has no standing, authorization, Docket, or executor surface.
 
 use std::fs::OpenOptions;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _};
@@ -541,7 +541,7 @@ fn run_packet_command(command: PacketCommand) -> anyhow::Result<()> {
         PacketCommand::Seal { packet } => {
             let mut packet: NightshiftPacketV1 = read_exact(&packet)?;
             packet.seal().map_err(anyhow::Error::msg)?;
-            write_exact(&packet)
+            write_exact_without_delimiter(&packet)
         }
         PacketCommand::Validate {
             packet,
@@ -1366,6 +1366,14 @@ fn write_exact<T: Serialize>(value: &T) -> anyhow::Result<()> {
         String::from_utf8(bytes).context("canonical JSON is UTF-8")?
     );
     Ok(())
+}
+
+fn write_exact_without_delimiter<T: Serialize>(value: &T) -> anyhow::Result<()> {
+    let bytes = serde_jcs::to_vec(value).context("canonicalize output")?;
+    std::io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .context("write exact canonical output")
 }
 
 fn parse_time(value: &str) -> anyhow::Result<DateTime<Utc>> {

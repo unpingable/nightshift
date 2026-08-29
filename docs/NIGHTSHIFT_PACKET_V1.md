@@ -15,20 +15,30 @@ The reference does not promote that object or grant authority.
 ## Content identity
 
 The schema is `nightshift.orientation-packet/v1`. Serialization uses RFC 8785
-JCS and SHA-256. The digest preimage is the whole packet object with the two
-derived locator fields omitted:
+JCS and SHA-256. The digest preimage is the following versioned,
+packet-specific frame:
+
+1. the ASCII bytes `nightshift.orientation-packet.digest/v1`;
+2. one NUL byte (`00` hex);
+3. the RFC 8785 JCS bytes of the whole packet object with the two derived
+   locator fields omitted:
 
 - `packet_digest`
 - `switchyard.plan_ref`
 
-Every other field is normative and changes the computed digest. The plan
+Every other field is normative and changes the computed digest. This domain
+frame prevents a bare JCS object used by another protocol from sharing packet
+identity. The plan
 reference is exactly `nightshift-packet://<packet digest hex>`. Changing
 either derived field without recomputing the packet fails validation.
 
-Validation also rejects foreign or unknown JSON fields, stale/future packets,
-unknown dependencies, dependency cycles, duplicate work-item or campaign
-identities, malformed commit/digest identities, unbounded worker budgets, and
-transport field lists other than exactly `alias`, `plan_ref`, `nonce`.
+The typed closed decoder and shared structural validator are the executable
+equivalent of `schemas/nightshift.orientation-packet.v1.schema.json`. Both
+sealing and validation reject schema-invalid packets before output or digest
+admission. Validation additionally rejects stale/future packets, unknown
+dependencies, dependency cycles, duplicate work-item or campaign identities,
+malformed commit/digest identities, unbounded worker budgets, and transport
+field lists other than exactly `alias`, `plan_ref`, `nonce`.
 
 ## Transport boundary
 
@@ -58,7 +68,9 @@ cargo run --locked --bin nightshift -- packet render \
   --packet qualification/nightshift-packet-v1/velvet-orrery/packet.v1.json
 ```
 
-`seal` emits canonical bytes with the digest and plan reference derived.
+`seal` emits only the exact canonical bytes with the digest and plan reference
+derived: it adds no line delimiter, so direct stdout redirection produces a
+packet accepted by `validate`.
 `validate` requires already-canonical bytes and an explicit evaluation time.
 `render` produces a clearly marked non-authorizing Markdown projection.
 

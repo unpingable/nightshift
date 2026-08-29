@@ -3,9 +3,14 @@ use nightshiftd::packet::{
     AuthoringIdentityV1, CampaignIdentityV1, CanonicalizationV1, ExactWorkRefV1,
     GlobalConstraintsV1, ModelRoutingV1, NightshiftPacketV1, PacketError, PredecessorRefV1,
     RepositoryCustodyV1, SourceEvidenceRefV1, SwitchyardRegistrationV1, WorkItemV1, WorkerBudgetV1,
-    EXACT_WORK_PROPOSAL_SCHEMA_V1, NIGHTSHIFT_PACKET_SCHEMA_V1,
+    EXACT_WORK_PROPOSAL_SCHEMA_V1, NIGHTSHIFT_PACKET_DIGEST_PREIMAGE_V1,
+    NIGHTSHIFT_PACKET_SCHEMA_V1,
 };
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
+use std::process::Command;
+
+type PacketMutation = Box<dyn Fn(&mut NightshiftPacketV1)>;
 
 fn fixture() -> NightshiftPacketV1 {
     let created_at = Utc.with_ymd_and_hms(2026, 8, 29, 16, 0, 0).unwrap();
@@ -23,8 +28,7 @@ fn fixture() -> NightshiftPacketV1 {
         canonicalization: CanonicalizationV1 {
             algorithm: "RFC8785-JCS".into(),
             digest_algorithm: "SHA-256".into(),
-            digest_preimage: "packet object with packet_digest and switchyard.plan_ref omitted"
-                .into(),
+            digest_preimage: NIGHTSHIFT_PACKET_DIGEST_PREIMAGE_V1.into(),
         },
         source_evidence: vec![SourceEvidenceRefV1 {
             repository: "nightshift".into(),
@@ -122,6 +126,126 @@ fn normative_mutation_changes_digest() {
 }
 
 #[test]
+fn digest_uses_packet_specific_v1_domain_frame() {
+    let packet = fixture();
+    assert_eq!(
+        packet.packet_digest,
+        "sha256:ace1ba2ba61cf9429adf7875cade221190628282c853c2e9eaa781abed73dd10"
+    );
+}
+
+#[test]
+fn checked_in_closed_schema_identity_is_pinned() {
+    let schema = include_bytes!("../../../schemas/nightshift.orientation-packet.v1.schema.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(schema)),
+        "6b71b4ec182811c376c4b852bc6ae540e1c063d5db43d1cacefaeead9636c50f"
+    );
+}
+
+#[test]
+fn closed_schema_empty_string_and_collection_cases_fail_closed() {
+    let cases: Vec<(&str, PacketMutation)> = vec![
+        (
+            "global_constraints.invariants",
+            Box::new(|packet| packet.global_constraints.invariants.clear()),
+        ),
+        (
+            "worker_budget.reserve_posture",
+            Box::new(|packet| packet.worker_budget.reserve_posture.clear()),
+        ),
+        (
+            "work_items.track",
+            Box::new(|packet| packet.work_items[0].track.clear()),
+        ),
+        (
+            "work_items.model_routing.class",
+            Box::new(|packet| packet.work_items[0].model_routing.class.clear()),
+        ),
+        (
+            "work_items.model_routing.reason",
+            Box::new(|packet| packet.work_items[0].model_routing.reason.clear()),
+        ),
+        (
+            "source_evidence.predecessor_classification",
+            Box::new(|packet| packet.source_evidence[0].predecessor_classification.clear()),
+        ),
+        (
+            "predecessor_lineage.classification",
+            Box::new(|packet| {
+                packet.work_items[0].predecessor_lineage[0]
+                    .classification
+                    .clear()
+            }),
+        ),
+        (
+            "work_items.acceptance_tests",
+            Box::new(|packet| packet.work_items[0].acceptance_tests[0].clear()),
+        ),
+    ];
+
+    for (field, mutate) in cases {
+        let mut packet = fixture();
+        mutate(&mut packet);
+        assert_eq!(
+            packet.validate_at(packet.created_at),
+            Err(PacketError::InvalidField(field)),
+            "case {field}"
+        );
+    }
+}
+
+#[test]
+fn seal_refuses_schema_invalid_draft() {
+    let mut packet = fixture();
+    packet.packet_digest.clear();
+    packet.switchyard.plan_ref.clear();
+    packet.worker_budget.reserve_posture.clear();
+    assert_eq!(
+        packet.seal(),
+        Err(PacketError::InvalidField("worker_budget.reserve_posture"))
+    );
+}
+
+#[test]
+fn cli_seal_output_is_exact_canonical_input_for_validate() {
+    let directory = tempfile::tempdir().unwrap();
+    let draft_path = directory.path().join("packet.draft.json");
+    let sealed_path = directory.path().join("packet.v1.json");
+    let mut draft = fixture();
+    draft.packet_digest.clear();
+    draft.switchyard.plan_ref.clear();
+    std::fs::write(&draft_path, serde_json::to_vec_pretty(&draft).unwrap()).unwrap();
+
+    let seal = Command::new(env!("CARGO_BIN_EXE_nightshift"))
+        .args(["packet", "seal", "--packet"])
+        .arg(&draft_path)
+        .output()
+        .unwrap();
+    assert!(
+        seal.status.success(),
+        "{}",
+        String::from_utf8_lossy(&seal.stderr)
+    );
+    assert!(!seal.stdout.ends_with(b"\n"));
+    let sealed = NightshiftPacketV1::from_slice(&seal.stdout).unwrap();
+    assert_eq!(seal.stdout, sealed.canonical_bytes().unwrap());
+    std::fs::write(&sealed_path, &seal.stdout).unwrap();
+
+    let validate = Command::new(env!("CARGO_BIN_EXE_nightshift"))
+        .args(["packet", "validate", "--packet"])
+        .arg(&sealed_path)
+        .args(["--evaluated-at", "2026-08-29T16:00:00Z"])
+        .output()
+        .unwrap();
+    assert!(
+        validate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validate.stderr)
+    );
+}
+
+#[test]
 fn unknown_work_item_fails_closed() {
     let mut packet = fixture();
     packet.work_items[0].dependencies.push("absent".into());
@@ -158,9 +282,8 @@ fn duplicate_dependency_fails_closed() {
     second.campaign.canonical_slug = "second-orientation-packet".into();
     packet.work_items.push(second);
     packet.work_items[0].dependencies = vec!["second".into(), "second".into()];
-    packet.seal().unwrap();
     assert_eq!(
-        packet.validate_at(packet.created_at),
+        packet.seal(),
         Err(PacketError::InvalidField("work_items.dependencies"))
     );
 }
@@ -203,6 +326,23 @@ fn unknown_json_field_fails_closed() {
         .insert("authority".into(), Value::Bool(true));
     assert!(matches!(
         NightshiftPacketV1::from_slice(&serde_json::to_vec(&value).unwrap()),
+        Err(PacketError::Json(_))
+    ));
+}
+
+#[test]
+fn substituted_type_and_nested_unknown_field_fail_closed() {
+    let mut substituted = serde_json::to_value(fixture()).unwrap();
+    substituted["worker_budget"]["reserve_posture"] = Value::Bool(true);
+    assert!(matches!(
+        NightshiftPacketV1::from_slice(&serde_json::to_vec(&substituted).unwrap()),
+        Err(PacketError::Json(_))
+    ));
+
+    let mut unknown = serde_json::to_value(fixture()).unwrap();
+    unknown["work_items"][0]["model_routing"]["fallback"] = Value::String("none".into());
+    assert!(matches!(
+        NightshiftPacketV1::from_slice(&serde_json::to_vec(&unknown).unwrap()),
         Err(PacketError::Json(_))
     ));
 }
