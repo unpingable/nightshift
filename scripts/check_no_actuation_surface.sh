@@ -42,6 +42,17 @@ if ! rg -q '^path = "src/bin/nightshift_observation_resolver.rs"$' "$manifest"; 
     fail "observation resolver target does not point to its read-only source"
 fi
 
+# The casework operator is a separate workspace package, not a third
+# canonical Nightshift production binary or module.
+if ! rg -q '"crates/nightshift-casework"' Cargo.toml; then
+    fail "separate casework operator package is not an explicit workspace member"
+fi
+if rg -n 'nightshift[_-]casework|casework::' "$manifest" "$production_src" \
+    >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "casework HTTP/operator machinery entered canonical nightshiftd:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+
 # The observation resolver is the one permitted second binary: a read-only
 # evidence translator for AG's observation-resolution boundary. It must open
 # no subprocess, must not use the migrating store open path, and must call no

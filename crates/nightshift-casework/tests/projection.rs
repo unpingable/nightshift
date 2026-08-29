@@ -100,6 +100,18 @@ fn unknown_extensions_stay_only_in_exact_raw_bytes() {
 }
 
 #[test]
+fn renderer_accepted_repository_json_is_not_retroactively_rejected() {
+    let dir = fixture();
+    mutate_receipts(dir.path(), |value| {
+        value["work_items"][0]["repositories"] = json!({"future_shape": [1, 2, 3]});
+    });
+    let run = load_run_at(dir.path(), instant()).unwrap();
+    let repositories = &run.projection.work_items[0].outcome.repositories;
+    assert_eq!(repositories.canonical_json, r#"{"future_shape":[1,2,3]}"#);
+    assert_eq!(repositories.recognized_rows, None);
+}
+
+#[test]
 fn unknown_state_and_classification_remain_verbatim() {
     let dir = fixture();
     mutate_receipts(dir.path(), |value| {

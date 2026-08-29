@@ -113,6 +113,16 @@ fn valid_fixture_and_rendering_are_non_authorizing() {
 }
 
 #[test]
+fn integrity_validation_is_independent_of_evaluation_time() {
+    let packet = fixture();
+    packet.validate_integrity().unwrap();
+    assert_eq!(
+        packet.validate_at(packet.current_until + Duration::seconds(1)),
+        Err(PacketError::NotCurrent)
+    );
+}
+
+#[test]
 fn normative_mutation_changes_digest() {
     let packet = fixture();
     let mut changed = packet.clone();

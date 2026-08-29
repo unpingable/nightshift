@@ -158,7 +158,7 @@ struct ParsedReceipts {
 struct ParsedReceiptItem {
     state: String,
     classification: String,
-    repositories: Vec<ResultRepositoryV1>,
+    repositories: RenderedRepositoriesV1,
     tests: Vec<String>,
     evidence: Vec<String>,
     mutations: Vec<String>,
@@ -263,19 +263,26 @@ fn parse_receipts(
     })
 }
 
-fn parse_repositories(value: &Value) -> Result<Vec<ResultRepositoryV1>, CaseworkError> {
-    array(value, "work_items.repositories")?
-        .iter()
-        .map(|row| {
-            let object = object(row, "work_items.repositories row")?;
-            Ok(ResultRepositoryV1 {
-                repository: object_string(object, "repository", "work_items.repositories")?,
-                branch: object_string(object, "branch", "work_items.repositories")?,
-                head: object_string(object, "head", "work_items.repositories")?,
-                push_status: object_string(object, "push_status", "work_items.repositories")?,
+fn parse_repositories(value: &Value) -> Result<RenderedRepositoriesV1, CaseworkError> {
+    let canonical_json = serde_jcs::to_string(value)
+        .map_err(|error| receipt(format!("work_items.repositories: {error}")))?;
+    let recognized_rows = value.as_array().and_then(|rows| {
+        rows.iter()
+            .map(|row| {
+                let object = row.as_object()?;
+                Some(ResultRepositoryV1 {
+                    repository: object.get("repository")?.as_str()?.to_owned(),
+                    branch: object.get("branch")?.as_str()?.to_owned(),
+                    head: object.get("head")?.as_str()?.to_owned(),
+                    push_status: object.get("push_status")?.as_str()?.to_owned(),
+                })
             })
-        })
-        .collect()
+            .collect::<Option<Vec<_>>>()
+    });
+    Ok(RenderedRepositoriesV1 {
+        canonical_json,
+        recognized_rows,
+    })
 }
 
 fn parse_questions(
