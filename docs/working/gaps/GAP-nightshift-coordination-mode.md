@@ -3,7 +3,7 @@
 Status: proposed
 Owner: TBD
 Created: 2026-04-24
-Revised: 2026-04-24 (post-Island-Discipline topology correction)
+Revised: 2026-04-24 (post-Island-Discipline topology correction); 2026-08-29 (provider-capacity observation follow-up)
 Applies to: Night Shift, Continuity, cross-agent project workflows
 Related: deferred-run split, continuity reliance classes, agent handoff discipline
 Depends on (Continuity-side doctrine): `ISLAND_DISCIPLINE.md`, `CROSS_SCOPE_REFERENCE_GAP`
@@ -102,6 +102,30 @@ Out of scope for MVP:
 - direct task reassignment
 - cross-agent command execution
 - autonomous status interpretation beyond declared evidence
+
+## Provider capacity observation (deferred MVP follow-up)
+
+Night Shift coordination also needs an external observation of remaining agent-provider capacity. The scheduling boundary is:
+
+```text
+provider-specific budget probe
+        ↓
+normalized budget observation
+        ↓
+Nightshift scheduler / foreman
+```
+
+The scheduler consumes normalized retained state; it does not query Codex, Claude, Kimi, or another provider ad hoc and does not depend on a provider's quota surface. Capacity is evidence for routing and admission posture, not authority to execute work. A missing or failed probe yields unknown capacity and must never fabricate remaining budget.
+
+For an MVP, a cron job or systemd timer may run non-destructive provider-specific probes. A probe may use a stable CLI status command, bounded PTY/expect interaction, or client-visible local files. Stable machine-readable output is parsed conventionally. If only unstable human-readable output exists, a cheap local model may perform the parsing; premium provider inference is not required merely to measure premium-provider capacity. API-backed adapters remain the preferred enterprise direction.
+
+A normalized observation should retain provider identity, remaining fraction or equivalent bounded capacity, reset window when known, observation time, source/provenance, and confidence. This is deliberately not a normative field schema yet. Useful confidence classes are `authoritative` (provider/API supplied), `observed` (provider client reported), `inferred` (derived from bounded operational evidence such as successful calls, throttling, or burn rate), and `unknown` (no trustworthy current observation).
+
+Scheduler policy may later project observations into coarse states such as `ABUNDANT`, `NORMAL`, `CONSERVE`, `CRITICAL`, and `UNKNOWN`; thresholds are policy, not protocol. Normal capacity permits ordinary scheduling. Conserve shifts scouting and mechanical work toward cheaper or better-provisioned providers. Critical admits no speculative expensive work and reserves scarce capacity for integration, custody, closeout, or work uniquely requiring that provider. Unknown degrades conservatively rather than meaning infinite capacity. Bounded work already admitted should generally be allowed to reach safe custody as capacity falls.
+
+Longer-term adapters may expose organization/project and model-specific quotas, reset windows, spend ceilings, approved provider/model pools, routing restrictions, campaign provider constraints, and audit provenance without changing scheduler semantics. A UI may render the normalized state as a fuel gauge, but UI work is not a prerequisite for the observation contract.
+
+This requirement is an MVP follow-up, not an implementation campaign or a new authority surface. It intersects the scheduled-run machinery in [`../roadmaps/nightshift_v1_runtime_ladder.md`](../roadmaps/nightshift_v1_runtime_ladder.md) and the immutable foreman orientation in [`../../NIGHTSHIFT_PACKET_V1.md`](../../NIGHTSHIFT_PACKET_V1.md). The packet's static worker budget remains a bounded scheduling envelope, not current provider telemetry. Switchyard remains transport-only and neither probes nor interprets provider capacity.
 
 ## Terminology
 
