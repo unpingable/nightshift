@@ -1,0 +1,108 @@
+{
+  "schema": "nightshift.orientation-packet/v1",
+  "packet_id": "nightshift-packet-fixture-unknown-work-item",
+  "packet_digest": "",
+  "created_at": "2026-08-29T17:00:00Z",
+  "current_until": "2026-08-29T18:00:00Z",
+  "authoring": {
+    "agent": "fixture",
+    "session": "fixture-session",
+    "authority_basis": "local deterministic qualification fixture; no authority"
+  },
+  "canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "digest_algorithm": "SHA-256",
+    "digest_preimage": "packet object with packet_digest and switchyard.plan_ref omitted"
+  },
+  "source_evidence": [
+    {
+      "repository": "nightshift",
+      "branch": "main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "path": "README.md",
+      "file_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "predecessor_classification": "FIXTURE"
+    }
+  ],
+  "repository_custody": [
+    {
+      "repository": "nightshift",
+      "path": "/fixture/nightshift",
+      "branch": "main",
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "remote": null,
+      "remote_commit": null,
+      "worktree_clean": true,
+      "discrepancy": null
+    }
+  ],
+  "global_constraints": {
+    "allowed_actions": [
+      "validate fixture"
+    ],
+    "forbidden_actions": [
+      "execute work"
+    ],
+    "invariants": [
+      "fixture is non-authorizing"
+    ]
+  },
+  "work_items": [
+    {
+      "id": "fixture-work",
+      "track": "fixture",
+      "campaign": {
+        "codename": "FIXTURE-ORRERY",
+        "canonical_slug": "fixture-orientation-packet"
+      },
+      "predecessor_lineage": [],
+      "dependencies": [
+        "missing-work-item"
+      ],
+      "exact_work_refs": [],
+      "entry_predicates": [
+        "fixture loaded"
+      ],
+      "allowed_mutation_surfaces": [
+        "none"
+      ],
+      "forbidden_actions": [
+        "all external mutation"
+      ],
+      "acceptance_tests": [
+        "validator disposition"
+      ],
+      "stop_conditions": [
+        "validation completes"
+      ],
+      "expected_receipts": [
+        "validation result"
+      ],
+      "closeout_requirements": [
+        "no mutation"
+      ],
+      "model_routing": {
+        "class": "small",
+        "reason": "deterministic fixture",
+        "maximum_mutating_workers": 0
+      }
+    }
+  ],
+  "worker_budget": {
+    "maximum_concurrent_mutating_workers": 1,
+    "recursive_worker_swarms_forbidden": true,
+    "reserve_posture": "fixture"
+  },
+  "human_question_criteria": [
+    "none in fixture"
+  ],
+  "switchyard": {
+    "alias": "nightshift-fixture",
+    "plan_ref": "",
+    "transport_fields": [
+      "alias",
+      "plan_ref",
+      "nonce"
+    ]
+  }
+}

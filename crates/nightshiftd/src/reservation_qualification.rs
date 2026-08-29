@@ -38,6 +38,8 @@ const NONCLAIMS: [&str; 7] = [
     "reservation validity outside this exact profile",
 ];
 
+type RetainedRealizationRow = (String, Vec<u8>, Vec<u8>, Vec<u8>, i64);
+
 fn require_digest(name: &str, value: &str) -> Result<(), String> {
     let Some(hex) = value.strip_prefix("sha256:") else {
         return Err(format!("{name} must use sha256:<64 lowercase hex>"));
@@ -429,7 +431,7 @@ impl ReservationRealizationStoreV1 {
             NqQualificationStatusV1::Failed => "FAILED",
             NqQualificationStatusV1::Indeterminate => "INDETERMINATE",
         };
-        let prior: Option<(String, Vec<u8>, Vec<u8>, Vec<u8>, i64)> = self
+        let prior: Option<RetainedRealizationRow> = self
             .connection
             .query_row(
                 "SELECT receipt_sha256, exact_profile_json, exact_evidence_json,

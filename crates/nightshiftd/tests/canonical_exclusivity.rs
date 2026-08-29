@@ -159,7 +159,8 @@ fn only_closed_upstream_verifiers_present_support_and_ag_are_process_boundaries(
             "currentness.rs",
             "nq_admission.rs",
             "project_predicate_attention.rs",
-            "repository_qualification.rs"
+            "repository_qualification.rs",
+            "reservation_qualification.rs"
         ]
     );
 

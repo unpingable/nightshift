@@ -1,0 +1,1 @@
+{"authority_effect":"NONE","disposition":"VALID_NON_AUTHORIZING_ORIENTATION_PACKET","evaluated_at":"2026-08-29T17:30:00Z","packet_digest":"sha256:9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b","packet_id":"nightshift-20260829-autonomous-convergence","schema":"nightshift.orientation-packet-validation/v1","work_item_count":14}

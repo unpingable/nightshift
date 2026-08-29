@@ -33,6 +33,7 @@ use nightshiftd::external_observation::{
 use nightshiftd::nq_admission::{
     CommandNqAdmissionPortV1, NqAdmissionPortV1, NqAdmissionProvenance, NqAdmissionQueryV1,
 };
+use nightshiftd::packet::NightshiftPacketV1;
 use nightshiftd::project_predicate_attention::{
     evaluate, read_json as read_attention_json, replay_attention, verify_pulse_receipt,
     write_json as write_attention_json, AttentionPolicyV1, AttentionReplayBundleV1,
@@ -97,6 +98,32 @@ enum Command {
     ReservationQualification {
         #[command(subcommand)]
         command: ReservationQualificationCommand,
+    },
+    /// Seal, validate, or render a non-authorizing orientation packet.
+    Packet {
+        #[command(subcommand)]
+        command: PacketCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PacketCommand {
+    /// Seal a draft by deriving its digest and immutable plan reference.
+    Seal {
+        #[arg(long)]
+        packet: PathBuf,
+    },
+    /// Validate an already sealed packet at an explicit evaluation time.
+    Validate {
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        evaluated_at: String,
+    },
+    /// Render a clearly non-authorizing Markdown projection.
+    Render {
+        #[arg(long)]
+        packet: PathBuf,
     },
 }
 
@@ -504,6 +531,33 @@ fn main() -> anyhow::Result<()> {
         }
         Command::ReservationQualification { command } => {
             run_reservation_qualification_command(&arguments.store, command)
+        }
+        Command::Packet { command } => run_packet_command(command),
+    }
+}
+
+fn run_packet_command(command: PacketCommand) -> anyhow::Result<()> {
+    match command {
+        PacketCommand::Seal { packet } => {
+            let mut packet: NightshiftPacketV1 = read_exact(&packet)?;
+            packet.seal().map_err(anyhow::Error::msg)?;
+            write_exact(&packet)
+        }
+        PacketCommand::Validate {
+            packet,
+            evaluated_at,
+        } => {
+            let packet: NightshiftPacketV1 = read_exact_canonical(&packet)?;
+            write_exact(
+                &packet
+                    .validate_at(parse_time(&evaluated_at)?)
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
+        PacketCommand::Render { packet } => {
+            let packet: NightshiftPacketV1 = read_exact_canonical(&packet)?;
+            print!("{}", packet.render_markdown());
+            Ok(())
         }
     }
 }
