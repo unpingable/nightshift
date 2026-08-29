@@ -239,19 +239,30 @@ impl NightshiftPacketV1 {
         Ok(())
     }
 
-    pub fn validate_at(
-        &self,
-        evaluated_at: DateTime<Utc>,
-    ) -> Result<PacketValidationReceiptV1, PacketError> {
+    /// Validate packet V1 content identity, closed structure, and dependency
+    /// graph without applying evaluation-time currentness.
+    ///
+    /// This is intentionally narrower than [`Self::validate_at`]. It lets a
+    /// read-only historical projection distinguish intact packet evidence
+    /// from whether that evidence was current at a particular instant. It
+    /// does not change packet V1's schema, digest law, or admission behavior.
+    pub fn validate_integrity(&self) -> Result<(), PacketError> {
         self.validate_structure()?;
         if self.computed_digest()? != self.packet_digest {
             return Err(PacketError::DigestMismatch);
         }
+        let ids = self.work_items.iter().map(|item| item.id.clone()).collect();
+        validate_dag(&self.work_items, &ids)
+    }
+
+    pub fn validate_at(
+        &self,
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<PacketValidationReceiptV1, PacketError> {
+        self.validate_integrity()?;
         if evaluated_at < self.created_at || evaluated_at > self.current_until {
             return Err(PacketError::NotCurrent);
         }
-        let ids = self.work_items.iter().map(|item| item.id.clone()).collect();
-        validate_dag(&self.work_items, &ids)?;
         Ok(PacketValidationReceiptV1 {
             schema: "nightshift.orientation-packet-validation/v1".into(),
             packet_id: self.packet_id.clone(),
