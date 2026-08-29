@@ -1,0 +1,260 @@
+import { useEffect, useMemo, useState } from "react";
+import { getRaw, getRun, getRunIndex } from "./api";
+import { DefinitionGrid, Exact, Field, Section, StringList } from "./components";
+import { parseRoute, questionPath, runPath, workItemPath, type Route } from "./router";
+import type { CaseworkRun, HumanQuestion, RunIndex, WorkItem } from "./types";
+
+function Link({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) {
+  return <a href={href} className={className}>{children}</a>;
+}
+
+function useRoute(): Route {
+  const [route, setRoute] = useState(() => parseRoute(window.location.pathname));
+  useEffect(() => {
+    const onPop = () => setRoute(parseRoute(window.location.pathname));
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = (event.target as Element).closest("a");
+      if (!anchor || anchor.origin !== window.location.origin || anchor.target) return;
+      event.preventDefault();
+      window.history.pushState(null, "", anchor.href);
+      onPop();
+      window.scrollTo({ top: 0 });
+    };
+    window.addEventListener("popstate", onPop);
+    document.addEventListener("click", onClick);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      document.removeEventListener("click", onClick);
+    };
+  }, []);
+  return route;
+}
+
+function useRemote<T>(load: () => Promise<T>, dependencies: unknown[]) {
+  const [state, setState] = useState<{ data?: T; error?: string; loading: boolean }>({ loading: true });
+  useEffect(() => {
+    let active = true;
+    setState({ loading: true });
+    load().then(
+      (data) => active && setState({ data, loading: false }),
+      (error: unknown) => active && setState({ error: error instanceof Error ? error.message : String(error), loading: false }),
+    );
+    return () => { active = false; };
+    // The caller supplies a stable dependency list for the requested resource.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, dependencies);
+  return state;
+}
+
+function ScreenState({ loading, error }: { loading: boolean; error?: string }) {
+  if (loading) return <p role="status" className="screen-state">Loading exact casework projection…</p>;
+  return <p role="alert" className="screen-state error">{error ?? "The requested case record was not found."}</p>;
+}
+
+function StateCounts({ counts }: { counts: Record<string, number> }) {
+  return (
+    <dl className="state-counts" aria-label="Counts by exact state">
+      {Object.entries(counts).map(([state, count]) => (
+        <div key={state}><dt><Exact wrap>{state}</Exact></dt><dd>{count}</dd></div>
+      ))}
+    </dl>
+  );
+}
+
+function RunIndexView() {
+  const state = useRemote(getRunIndex, []);
+  if (!state.data) return <ScreenState loading={state.loading} error={state.error} />;
+  return (
+    <main id="main" className="page">
+      <header className="page-heading">
+        <p className="eyebrow">Read-only evidence projection</p>
+        <h1>Run case index</h1>
+        <p>Sealed packet intent paired with one exact receipt snapshot. Classifications remain independent and verbatim.</p>
+      </header>
+      <div className="run-ledger">
+        {state.data.runs.map((run) => (
+          <article className="run-card" key={run.run_id}>
+            <header>
+              <div><p className="eyebrow">Packet</p><h2><Link href={runPath(run.run_id)}>{run.packet_id}</Link></h2></div>
+              <time dateTime={run.receipt_updated_at}>{run.receipt_updated_at}</time>
+            </header>
+            <DefinitionGrid>
+              <Field label="Packet digest"><Exact wrap>{run.packet_digest}</Exact></Field>
+              <Field label="Projection digest"><Exact wrap>{run.projection_digest}</Exact></Field>
+              <Field label="Packet integrity"><Exact wrap>{run.packet_integrity}</Exact></Field>
+              <Field label="Current at snapshot"><Exact>{run.packet_currentness_at_receipt_snapshot}</Exact></Field>
+              <Field label="Current now"><Exact>{run.packet_currentness_now}</Exact></Field>
+              <Field label="Work items">{run.summary.work_item_count}</Field>
+              <Field label="Human questions">{run.summary.human_question_count}</Field>
+              <Field label="Packet custody discrepancies">{run.summary.packet_custody_discrepancy_count}</Field>
+            </DefinitionGrid>
+            <StateCounts counts={run.summary.state_counts} />
+            <p><Link className="text-link" href={runPath(run.run_id)}>Open run case <span aria-hidden="true">→</span></Link></p>
+          </article>
+        ))}
+        {state.data.runs.length === 0 && <p className="empty">No explicit run directories are loaded.</p>}
+      </div>
+    </main>
+  );
+}
+
+function RunNav({ run }: { run: CaseworkRun }) {
+  const base = runPath(run.run_id);
+  return (
+    <nav aria-label="Run case sections" className="run-nav">
+      <Link href={base}>Work items</Link>
+      <a href="#human-questions">Human questions</a>
+      <Link href={`${base}/custody`}>Custody</Link>
+      <Link href={`${base}/raw`}>Raw artifacts</Link>
+    </nav>
+  );
+}
+
+function RunHeader({ run }: { run: CaseworkRun }) {
+  return (
+    <>
+      <div className="breadcrumbs"><Link href="/">Run index</Link><span aria-hidden="true">/</span><Exact>{run.packet.packet_id}</Exact></div>
+      <header className="page-heading compact">
+        <p className="eyebrow">Run case · receipt snapshot <time dateTime={run.receipts.updated_at}>{run.receipts.updated_at}</time></p>
+        <h1>{run.packet.packet_id}</h1>
+        <p className="digest"><Exact wrap>{run.packet.packet_digest}</Exact></p>
+      </header>
+      <RunNav run={run} />
+    </>
+  );
+}
+
+function RunCaseView({ digest }: { digest: string }) {
+  const state = useRemote(() => getRun(digest), [digest]);
+  const [stateFilter, setStateFilter] = useState("");
+  const [trackFilter, setTrackFilter] = useState("");
+  const [questionFilter, setQuestionFilter] = useState("all");
+  const run = state.data;
+  const questionItems = useMemo(() => new Set(run?.human_questions.map((question) => question.work_item) ?? []), [run]);
+  const states = useMemo(() => [...new Set(run?.work_items.map((item) => item.outcome.state) ?? [])].sort(), [run]);
+  const tracks = useMemo(() => [...new Set(run?.work_items.map((item) => item.track) ?? [])].sort(), [run]);
+  const items = useMemo(() => run?.work_items.filter((item) =>
+    (!stateFilter || item.outcome.state === stateFilter)
+    && (!trackFilter || item.track === trackFilter)
+    && (questionFilter === "all" || (questionFilter === "with" ? questionItems.has(item.id) : !questionItems.has(item.id))))),
+  [run, stateFilter, trackFilter, questionFilter, questionItems]);
+  if (!run) return <ScreenState loading={state.loading} error={state.error} />;
+  return (
+    <main id="main" className="page wide">
+      <RunHeader run={run} />
+      <section className="summary-strip" aria-label="Run facts">
+        <div><span>Work items</span><strong>{run.summary.work_item_count}</strong></div>
+        <div><span>Human questions</span><strong>{run.summary.human_question_count}</strong></div>
+        <div><span>Packet custody discrepancies</span><strong>{run.summary.packet_custody_discrepancy_count}</strong></div>
+        <div><span>Current at snapshot</span><Exact>{run.packet.currentness_at_receipt_snapshot}</Exact></div>
+        <div><span>Current now</span><Exact>{run.packet.currentness_now}</Exact></div>
+      </section>
+      <Section title="Work-item ledger">
+        <form className="filters" aria-label="Work-item filters" onSubmit={(event) => event.preventDefault()}>
+          <label>Exact state<select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}><option value="">All exact states</option>{states.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>Track<select value={trackFilter} onChange={(event) => setTrackFilter(event.target.value)}><option value="">All tracks</option>{tracks.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>Human question<select value={questionFilter} onChange={(event) => setQuestionFilter(event.target.value)}><option value="all">All work items</option><option value="with">Has human question</option><option value="without">No human question</option></select></label>
+        </form>
+        <p className="result-count" aria-live="polite">Showing {items?.length ?? 0} of {run.work_items.length} exact work items</p>
+        <div className="table-scroll"><table className="ledger-table"><thead><tr><th scope="col">Campaign</th><th scope="col">Track</th><th scope="col">Exact state</th><th scope="col">Exact classification</th><th scope="col">Dependencies</th><th scope="col">Question</th></tr></thead>
+          <tbody>{items?.map((item) => <tr key={item.derived_id}><th scope="row"><Link href={workItemPath(run.run_id, item.id)}>{item.campaign.codename}</Link><small>{item.campaign.canonical_slug}</small></th><td><Exact wrap>{item.track}</Exact></td><td><Exact wrap>{item.outcome.state}</Exact></td><td><Exact wrap>{item.outcome.result_classification}</Exact></td><td>{item.dependencies.length ? item.dependencies.map((value) => <Exact key={value} wrap>{value}</Exact>) : <span className="empty">None</span>}</td><td>{questionItems.has(item.id) ? <span className="label">Present</span> : <span className="empty">None</span>}</td></tr>)}</tbody>
+        </table></div>
+      </Section>
+      <QuestionList run={run} />
+    </main>
+  );
+}
+
+function QuestionList({ run }: { run: CaseworkRun }) {
+  return <Section title={`Human questions · ${run.human_questions.length}`} className="questions" >
+    <p>These are exact receipt fields. This surface records no disposition.</p>
+    <ol>{run.human_questions.map((question) => <li key={question.derived_id}><article><h3><Link href={questionPath(run.run_id, question.derived_id)}>{question.exact_question}</Link></h3><p><span className="field-label">Linked work item</span> <Link href={workItemPath(run.run_id, question.work_item)}><Exact>{question.work_item}</Exact></Link></p></article></li>)}</ol>
+  </Section>;
+}
+
+const INTENT_LISTS: Array<[keyof WorkItem, string]> = [
+  ["entry_predicates", "Entry predicates"], ["allowed_mutation_surfaces", "Allowed mutation surfaces"],
+  ["forbidden_actions", "Forbidden actions"], ["acceptance_tests", "Acceptance tests"],
+  ["stop_conditions", "Stop conditions"], ["expected_receipts", "Expected receipts"],
+  ["closeout_requirements", "Closeout requirements"],
+];
+
+function WorkItemView({ digest, id }: { digest: string; id: string }) {
+  const state = useRemote(() => getRun(digest), [digest]);
+  const run = state.data;
+  const item = run?.work_items.find((entry) => entry.id === id);
+  if (!run) return <ScreenState loading={state.loading} error={state.error} />;
+  if (!item) return <ScreenState loading={false} error={`Work item ${id} is not present in this exact run.`} />;
+  return <main id="main" className="page wide"><RunHeader run={run} />
+    <header className="record-heading"><div><p className="eyebrow">Work item · <Exact>{item.id}</Exact></p><h1>{item.campaign.codename}</h1><p>{item.campaign.canonical_slug}</p></div><div className="classification-block"><span>Exact state</span><Exact wrap>{item.outcome.state}</Exact><span>Exact classification</span><Exact wrap>{item.outcome.result_classification}</Exact></div></header>
+    <div className="paired-columns">
+      <section className="case-column intent"><header><p className="eyebrow">Sealed packet</p><h2>Bounded intent</h2></header>
+        <DefinitionGrid><Field label="Track"><Exact>{item.track}</Exact></Field><Field label="Dependencies"><StringList values={item.dependencies} /></Field></DefinitionGrid>
+        <h3>Predecessor lineage</h3>{item.predecessor_lineage.length ? <div className="record-stack">{item.predecessor_lineage.map((row, index) => <DefinitionGrid key={`${row.commit}-${index}`}><Field label="Campaign"><Exact>{row.campaign}</Exact></Field><Field label="Classification"><Exact wrap>{row.classification}</Exact></Field><Field label="Commit"><Exact wrap>{row.commit}</Exact></Field></DefinitionGrid>)}</div> : <p className="empty">None recorded</p>}
+        <h3>Exact-work references</h3>{item.exact_work_refs.length ? <div className="record-stack">{item.exact_work_refs.map((row, index) => <DefinitionGrid key={`${row.proposal_ref}-${index}`}><Field label="Contract"><Exact wrap>{row.contract_kind} · {row.contract_schema}</Exact></Field><Field label="Repository"><Exact wrap>{row.repository} · {row.branch} · {row.commit}</Exact></Field><Field label="Path"><Exact wrap>{row.path}</Exact></Field><Field label="Proposal reference"><Exact wrap>{row.proposal_ref}</Exact></Field></DefinitionGrid>)}</div> : <p className="empty">None recorded</p>}
+        {INTENT_LISTS.map(([key, title]) => <div className="list-block" key={key}><h3>{title}</h3><StringList values={item[key] as string[]} /></div>)}
+        <h3>Model routing</h3><DefinitionGrid><Field label="Class"><Exact>{item.model_routing.class}</Exact></Field><Field label="Maximum mutating workers">{item.model_routing.maximum_mutating_workers}</Field><Field label="Reason"><Exact wrap>{item.model_routing.reason}</Exact></Field></DefinitionGrid>
+      </section>
+      <section className="case-column outcome"><header><p className="eyebrow">Receipt snapshot</p><h2>Recorded outcome</h2></header>
+        <DefinitionGrid><Field label="Exact state"><Exact wrap>{item.outcome.state}</Exact></Field><Field label="Exact classification"><Exact wrap>{item.outcome.result_classification}</Exact></Field></DefinitionGrid>
+        <h3>Resulting repositories and custody</h3>{item.outcome.repositories.length ? <div className="record-stack">{item.outcome.repositories.map((row, index) => <DefinitionGrid key={`${row.repository}-${index}`}><Field label="Repository"><Exact>{row.repository}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Head"><Exact wrap>{row.head}</Exact></Field><Field label="Push status"><Exact wrap>{row.push_status}</Exact></Field></DefinitionGrid>)}</div> : <p className="empty">None recorded</p>}
+        <div className="list-block"><h3>Tests</h3><StringList values={item.outcome.tests} /></div><div className="list-block"><h3>Evidence</h3><StringList values={item.outcome.evidence} /></div><div className="list-block"><h3>Live or production mutations</h3><StringList values={item.outcome.live_or_production_mutations} /></div>
+        <h3>Remaining trigger</h3><p><Exact wrap>{item.outcome.remaining_trigger}</Exact></p><h3>Next lawful action</h3><p><Exact wrap>{item.outcome.next_lawful_action}</Exact></p>
+      </section>
+    </div>
+  </main>;
+}
+
+function QuestionRecord({ run, question }: { run: CaseworkRun; question: HumanQuestion }) {
+  return <article className="question-record"><header><p className="eyebrow">Exact receipt question</p><h1>{question.exact_question}</h1></header><DefinitionGrid>
+    <Field label="Question identifier"><Exact wrap>{question.derived_id}</Exact></Field>
+    <Field label="Linked work item"><Link href={workItemPath(run.run_id, question.work_item)}><Exact>{question.work_item}</Exact></Link></Field>
+    <Field label="Evidence exhausted"><Exact wrap>{question.evidence_exhausted}</Exact></Field>
+    <Field label="Safe default"><Exact wrap>{question.safe_default}</Exact></Field>
+    <Field label="Consequences"><Exact wrap>{question.consequences}</Exact></Field>
+    <Field label="Resume point"><Exact wrap>{question.resume_point}</Exact></Field>
+  </DefinitionGrid></article>;
+}
+
+function QuestionView({ digest, id }: { digest: string; id: string }) {
+  const state = useRemote(() => getRun(digest), [digest]); const run = state.data; const question = run?.human_questions.find((entry) => entry.derived_id === id);
+  if (!run) return <ScreenState loading={state.loading} error={state.error} />;
+  if (!question) return <ScreenState loading={false} error="Question identifier is not present in this exact run." />;
+  return <main id="main" className="page"><RunHeader run={run} /><QuestionRecord run={run} question={question} /></main>;
+}
+
+function CustodyView({ digest }: { digest: string }) {
+  const state = useRemote(() => getRun(digest), [digest]); const run = state.data;
+  if (!run) return <ScreenState loading={state.loading} error={state.error} />;
+  return <main id="main" className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source sections</p><h1>Repository custody</h1><p>Starting packet custody and final receipt custody remain separate. Text is displayed without inferred disposition.</p></div></header>
+    <div className="paired-columns custody-columns"><Section title="Starting packet custody"><div className="record-stack">{run.packet.repository_custody.map((row) => <article className="custody-row" key={row.derived_id}><h3>{row.repository}</h3><DefinitionGrid><Field label="Path"><Exact wrap>{row.path}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Commit"><Exact wrap>{row.commit}</Exact></Field><Field label="Remote"><Exact wrap>{row.remote ?? "null"}</Exact></Field><Field label="Remote commit"><Exact wrap>{row.remote_commit ?? "null"}</Exact></Field><Field label="Worktree clean"><Exact>{String(row.worktree_clean)}</Exact></Field><Field label="Discrepancy"><Exact wrap>{row.discrepancy ?? "null"}</Exact></Field></DefinitionGrid></article>)}</div></Section>
+      <Section title="Final receipt custody"><div className="record-stack">{run.final_repository_custody.map((row) => <article className="custody-row" key={row.derived_id}><h3>{row.repository}</h3><DefinitionGrid><Field label="Branch head"><Exact wrap>{row.branch_head}</Exact></Field><Field label="Push custody"><Exact wrap>{row.push_custody}</Exact></Field><Field label="Dirty"><Exact wrap>{row.dirty}</Exact></Field><Field label="Live runtime"><Exact wrap>{row.live_runtime}</Exact></Field><Field label="Secrets"><Exact wrap>{row.secrets}</Exact></Field><Field label="Teardown"><Exact wrap>{row.teardown}</Exact></Field></DefinitionGrid></article>)}</div></Section>
+    </div></main>;
+}
+
+function RawView({ digest }: { digest: string }) {
+  const runState = useRemote(() => getRun(digest), [digest]); const packetState = useRemote(() => getRaw(digest, "packet"), [digest]); const receiptsState = useRemote(() => getRaw(digest, "receipts"), [digest]); const run = runState.data;
+  if (!run) return <ScreenState loading={runState.loading} error={runState.error} />;
+  return <main id="main" className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source-byte inspection</p><h1>Raw artifacts</h1><p>Read-only source bytes from the explicitly loaded run directory.</p></div></header>
+    <div className="raw-grid"><Section title="Packet bytes"><DefinitionGrid><Field label="SHA-256"><Exact wrap>{run.packet.source_bytes_digest}</Exact></Field><Field label="Validation disposition"><Exact wrap>{run.packet.integrity}</Exact></Field></DefinitionGrid>{packetState.data !== undefined ? <pre tabIndex={0} aria-label="Exact packet bytes">{packetState.data}</pre> : <ScreenState loading={packetState.loading} error={packetState.error} />}</Section>
+      <Section title="Receipt bytes"><DefinitionGrid><Field label="SHA-256"><Exact wrap>{run.receipts.source_bytes_digest}</Exact></Field><Field label="Validation disposition"><Exact wrap>{run.receipts.validation}</Exact></Field></DefinitionGrid>{receiptsState.data !== undefined ? <pre tabIndex={0} aria-label="Exact receipt bytes">{receiptsState.data}</pre> : <ScreenState loading={receiptsState.loading} error={receiptsState.error} />}</Section></div>
+  </main>;
+}
+
+function RoutedView({ route }: { route: Route }) {
+  switch (route.kind) {
+    case "index": return <RunIndexView />;
+    case "run": return <RunCaseView digest={route.digest} />;
+    case "work-item": return <WorkItemView digest={route.digest} id={route.id} />;
+    case "question": return <QuestionView digest={route.digest} id={route.id} />;
+    case "custody": return <CustodyView digest={route.digest} />;
+    case "raw": return <RawView digest={route.digest} />;
+    default: return <main id="main" className="page"><h1>Case route not found</h1><p><Link href="/">Return to run index</Link></p></main>;
+  }
+}
+
+export default function App() {
+  const route = useRoute();
+  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection schema: nightshift.casework-run/v1</span><span>Exact source: sealed packet + receipt snapshot</span></footer></div>;
+}
