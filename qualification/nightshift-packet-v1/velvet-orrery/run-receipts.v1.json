@@ -1,0 +1,286 @@
+{
+  "schema": "nightshift.run-receipts/v1",
+  "packet_digest": "sha256:9b4e1a2cea4010dbc620368fe3adfe51a7c1e2551fa7af61f27f94a0a8bc692b",
+  "updated_at": "2026-08-29T17:22:22Z",
+  "work_items": [
+    {
+      "id": "packet-v1",
+      "state": "QUALIFIED",
+      "result_classification": "NIGHTSHIFT-ORIENTATION-PACKET-V1-IMPLEMENTATION-QUALIFIED",
+      "repositories": [
+        {
+          "repository": "nightshift",
+          "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+          "head": "3bc85acda4be9362ffd9b2ca77f4225740623c92",
+          "push_status": "remote verified"
+        }
+      ],
+      "tests": [
+        "cargo test --locked: passed",
+        "cargo clippy --locked --all-targets -- -D warnings: passed",
+        "check_no_actuation_surface.sh: passed",
+        "packet tests: 9 passed",
+        "report tests: 3 passed"
+      ],
+      "evidence": [
+        "qualification/nightshift-packet-v1/velvet-orrery/validation-receipt.v1.json"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "independent packet audit",
+      "next_lawful_action": "run independent audit, then retain classification if no material finding"
+    },
+    {
+      "id": "switchyard-transport",
+      "state": "AUDIT-IN-PROGRESS",
+      "result_classification": "WORKER-REPORTED-QUALIFIED-WITH-CUSTODY-LIMITATION",
+      "repositories": [
+        {
+          "repository": "switchyard",
+          "branch": "campaign/quiet-bridge-switchyard-explicit-plan-ref-transport-v1",
+          "head": "4ff054c07246cc880656abee05616547acd7d096",
+          "push_status": "not pushed; no authoritative remote"
+        }
+      ],
+      "tests": [
+        "worker pytest: 35 passed",
+        "worker compileall: passed",
+        "worker git diff --check: passed"
+      ],
+      "evidence": [
+        "docs/campaigns/quiet-bridge-switchyard-explicit-plan-ref-transport-v1.md"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "independent audit and correction of any findings",
+      "next_lawful_action": "accept, repair, or refuse after independent audit"
+    },
+    {
+      "id": "authorization-continuation",
+      "state": "IN-PROGRESS",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "foundation SHAs and remotes independently verified"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "large-model worker result",
+      "next_lawful_action": "inspect paired diffs and run independent authority audit"
+    },
+    {
+      "id": "worker-vm-custody",
+      "state": "IN-PROGRESS",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "GLASS-HERON false-success path reproduced from retained evidence"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "worker result",
+      "next_lawful_action": "inspect Porter and campaign-driver-ng receipts"
+    },
+    {
+      "id": "caliper-mode-contract",
+      "state": "SCHEDULED",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "CALIPER C3 terminal report"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "shared nq-ng integration slot",
+      "next_lawful_action": "start GROUP-ANCHOR from canonical main in isolated worktree"
+    },
+    {
+      "id": "caliper-authority-lifecycle",
+      "state": "WAITING-PREREQUISITE",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "CALIPER C3 terminal report"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "GROUP-ANCHOR independently qualified",
+      "next_lawful_action": "mint fresh occurrence only after prerequisite"
+    },
+    {
+      "id": "lanternwake-port",
+      "state": "SCHEDULED",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "Lanternwake successor handoff"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "shared nq-ng integration slot",
+      "next_lawful_action": "start AMBER-COMPASS from canonical main; do not touch Classic or GLASSHOPPER"
+    },
+    {
+      "id": "copper-artifact-custody",
+      "state": "SCHEDULED",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "COPPER-LANTERN and TURNSTILE retained provenance"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "mutating worker slot and FreeBSD fixture census",
+      "next_lawful_action": "start FORGE-VAULT inventory/offline verifier before any rebuild"
+    },
+    {
+      "id": "copper-deployment",
+      "state": "WAITING-PREREQUISITE",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "COPPER-LANTERN terminal result"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "FORGE-VAULT complete K/N bundle qualification",
+      "next_lawful_action": "start a distinct deployment campaign only after artifact custody"
+    },
+    {
+      "id": "bedrock-docket-executor",
+      "state": "SCHEDULED",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "BEDROCK B5 terminal report"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "large-model architecture slot and canonical Docket custody",
+      "next_lawful_action": "resolve Docket source custody and implement RIVER-CLERK"
+    },
+    {
+      "id": "bedrock-runtime-carrier",
+      "state": "SCHEDULED",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "BEDROCK B5 terminal report"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "shared nq-ng integration slot",
+      "next_lawful_action": "implement QUIET-EMBER inert carrier independently"
+    },
+    {
+      "id": "bedrock-claim-fence",
+      "state": "SCHEDULED",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "BEDROCK B5 terminal report"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "large-model architecture slot and shared nq-ng owner",
+      "next_lawful_action": "implement GRANITE-FENCE independently"
+    },
+    {
+      "id": "bedrock-first-live",
+      "state": "WAITING-PREREQUISITES",
+      "result_classification": "NO-CAMPAIGN-RESULT-YET",
+      "repositories": [],
+      "tests": [],
+      "evidence": [
+        "BEDROCK B5 terminal report"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "authorization continuation plus all three Bedrock prerequisites independently qualified",
+      "next_lawful_action": "no live occurrence before every dependency qualifies"
+    },
+    {
+      "id": "glasshopper-closeout",
+      "state": "WAITING-FIXED-BOUNDARY",
+      "result_classification": "NO-NEW-CAMPAIGN-RESULT-YET",
+      "repositories": [
+        {
+          "repository": "nq-ng",
+          "branch": "campaign/passive-linode-canonical-relation-relaunch-v1",
+          "head": "460d97c01fedb507ffad090c46437a8d833f93e7",
+          "push_status": "campaign branch absent remotely at entry"
+        }
+      ],
+      "tests": [],
+      "evidence": [
+        "read-only snapshot retained at 2026-08-29T06:50:15.680Z"
+      ],
+      "live_or_production_mutations": [],
+      "remaining_trigger": "2026-08-29T21:45:05Z closeout boundary",
+      "next_lawful_action": "at or after boundary run only established closeout if entry predicates hold"
+    }
+  ],
+  "human_questions": [
+    {
+      "work_item": "switchyard-transport",
+      "exact_question": "What is the authoritative private remote/destination and canonical branch policy for /data/git/switchyard?",
+      "evidence_exhausted": "The configured origin is /data/git/switchyard/switchyard-codex-session-foreman-mvp.bundle, that bundle is absent, git ls-remote fails, and Cartography has no Switchyard repository row.",
+      "safe_default": "Do not invent or change a remote; retain the clean local campaign commit and report sole-local custody.",
+      "consequences": "Providing the registered private destination permits a campaign-branch push and SHA verification. Leaving it unspecified keeps Interlock and QUIET-BRIDGE locally custodied only.",
+      "resume_point": "Verify destination identity against Cartography/repository policy, configure a non-destructive remote, push master Interlock and the QUIET-BRIDGE campaign branch, then verify exact SHAs."
+    }
+  ],
+  "repository_custody": [
+    {
+      "repository": "nightshift",
+      "branch_head": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829@3bc85acda4be9362ffd9b2ca77f4225740623c92",
+      "push_custody": "remote verified exact",
+      "dirty": "no",
+      "live_runtime": "none",
+      "secrets": "none added",
+      "teardown": "none"
+    },
+    {
+      "repository": "switchyard",
+      "branch_head": "campaign/quiet-bridge-switchyard-explicit-plan-ref-transport-v1@4ff054c07246cc880656abee05616547acd7d096",
+      "push_custody": "sole local; authoritative remote absent",
+      "dirty": "no",
+      "live_runtime": "none activated",
+      "secrets": "none added",
+      "teardown": "none"
+    },
+    {
+      "repository": "AG/Codex continuation",
+      "branch_head": "worker in progress from 4f36e957/5de6a333",
+      "push_custody": "foundation remote verified; continuation pending",
+      "dirty": "isolated worker clones only",
+      "live_runtime": "none reported",
+      "secrets": "none reported",
+      "teardown": "pending worker closeout"
+    },
+    {
+      "repository": "Porter/campaign-driver-ng",
+      "branch_head": "worker in progress from a838501d/0823f1b1",
+      "push_custody": "pending",
+      "dirty": "isolated worker worktrees only",
+      "live_runtime": "none reported",
+      "secrets": "none reported",
+      "teardown": "pending worker closeout"
+    },
+    {
+      "repository": "nq-ng shared worktrees",
+      "branch_head": "unchanged entry snapshots",
+      "push_custody": "several campaign refs absent remotely",
+      "dirty": "canonical primary retains pre-existing untracked records",
+      "live_runtime": "no local campaign QEMU/listener at entry census",
+      "secrets": "none observed",
+      "teardown": "GLASSHOPPER boundary pending"
+    },
+    {
+      "repository": "Cartography",
+      "branch_head": "campaign/axolotl-design-custody-2026-08-27@9bdaae8587a2d6419c12d83ed136a4ee7da0a048",
+      "push_custody": "current branch verified; separate branch has sole local commit 48255df1",
+      "dirty": "four pre-existing untracked files",
+      "live_runtime": "none",
+      "secrets": "not inspected as content",
+      "teardown": "none"
+    }
+  ]
+}
