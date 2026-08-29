@@ -1,0 +1,268 @@
+{
+  "schema": "nightshift.orientation-packet/v1",
+  "packet_id": "nightshift-casework-mvp-20260829",
+  "packet_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "created_at": "2026-08-29T23:02:25Z",
+  "current_until": "2026-09-06T23:02:25Z",
+  "authoring": {
+    "agent": "Codex large-model Nightshift Casework foreman",
+    "session": "nightshift-casework-mvp-2026-08-29",
+    "authority_basis": "Operator instruction /home/jbeck/nightshift-casework-mvp-codex-handoff-2026-08-29.md for this bounded read-only productization run; this packet grants no authority."
+  },
+  "canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "digest_algorithm": "SHA-256",
+    "digest_preimage": "domain prefix nightshift.orientation-packet.digest/v1 NUL, then packet object with packet_digest and switchyard.plan_ref omitted as RFC8785-JCS"
+  },
+  "source_evidence": [
+    {
+      "repository": "nightshift",
+      "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+      "commit": "2430420017595112b65996e1aa8c0c708f060572",
+      "path": "docs/NIGHTSHIFT_PACKET_V1.md",
+      "file_digest": "sha256:165538fa98b7cb36f04a7f9399b5142c3cee7b7548a09983f9dfa0a28107c537",
+      "predecessor_classification": "NIGHTSHIFT-ORIENTATION-PACKET-V1-IMPLEMENTATION-QUALIFIED"
+    },
+    {
+      "repository": "nightshift",
+      "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+      "commit": "2430420017595112b65996e1aa8c0c708f060572",
+      "path": "qualification/nightshift-packet-v1/velvet-orrery/packet.v1.json",
+      "file_digest": "sha256:e9581778c89b3a8bfc8710adc95ba1f4446900c29f0884988e2be33b227b9a10",
+      "predecessor_classification": "VELVET-ORRERY-GOLDEN-PACKET-FIXTURE"
+    },
+    {
+      "repository": "nightshift",
+      "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+      "commit": "2430420017595112b65996e1aa8c0c708f060572",
+      "path": "qualification/nightshift-packet-v1/velvet-orrery/run-receipts.v1.json",
+      "file_digest": "sha256:b8894383f833a94e79b9fbfb73bc926ccddef1e6169cadab36b1d5668659a637",
+      "predecessor_classification": "VELVET-ORRERY-GOLDEN-RECEIPT-SNAPSHOT"
+    }
+  ],
+  "repository_custody": [
+    {
+      "repository": "nightshift",
+      "path": "/data/git/nightshift-velvet-orrery",
+      "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+      "commit": "2430420017595112b65996e1aa8c0c708f060572",
+      "remote": "origin",
+      "remote_commit": "2430420017595112b65996e1aa8c0c708f060572",
+      "worktree_clean": true,
+      "discrepancy": null
+    },
+    {
+      "repository": "cartography",
+      "path": "/data/git/cartography",
+      "branch": "campaign/axolotl-design-custody-2026-08-27",
+      "commit": "9bdaae8587a2d6419c12d83ed136a4ee7da0a048",
+      "remote": "origin",
+      "remote_commit": "9bdaae8587a2d6419c12d83ed136a4ee7da0a048",
+      "worktree_clean": false,
+      "discrepancy": "Four pre-existing untracked files recorded by VELVET-ORRERY remain untouched; historical ~/git/cartography is absent and /data/git/cartography is the available packet-recorded location."
+    }
+  ],
+  "global_constraints": {
+    "allowed_actions": [
+      "read the exact sealed packet and exact run receipt snapshot from explicit local run directories",
+      "create isolated Nightshift campaign worktrees and branches from the immutable VELVET-ORRERY base",
+      "add the separate nightshift-casework operator library, binary, closed projection schema, read-only API, UI, tests, gates, documentation, and campaign-owned qualification artifacts",
+      "run local Rust, TypeScript, HTTP, browser, filesystem-boundary, accessibility, and structural qualification cases",
+      "commit coherent campaign checkpoints and push only the campaign branches to the established Nightshift remote"
+    ],
+    "forbidden_actions": [
+      "modify the canonical nightshiftd HTTP or UI surface or change its two-production-binary graph",
+      "open the canonical Nightshift SQLite store or call AG, NQ, Docket, GitHub, Phosphor, Maude, Switchyard, model providers, subprocesses, or external URLs",
+      "serve arbitrary evidence paths, traverse outside an explicit run directory, follow symlinks out of it, or recursively crawl /data/git",
+      "create any write HTTP operation, operator approval or answer control, agent dispatch or retry control, aggregate semantic verdict, or inferred classification",
+      "bind a listener outside loopback, install or activate a service, merge a default branch, rewrite published history, or advance any deferred campaign"
+    ],
+    "invariants": [
+      "The sealed packet and exact nightshift.run-receipts/v1 bytes are the sole casework source of truth.",
+      "Receipt V1 compatibility is no stricter than the demonstrated renderer for existing accepted fields; unknown fields remain raw and acquire no semantics.",
+      "The derived nightshift.casework-run/v1 projection is deterministic, closed, read-only, and creates no campaign result or authority.",
+      "Packet integrity, packet currentness at receipt snapshot, and packet currentness now remain distinct dispositions.",
+      "INDEX-WREN and MAP-CABINET retain independent classifications with no aggregate result.",
+      "No process, listener, service, secret, or teardown obligation remains after qualification."
+    ]
+  },
+  "work_items": [
+    {
+      "id": "index-wren-backend",
+      "track": "nightshift-productization",
+      "campaign": {
+        "codename": "INDEX-WREN",
+        "canonical_slug": "nightshift-run-receipt-casework-read-model-and-api-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "VELVET-ORRERY",
+          "classification": "NIGHTSHIFT-ORIENTATION-PACKET-V1-IMPLEMENTATION-QUALIFIED",
+          "commit": "2430420017595112b65996e1aa8c0c708f060572"
+        }
+      ],
+      "dependencies": [],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.orientation-packet/v1",
+          "repository": "nightshift",
+          "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+          "commit": "2430420017595112b65996e1aa8c0c708f060572",
+          "path": "qualification/nightshift-packet-v1/velvet-orrery/packet.v1.json",
+          "proposal_ref": "sha256:01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7"
+        }
+      ],
+      "entry_predicates": [
+        "immutable VELVET-ORRERY commit is exact, clean, remotely published, and its packet/renderer qualification gates pass",
+        "INDEX-WREN codename and canonical slug have no Nightshift or current Cartography collision",
+        "receipt compatibility semantics are derived from scripts/render_nightshift_reports.py and the exact golden fixture without retroactive V1 tightening"
+      ],
+      "allowed_mutation_surfaces": [
+        "Cargo workspace membership and lock file only as required for crates/nightshift-casework",
+        "crates/nightshift-casework library, operator binary, tests, and local static-asset integration",
+        "a narrow additive integrity-only method in crates/nightshiftd/src/packet.rs plus focused packet tests",
+        "schemas/nightshift.casework-run.v1.schema.json, casework docs, scripts/check_casework_read_only_surface.sh, and campaign-owned qualification records"
+      ],
+      "forbidden_actions": [
+        "change packet V1 schema, identity, digest law, or existing validate_at currentness behavior",
+        "add HTTP, UI, browser, network-client, Docket, executor, or control-plane behavior to crates/nightshiftd",
+        "open subprocesses or canonical SQLite, follow packet evidence paths, fetch arbitrary files, crawl /data/git, or permit non-loopback bind",
+        "support POST, PUT, PATCH, DELETE, mutation, permissive CORS, service installation, persistent listener, aggregate verdict, or inferred classification"
+      ],
+      "acceptance_tests": [
+        "sealed VELVET packet and exact receipt bytes project to one deterministic closed run with 14 exactly linked work items and six exactly linked questions",
+        "stable domain-separated run, work-item, question, custody-row, and projection identities reproduce exactly",
+        "substituted packet digest, receipt digest mismatch, duplicate/unknown/missing work items, malformed required question/custody structure, duplicate run digest, traversal, and symlink escape fail closed",
+        "unknown receipt fields remain available only in raw bytes; unknown state and result classification remain verbatim",
+        "expired packet remains structurally valid and is displayed as historical with separate snapshot and current currentness",
+        "only the five GET endpoints are reachable; every HTTP write method returns 405 without content mutation; non-loopback binds are refused",
+        "canonical no-actuation gate and new casework read-only gate plus deterministic negative controls pass"
+      ],
+      "stop_conditions": [
+        "the immutable VELVET base conflicts with the published remote identity",
+        "receipt V1 meaning cannot be resolved from renderer, fixture, history, and tests without changing its existing compatibility behavior",
+        "implementation would require changing canonical runtime authority boundaries, non-loopback activation, unavailable protected publication approval, or a secret"
+      ],
+      "expected_receipts": [
+        "receipt V1 compatibility qualification receipt",
+        "projection determinism and schema qualification receipt",
+        "loopback API and filesystem-boundary qualification receipt",
+        "casework read-only/no-actuation structural receipt",
+        "VELVET fixture qualification receipt",
+        "INDEX-WREN branch, commit, and remote custody receipt"
+      ],
+      "closeout_requirements": [
+        "document independent classifications for receipt compatibility, projection determinism, read API, read-only boundary, fixture qualification, and custody/publication",
+        "provide exact operator quick start and architecture documents",
+        "commit and push the campaign branch and verify its exact remote SHA",
+        "leave canonical Nightshift production binaries unchanged and no listener or process running"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Compatibility law, deterministic identity, local filesystem custody, HTTP boundary, and historical currentness cross one bounded backend contract.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "map-cabinet-frontend",
+      "track": "nightshift-operator-surface",
+      "campaign": {
+        "codename": "MAP-CABINET",
+        "canonical_slug": "nightshift-read-only-casework-console-mvp-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "VELVET-ORRERY",
+          "classification": "NIGHTSHIFT-ORIENTATION-PACKET-V1-IMPLEMENTATION-QUALIFIED",
+          "commit": "2430420017595112b65996e1aa8c0c708f060572"
+        }
+      ],
+      "dependencies": [
+        "index-wren-backend"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.run-receipts/v1",
+          "repository": "nightshift",
+          "branch": "campaign/velvet-orrery-nightshift-immutable-run-packet-v1-20260829",
+          "commit": "2430420017595112b65996e1aa8c0c708f060572",
+          "path": "qualification/nightshift-packet-v1/velvet-orrery/run-receipts.v1.json",
+          "proposal_ref": "sha256:b8894383f833a94e79b9fbfb73bc926ccddef1e6169cadab36b1d5668659a637"
+        }
+      ],
+      "entry_predicates": [
+        "INDEX-WREN projection schema, golden JSON fixture, stable identities, and minimal loopback API contract are accepted and frozen for frontend consumption",
+        "MAP-CABINET codename and canonical slug have no Nightshift or current Cartography collision",
+        "an installed Node/npm toolchain is available; browser qualification uses an already installed browser if present"
+      ],
+      "allowed_mutation_surfaces": [
+        "ui/casework TypeScript, React, Vite, plain CSS, tests, committed npm lock file, and local compiled assets",
+        "backend static-asset serving integration only after INDEX-WREN acceptance",
+        "frontend design, behavior, accessibility, browser trace, and campaign qualification records"
+      ],
+      "forbidden_actions": [
+        "parse MORNING-REPORT.md or any generated Markdown report as authoritative input",
+        "invent a state or classification taxonomy, infer custody safety/publication/cleanliness, normalize unknown strings, or present an aggregate score or verdict",
+        "add approve, answer, resume, dispatch, retry, execute, merge, promote, agent, chat, write, or control-plane operations",
+        "use remote fonts, analytics, telemetry, CDN assets, browser downloads, service installation, non-loopback activation, or deferred integration work"
+      ],
+      "acceptance_tests": [
+        "run index shows packet identity, snapshot, 14 work items, exact-state counts, six human questions, and exact packet custody discrepancy count without aggregate result",
+        "run case provides exact state, track, and human-question filters and stable deep links while preserving raw state and classification strings",
+        "RIVER-CLERK exposes the identity-contract successor requirement and GLASSHOPPER remains closeout-complete/not-qualified without smoothing",
+        "work-item detail pairs all packet intent fields with all receipt outcome fields",
+        "all six questions display exact question, exhausted evidence, safe default, consequences, resume point, and work-item link without answer controls",
+        "starting and final custody remain separate; raw views display exact packet and receipt bytes, digests, and validation dispositions read-only",
+        "semantic HTML, keyboard navigation, visible focus, text labels, tablet usability, unit tests, production build, and available-browser journeys qualify",
+        "source and generated UI contain no aggregate verdict or approve, dispatch, retry, execute, merge, or promote control"
+      ],
+      "stop_conditions": [
+        "INDEX-WREN API/projection contract is not stable or accepted",
+        "required UI qualification is impossible after exhausting locally installed Node and browser capabilities",
+        "implementation would require a write/control plane, non-loopback activation, secret, or protected publication approval"
+      ],
+      "expected_receipts": [
+        "frontend unit and production-build qualification receipt",
+        "golden journey and stable deep-link receipt",
+        "accessibility and read-only semantic audit receipt",
+        "backend-served integration receipt",
+        "MAP-CABINET branch, commit, and remote custody receipt"
+      ],
+      "closeout_requirements": [
+        "document MAP-CABINET classification independently from INDEX-WREN",
+        "commit and push the campaign branch and verify its exact remote SHA",
+        "provide one exact local demo command and supplementary trace locations if produced",
+        "leave no browser, server process, listener, service, secret, or teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Dense semantic casework navigation, exact-string fidelity, stable routes, accessibility, and integration qualification require a bounded frontend owner after API freeze.",
+        "maximum_mutating_workers": 1
+      }
+    }
+  ],
+  "worker_budget": {
+    "maximum_concurrent_mutating_workers": 2,
+    "recursive_worker_swarms_forbidden": true,
+    "reserve_posture": "One backend worker followed by one frontend worker after contract acceptance; independent auditors remain read-only and no recursive worker swarm is permitted."
+  },
+  "human_question_criteria": [
+    "unavailable credential or protected publication approval",
+    "conflict over the immutable VELVET-ORRERY base or established Nightshift remote identity",
+    "required non-loopback or production activation",
+    "receipt-contract ambiguity unresolved by renderer, fixture, history, and tests without changing V1 meaning",
+    "unavoidable change to canonical runtime authority or no-actuation boundaries",
+    "missing installed browser or toolchain capability that prevents qualification after all local options are exhausted"
+  ],
+  "switchyard": {
+    "alias": "nightshift-casework-mvp-20260829",
+    "plan_ref": "nightshift-packet://0000000000000000000000000000000000000000000000000000000000000000",
+    "transport_fields": [
+      "alias",
+      "plan_ref",
+      "nonce"
+    ]
+  }
+}
