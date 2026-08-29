@@ -398,6 +398,10 @@ fn validate_dag(items: &[WorkItemV1], ids: &BTreeSet<String>) -> Result<(), Pack
         })
         .collect();
     for dependencies in graph.values() {
+        let unique: BTreeSet<_> = dependencies.iter().copied().collect();
+        if unique.len() != dependencies.len() {
+            return Err(PacketError::InvalidField("work_items.dependencies"));
+        }
         for dependency in dependencies {
             if !ids.contains(*dependency) {
                 return Err(PacketError::UnknownWorkItem((*dependency).to_owned()));

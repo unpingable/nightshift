@@ -150,6 +150,22 @@ fn dependency_cycle_fails_closed() {
 }
 
 #[test]
+fn duplicate_dependency_fails_closed() {
+    let mut packet = fixture();
+    let mut second = packet.work_items[0].clone();
+    second.id = "second".into();
+    second.campaign.codename = "SECOND-ORRERY".into();
+    second.campaign.canonical_slug = "second-orientation-packet".into();
+    packet.work_items.push(second);
+    packet.work_items[0].dependencies = vec!["second".into(), "second".into()];
+    packet.seal().unwrap();
+    assert_eq!(
+        packet.validate_at(packet.created_at),
+        Err(PacketError::InvalidField("work_items.dependencies"))
+    );
+}
+
+#[test]
 fn stale_packet_fails_closed() {
     let packet = fixture();
     assert_eq!(
