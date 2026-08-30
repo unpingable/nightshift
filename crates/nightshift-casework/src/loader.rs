@@ -176,7 +176,8 @@ struct ParsedReceiptItem {
 
 #[derive(Debug)]
 struct ParsedQuestion {
-    work_item: String,
+    work_item: CompatibleValueV1,
+    linked_work_item: Option<String>,
     exact_question: CompatibleValueV1,
     evidence_exhausted: CompatibleValueV1,
     safe_default: CompatibleValueV1,
@@ -186,7 +187,7 @@ struct ParsedQuestion {
 
 #[derive(Debug)]
 struct ParsedCustody {
-    repository: String,
+    repository: CompatibleValueV1,
     branch_head: CompatibleValueV1,
     push_custody: CompatibleValueV1,
     dirty: CompatibleValueV1,
@@ -286,14 +287,16 @@ fn parse_questions(
         .iter()
         .map(|row| {
             let object = object(row, "human_questions row")?;
-            let work_item = object_string(object, "work_item", "human_questions")?;
-            if !packet_ids.contains(work_item.as_str()) {
-                return Err(receipt(format!(
-                    "human question links unknown work item: {work_item}"
-                )));
-            }
+            let work_item =
+                compatible_value(object_required(object, "work_item", "human_questions")?);
+            let linked_work_item = work_item
+                .recognized_string
+                .as_deref()
+                .filter(|id| packet_ids.contains(*id))
+                .map(ToOwned::to_owned);
             Ok(ParsedQuestion {
                 work_item,
+                linked_work_item,
                 exact_question: compatible_value(object_required(
                     object,
                     "exact_question",
@@ -330,7 +333,11 @@ fn parse_custody(value: &Value) -> Result<Vec<ParsedCustody>, CaseworkError> {
         .map(|row| {
             let object = object(row, "repository_custody row")?;
             Ok(ParsedCustody {
-                repository: object_string(object, "repository", "repository_custody")?,
+                repository: compatible_value(object_required(
+                    object,
+                    "repository",
+                    "repository_custody",
+                )?),
                 branch_head: compatible_value(object_required(
                     object,
                     "branch_head",
@@ -480,24 +487,25 @@ fn project(
         .enumerate()
         .map(|(index, question)| {
             let base_id = question
-                .exact_question
-                .recognized_string
+                .linked_work_item
                 .as_deref()
-                .map(|text| {
+                .zip(question.exact_question.recognized_string.as_deref())
+                .map(|(work_item, text)| {
                     derived_id(
                         "nightshift.casework.question/v1",
-                        &[&packet_digest, &question.work_item, text],
+                        &[&packet_digest, work_item, text],
                     )
                 });
             let navigation_id = derived_id(
                 "nightshift.casework.question-row/v1",
-                &[&packet_digest, &question.work_item, &index.to_string()],
+                &[&packet_digest, &index.to_string()],
             );
             HumanQuestionV1 {
                 derived_id: base_id,
                 navigation_id,
                 source_ordinal: index,
                 work_item: question.work_item,
+                linked_work_item: question.linked_work_item,
                 exact_question: question.exact_question,
                 evidence_exhausted: question.evidence_exhausted,
                 safe_default: question.safe_default,
@@ -510,23 +518,32 @@ fn project(
         .custody
         .into_iter()
         .enumerate()
-        .map(|(index, row)| FinalCustodyV1 {
-            derived_id: derived_id(
-                "nightshift.casework.custody-row/v1",
-                &[
-                    &packet_digest,
-                    "receipts",
-                    &row.repository,
-                    &index.to_string(),
-                ],
-            ),
-            repository: row.repository,
-            branch_head: row.branch_head,
-            push_custody: row.push_custody,
-            dirty: row.dirty,
-            live_runtime: row.live_runtime,
-            secrets: row.secrets,
-            teardown: row.teardown,
+        .map(|(index, row)| {
+            let base_derived_id = row
+                .repository
+                .recognized_string
+                .as_deref()
+                .map(|repository| {
+                    derived_id(
+                        "nightshift.casework.custody-row/v1",
+                        &[&packet_digest, "receipts", repository, &index.to_string()],
+                    )
+                });
+            FinalCustodyV1 {
+                derived_id: base_derived_id,
+                navigation_id: derived_id(
+                    "nightshift.casework.custody-row-navigation/v1",
+                    &[&packet_digest, "receipts", &index.to_string()],
+                ),
+                source_ordinal: index,
+                repository: row.repository,
+                branch_head: row.branch_head,
+                push_custody: row.push_custody,
+                dirty: row.dirty,
+                live_runtime: row.live_runtime,
+                secrets: row.secrets,
+                teardown: row.teardown,
+            }
         })
         .collect();
     let snapshot_currentness = receipts
@@ -685,19 +702,6 @@ fn object_required<'a>(
         .ok_or_else(|| receipt(format!("{field} missing required field {key}")))
 }
 
-fn object_string(
-    object: &serde_json::Map<String, Value>,
-    key: &str,
-    field: &str,
-) -> Result<String, CaseworkError> {
-    string(
-        object
-            .get(key)
-            .ok_or_else(|| receipt(format!("{field} missing required field {key}")))?,
-        &format!("{field}.{key}"),
-    )
-    .map(ToOwned::to_owned)
-}
 #[cfg(test)]
 mod descriptor_tests {
     use super::*;
