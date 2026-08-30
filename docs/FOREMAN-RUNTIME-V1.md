@@ -98,9 +98,9 @@ receipt. Its requested snapshot timestamp must be at or after the latest retaine
 packet order. Raw state and classification strings are copied verbatim. No
 aggregate result is generated.
 
-The first close stores exact RFC 8785/JCS bytes. Later close/export operations
-return those same bytes without refreshing timestamps or scheduler state.
-Active state remains a distinct nightshift.foreman-live-run/v1 projection.
+The first close stores exact RFC 8785/JCS bytes. Later close operations return those same bytes without refreshing timestamps or scheduler state. Active state remains a distinct nightshift.foreman-live-run/v1 projection.
+
+Every read and export command opens an existing database through a retained no-follow file descriptor and a descriptor-relative SQLite URI. When WAL and SHM are both absent, immutable mode prevents SQLite from manufacturing them. When both are present, mode=ro preserves and reads current WAL evidence after validating both sidecar identities. Partial or changing sidecar custody is refused. It refuses absent, symlink, non-regular, or structurally incomplete stores and does not run initialization or write PRAGMAs. Projection and event export each use one deferred read transaction. Pathname replacement after admission cannot redirect later reads. Qualification compares database, schema, directory-entry, WAL, and SHM bytes before and after live and final reads.
 
 ## CLI
 

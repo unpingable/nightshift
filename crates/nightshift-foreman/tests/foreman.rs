@@ -1,4 +1,8 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
@@ -16,8 +20,9 @@ use nightshiftd::packet::{
     EXACT_WORK_PROPOSAL_SCHEMA_V1, NIGHTSHIFT_PACKET_DIGEST_PREIMAGE_V1,
     NIGHTSHIFT_PACKET_SCHEMA_V1,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
 fn instant(second: u32) -> chrono::DateTime<Utc> {
@@ -739,6 +744,180 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
         store.record_resume_requested("run-fixture", "root-a", &request.attempt_id, instant(6)),
         Err(ForemanError::Transition(_))
     ));
+}
+
+fn directory_bytes(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            (path.file_name().unwrap().into(), fs::read(path).unwrap())
+        })
+        .collect()
+}
+
+fn byte_digests(snapshot: &BTreeMap<PathBuf, Vec<u8>>) -> BTreeMap<PathBuf, String> {
+    snapshot
+        .iter()
+        .map(|(path, bytes)| (path.clone(), format!("{:x}", Sha256::digest(bytes))))
+        .collect()
+}
+
+fn schema_snapshot(path: &Path) -> Vec<(String, Option<String>)> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .unwrap();
+    let mut statement = connection
+        .prepare(
+            "SELECT name, sql FROM sqlite_schema \
+             WHERE type IN ('table', 'index', 'trigger') ORDER BY type, name",
+        )
+        .unwrap();
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+#[test]
+fn query_only_store_refuses_absent_and_symlink_paths_without_creation() {
+    let directory = tempfile::tempdir().unwrap();
+    let absent = directory.path().join("absent.sqlite");
+    assert!(matches!(
+        ForemanStore::open_read_only(&absent),
+        Err(ForemanError::ReadOnlyStore(_))
+    ));
+    assert!(directory_bytes(directory.path()).is_empty());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let database = directory.path().join("database.sqlite");
+        drop(ForemanStore::open(&database).unwrap());
+        let link = directory.path().join("database-link.sqlite");
+        symlink(&database, &link).unwrap();
+        let before = directory_bytes(directory.path());
+        drop(ForemanStore::open_read_only(&database).unwrap());
+        let after_direct = directory_bytes(directory.path());
+        assert!(
+            after_direct == before,
+            "before={:?} after={:?}",
+            byte_digests(&before),
+            byte_digests(&after_direct)
+        );
+        assert!(matches!(
+            ForemanStore::open_read_only(&link),
+            Err(ForemanError::ReadOnlyStore(_))
+        ));
+        assert_eq!(directory_bytes(directory.path()), before);
+    }
+}
+
+#[test]
+fn query_only_store_refuses_partial_sidecar_custody_without_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("database.sqlite");
+    drop(ForemanStore::open(&database).unwrap());
+    fs::write(directory.path().join("database.sqlite-wal"), b"").unwrap();
+    let before = directory_bytes(directory.path());
+    assert!(matches!(
+        ForemanStore::open_read_only(&database),
+        Err(ForemanError::ReadOnlyStore(_))
+    ));
+    assert_eq!(directory_bytes(directory.path()), before);
+}
+
+#[test]
+fn query_only_store_keeps_original_inode_across_pathname_replacement() {
+    let (directory, store, _, _, _) = setup();
+    let database = directory.path().join("foreman.sqlite");
+    drop(store);
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+
+    let replacement = directory.path().join("replacement.sqlite");
+    drop(ForemanStore::open(&replacement).unwrap());
+    let admitted = directory.path().join("admitted.sqlite");
+    fs::rename(&database, &admitted).unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let old = directory.path().join(format!("foreman.sqlite{suffix}"));
+        if old.exists() {
+            fs::rename(
+                &old,
+                directory.path().join(format!("admitted.sqlite{suffix}")),
+            )
+            .unwrap();
+        }
+    }
+    fs::rename(&replacement, &database).unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let old = directory.path().join(format!("replacement.sqlite{suffix}"));
+        if old.exists() {
+            fs::rename(
+                &old,
+                directory.path().join(format!("foreman.sqlite{suffix}")),
+            )
+            .unwrap();
+        }
+    }
+
+    assert_eq!(
+        reader.projection("run-fixture").unwrap().packet_digest,
+        packet().packet_digest
+    );
+    assert!(ForemanStore::open_read_only(&database)
+        .and_then(|store| store.projection("run-fixture"))
+        .is_err());
+}
+
+#[test]
+fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_bytes() {
+    let (directory, store, packet, _, _) = setup();
+    let database = directory.path().join("foreman.sqlite");
+
+    let schema_before_live = schema_snapshot(&database);
+    let files_before_live = directory_bytes(directory.path());
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert_eq!(
+        reader.projection("run-fixture").unwrap().work_items.len(),
+        4
+    );
+    assert!(!reader.export_events("run-fixture").unwrap().is_empty());
+    drop(reader);
+    assert_eq!(schema_snapshot(&database), schema_before_live);
+    assert_eq!(directory_bytes(directory.path()), files_before_live);
+
+    let root_a = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let root_b = store
+        .prepare_attempt("run-fixture", "root-b", instant(1))
+        .unwrap();
+    for request in [&root_a, &root_b] {
+        let receipt = terminal(&packet, request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+        store
+            .accept_terminal_receipt(&serde_jcs::to_vec(&receipt).unwrap())
+            .unwrap();
+    }
+    for work_item in ["root-c", "dependent"] {
+        let receipt = not_started(&packet, work_item);
+        store
+            .accept_not_started(&serde_jcs::to_vec(&receipt).unwrap())
+            .unwrap();
+    }
+    let expected = store.close("run-fixture", instant(6)).unwrap();
+
+    let schema_before_final = schema_snapshot(&database);
+    let files_before_final = directory_bytes(directory.path());
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert_eq!(reader.export_final("run-fixture").unwrap(), expected);
+    drop(reader);
+    assert_eq!(schema_snapshot(&database), schema_before_final);
+    assert_eq!(directory_bytes(directory.path()), files_before_final);
 }
 
 #[test]

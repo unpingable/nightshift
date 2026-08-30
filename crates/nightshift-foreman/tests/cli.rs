@@ -50,3 +50,20 @@ fn cli_seals_admission_exactly_and_exposes_no_approval_response() {
     assert!(help.contains("replay"));
     assert!(!help.contains("approve"));
 }
+
+#[test]
+fn cli_read_command_refuses_absent_database_without_creating_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("absent.sqlite");
+    let output = Command::new(env!("CARGO_BIN_EXE_nightshift-foreman"))
+        .args(["status", "--db"])
+        .arg(&database)
+        .args(["--run-id", "run-absent"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(std::fs::read_dir(directory.path())
+        .unwrap()
+        .next()
+        .is_none());
+}

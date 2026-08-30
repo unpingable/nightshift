@@ -1,11 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::{self, File, OpenOptions},
+    os::fd::AsRawFd,
+    os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
 };
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use nightshiftd::packet::NightshiftPacketV1;
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -50,12 +55,20 @@ pub enum ForemanError {
     InputTooLarge(&'static str),
     #[error("closeout refused; nonterminal work items: {0}")]
     IncompleteCloseout(String),
+    #[error("read-only store refused: {0}")]
+    ReadOnlyStore(String),
     #[error("serialization failed: {0}")]
     Serialization(String),
 }
 
+enum StoreAccess {
+    ReadWrite,
+    ReadOnly { descriptor: File },
+}
+
 pub struct ForemanStore {
     path: PathBuf,
+    access: StoreAccess,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,9 +160,47 @@ impl ForemanStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ForemanError> {
         let store = Self {
             path: path.as_ref().to_owned(),
+            access: StoreAccess::ReadWrite,
         };
         let connection = store.connection()?;
         initialize(&connection)?;
+        Ok(store)
+    }
+
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, ForemanError> {
+        let supplied = path.as_ref();
+        let descriptor = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(supplied)
+            .map_err(|error| {
+                ForemanError::ReadOnlyStore(format!(
+                    "existing no-follow database required at {}: {error}",
+                    supplied.display()
+                ))
+            })?;
+        if !descriptor
+            .metadata()
+            .map_err(|error| ForemanError::ReadOnlyStore(error.to_string()))?
+            .is_file()
+        {
+            return Err(ForemanError::ReadOnlyStore(format!(
+                "existing regular database required at {}",
+                supplied.display()
+            )));
+        }
+        let descriptor_path = PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
+        if fs::read_link(&descriptor_path).is_err() {
+            return Err(ForemanError::ReadOnlyStore(
+                "descriptor-relative SQLite access is unavailable".to_owned(),
+            ));
+        }
+        let store = Self {
+            path: supplied.to_owned(),
+            access: StoreAccess::ReadOnly { descriptor },
+        };
+        let connection = store.connection()?;
+        require_existing_schema(&connection)?;
         Ok(store)
     }
 
@@ -231,7 +282,11 @@ impl ForemanStore {
     }
 
     pub fn projection(&self, run_id: &str) -> Result<LiveRunProjectionV1, ForemanError> {
-        load_projection(&self.connection()?, run_id)
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let projection = load_projection(&transaction, run_id)?;
+        transaction.commit()?;
+        Ok(projection)
     }
 
     pub fn prepare_attempt(
@@ -774,17 +829,22 @@ impl ForemanStore {
     }
 
     pub fn export_events(&self, run_id: &str) -> Result<Vec<Value>, ForemanError> {
-        ensure_run(&self.connection()?, run_id)?;
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare("SELECT raw_bytes FROM events WHERE run_id = ?1 ORDER BY sequence ASC")?;
-        let rows = statement.query_map([run_id], |row| row.get::<_, Vec<u8>>(0))?;
-        rows.map(|row| {
-            let bytes = row?;
-            serde_json::from_slice(&bytes)
-                .map_err(|error| ForemanError::Serialization(error.to_string()))
-        })
-        .collect()
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        ensure_run(&transaction, run_id)?;
+        let events = {
+            let mut statement = transaction
+                .prepare("SELECT raw_bytes FROM events WHERE run_id = ?1 ORDER BY sequence ASC")?;
+            let rows = statement.query_map([run_id], |row| row.get::<_, Vec<u8>>(0))?;
+            rows.map(|row| {
+                let bytes = row?;
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+        };
+        transaction.commit()?;
+        Ok(events)
     }
 
     pub fn journal_mode(&self) -> Result<String, ForemanError> {
@@ -794,12 +854,139 @@ impl ForemanStore {
     }
 
     fn connection(&self) -> Result<Connection, ForemanError> {
-        let connection = Connection::open(&self.path)?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
-        Ok(connection)
+        match &self.access {
+            StoreAccess::ReadWrite => {
+                let connection = Connection::open(&self.path)?;
+                connection.pragma_update(None, "journal_mode", "WAL")?;
+                connection.pragma_update(None, "foreign_keys", "ON")?;
+                connection.busy_timeout(std::time::Duration::from_secs(5))?;
+                Ok(connection)
+            }
+            StoreAccess::ReadOnly { descriptor } => {
+                let descriptor_path =
+                    PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
+                let resolved = fs::read_link(&descriptor_path).map_err(|error| {
+                    ForemanError::ReadOnlyStore(format!(
+                        "cannot resolve retained database descriptor: {error}"
+                    ))
+                })?;
+                let resolved = resolved.to_str().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "resolved database path must be valid UTF-8".to_owned(),
+                    )
+                })?;
+                if resolved.ends_with(" (deleted)") {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "retained database has been unlinked".to_owned(),
+                    ));
+                }
+                let wal_path = PathBuf::from(format!("{resolved}-wal"));
+                let shm_path = PathBuf::from(format!("{resolved}-shm"));
+                let wal = open_read_only_sidecar(&wal_path)?;
+                let shm = open_read_only_sidecar(&shm_path)?;
+                let immutable = match (&wal, &shm) {
+                    (None, None) => true,
+                    (Some(_), Some(_)) => false,
+                    _ => {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "WAL and SHM sidecars must both be absent or both be regular files"
+                                .to_owned(),
+                        ));
+                    }
+                };
+                let suffix = if immutable {
+                    "?mode=ro&immutable=1"
+                } else {
+                    "?mode=ro"
+                };
+                let uri = format!("file:/proc/self/fd/{}{suffix}", descriptor.as_raw_fd());
+                let connection = Connection::open_with_flags(
+                    uri,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | OpenFlags::SQLITE_OPEN_URI
+                        | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .map_err(ForemanError::Sql)?;
+                if let (Some(wal), Some(shm)) = (&wal, &shm) {
+                    require_same_file(wal, &wal_path, "WAL")?;
+                    require_same_file(shm, &shm_path, "SHM")?;
+                } else if wal_path.exists() || shm_path.exists() {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "sidecar state changed during query-only connection open".to_owned(),
+                    ));
+                }
+                Ok(connection)
+            }
+        }
     }
+}
+
+fn open_read_only_sidecar(path: &Path) -> Result<Option<File>, ForemanError> {
+    match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => {
+            if !file
+                .metadata()
+                .map_err(|error| ForemanError::ReadOnlyStore(error.to_string()))?
+                .is_file()
+            {
+                return Err(ForemanError::ReadOnlyStore(format!(
+                    "sidecar is not a regular file: {}",
+                    path.display()
+                )));
+            }
+            Ok(Some(file))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ForemanError::ReadOnlyStore(format!(
+            "cannot retain sidecar {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn require_same_file(file: &File, path: &Path, kind: &str) -> Result<(), ForemanError> {
+    let retained = file
+        .metadata()
+        .map_err(|error| ForemanError::ReadOnlyStore(error.to_string()))?;
+    let current = fs::symlink_metadata(path).map_err(|error| {
+        ForemanError::ReadOnlyStore(format!("{kind} sidecar changed during open: {error}"))
+    })?;
+    if !current.is_file() || retained.dev() != current.dev() || retained.ino() != current.ino() {
+        return Err(ForemanError::ReadOnlyStore(format!(
+            "{kind} sidecar identity changed during query-only connection open"
+        )));
+    }
+    Ok(())
+}
+
+fn require_existing_schema(connection: &Connection) -> Result<(), ForemanError> {
+    const REQUIRED_TABLES: [&str; 6] = [
+        "runs",
+        "work_items",
+        "events",
+        "resource_claims",
+        "terminal_receipts",
+        "final_snapshots",
+    ];
+    for table in REQUIRED_TABLES {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1
+             )",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(ForemanError::ReadOnlyStore(format!(
+                "database is missing required table {table}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn initialize(connection: &Connection) -> Result<(), ForemanError> {

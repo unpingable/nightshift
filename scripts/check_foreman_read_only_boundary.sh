@@ -11,8 +11,30 @@ check_tree() {
   fi
 }
 
+check_query_only_tree() {
+  local tree="$1"
+  local store="$tree/store.rs"
+  local cli="$tree/bin/nightshift_foreman.rs"
+  rg -q 'mode=ro' "$store" || return 1
+  rg -q 'immutable=1' "$store" || return 1
+  if rg -q 'mode=rwc' "$store"; then
+    return 1
+  fi
+  rg -q 'O_NOFOLLOW' "$store" || return 1
+  rg -q '/proc/self/fd/' "$store" || return 1
+  rg -q 'ForemanStore::open_read_only' "$cli" || return 1
+  if rg -n 'ForemanStore::open\(db\)\?\.(projection|export_events|export_final)' "$cli" >/dev/null; then
+    return 1
+  fi
+}
+
 check_tree "$target" || {
   echo "foreman boundary gate: forbidden subprocess, approval-response, retry, or target-actuator surface"
+  exit 1
+}
+
+check_query_only_tree "$target" || {
+  echo "foreman boundary gate: query-only store custody is incomplete"
   exit 1
 }
 
@@ -38,7 +60,15 @@ if [[ "${1:-}" == "--self-test-inject" ]]; then
     echo "foreman boundary gate negative control did not fail"
     exit 1
   fi
-  echo "foreman boundary gate deterministic negative control: passed"
+  query_fixture="$(mktemp -d)"
+  trap 'rm -rf -- "$fixture" "$query_fixture"' EXIT
+  cp -R "$target" "$query_fixture/src"
+  perl -0pi -e 's/mode=ro/mode=rwc/g' "$query_fixture/src/store.rs"
+  if check_query_only_tree "$query_fixture/src"; then
+    echo "foreman query-only boundary negative control did not fail"
+    exit 1
+  fi
+  echo "foreman boundary gate deterministic negative controls: passed"
   exit 0
 fi
 

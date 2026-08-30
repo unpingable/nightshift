@@ -194,10 +194,10 @@ fn main() -> Result<()> {
         Command::Status { db, run_id }
         | Command::Replay { db, run_id }
         | Command::ExportLive { db, run_id } => {
-            print_json(&ForemanStore::open(db)?.projection(&run_id)?)?;
+            print_json(&ForemanStore::open_read_only(db)?.projection(&run_id)?)?;
         }
         Command::Events { db, run_id } => {
-            print_json(&ForemanStore::open(db)?.export_events(&run_id)?)?;
+            print_json(&ForemanStore::open_read_only(db)?.export_events(&run_id)?)?;
         }
         Command::Close {
             db,
@@ -205,7 +205,7 @@ fn main() -> Result<()> {
             updated_at,
         } => write_raw(&ForemanStore::open(db)?.close(&run_id, instant(&updated_at)?)?)?,
         Command::ExportFinal { db, run_id } => {
-            write_raw(&ForemanStore::open(db)?.export_final(&run_id)?)?;
+            write_raw(&ForemanStore::open_read_only(db)?.export_final(&run_id)?)?;
         }
     }
     Ok(())
