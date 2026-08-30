@@ -1,0 +1,66 @@
+{
+  "schema": "nightshift.casework-index-wren-qualification/v1",
+  "campaign": {
+    "codename": "INDEX-WREN",
+    "canonical_slug": "nightshift-run-receipt-casework-read-model-and-api-v1",
+    "work_item": "index-wren-backend"
+  },
+  "qualified_implementation": {
+    "commit": "f50e5c4ee64ae16d29fa5b39dedf166ad9dca4f9",
+    "projection_digest": "sha256:aa2e823cf8d8f323af1ed2e6a1cfc27dc84e8193f3915de75a03a348654651e8",
+    "packet_digest": "sha256:01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7",
+    "packet_source_bytes_digest": "sha256:e9581778c89b3a8bfc8710adc95ba1f4446900c29f0884988e2be33b227b9a10",
+    "receipt_source_bytes_digest": "sha256:b8894383f833a94e79b9fbfb73bc926ccddef1e6169cadab36b1d5668659a637"
+  },
+  "fixture_observations": {
+    "work_item_count": 14,
+    "human_question_count": 6,
+    "packet_currentness_at_receipt_snapshot": "CURRENT",
+    "packet_currentness_evaluated_at": "2026-08-31T00:00:00+00:00",
+    "packet_currentness_now": "EXPIRED"
+  },
+  "independent_classifications": [
+    {
+      "dimension": "receipt_v1_compatibility",
+      "classification": "QUALIFIED"
+    },
+    {
+      "dimension": "projection_determinism_and_schema",
+      "classification": "QUALIFIED"
+    },
+    {
+      "dimension": "loopback_read_api",
+      "classification": "QUALIFIED"
+    },
+    {
+      "dimension": "filesystem_custody",
+      "classification": "QUALIFIED"
+    },
+    {
+      "dimension": "read_only_structural_boundary",
+      "classification": "QUALIFIED"
+    },
+    {
+      "dimension": "velvet_fixture",
+      "classification": "QUALIFIED"
+    },
+    {
+      "dimension": "publication_custody",
+      "classification": "LOCAL-COMMITTED-NOT-PUSHED",
+      "reason": "Foreman instruction prohibited push; no remote custody is claimed."
+    }
+  ],
+  "qualification_commands": [
+    "cargo fmt --all -- --check",
+    "cargo test --locked --workspace --all-targets",
+    "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+    "python3 -B -m unittest tests.test_render_nightshift_reports tests.test_casework_schema",
+    "bash scripts/check_no_actuation_surface.sh",
+    "bash scripts/check_no_actuation_surface.sh --self-test-inject",
+    "bash scripts/check_casework_read_only_surface.sh",
+    "bash scripts/check_casework_read_only_surface.sh --self-test-inject"
+  ],
+  "listener_remaining": false,
+  "service_installed": false,
+  "remote_push_performed": false
+}
