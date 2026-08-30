@@ -491,6 +491,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshift-foreman"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rusqlite",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "nightshiftd"
 version = "0.1.0"
 dependencies = [
