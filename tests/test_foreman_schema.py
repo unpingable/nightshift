@@ -1,4 +1,5 @@
 import copy
+from decimal import Decimal
 import json
 import pathlib
 import unittest
@@ -176,7 +177,13 @@ class ForemanSchemaTests(unittest.TestCase):
         unicode_key["extensions"] = {"nested": {"\U0001f600": "not admitted as an object key"}}
         with self.assertRaises(ValidationError):
             validator.validate(unicode_key)
-        for unsafe_number in (9007199254740992, -9007199254740992, 1e20):
+        for unsafe_number in (
+            9007199254740992,
+            -9007199254740992,
+            Decimal("9007199254740991.5"),
+            Decimal("-9007199254740991.5"),
+            Decimal("1E+400"),
+        ):
             numeric = copy.deepcopy(document)
             numeric["extensions"] = {"nested": {"unsafe_number": unsafe_number}}
             with self.assertRaises(ValidationError):

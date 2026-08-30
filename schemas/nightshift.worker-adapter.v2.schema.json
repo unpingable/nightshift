@@ -28,8 +28,7 @@
         {"type": "null"},
         {"type": "boolean"},
         {"type": "string"},
-        {"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991},
-        {"type": "number", "not": {"type": "integer"}},
+        {"type": "number", "minimum": -9007199254740991, "maximum": 9007199254740991},
         {"type": "array", "items": {"$ref": "#/$defs/extension_value"}},
         {"$ref": "#/$defs/extensions"}
       ]
