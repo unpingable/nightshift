@@ -5,7 +5,8 @@ Canonical slug: provider-capacity-observation-and-scheduling-policy-v1
 Track: provider-capacity-observation
 Packet: sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc
 Branch: campaign/fuel-needle-provider-capacity-observation-and-scheduling-policy-v1-20260829
-Qualified subject commit: 7578ad51eddfc61bc607ca531307e3d70a59b519
+Qualified subject commit: c29c1c8f7c0b9845499fd25d81a4e93ead839fcd
+Rejected predecessor result head: 896098a87daa7d51a8e8a87b95180b677eb4f788
 Starting seed: 20e56f983923d5fdb198b0fa4a43d86707c5c49b
 Authorized integration base: 888dd1e140200394cfadb81dc0c9377887585b05
 
@@ -27,6 +28,13 @@ unchanged. Provider-specific code exists only in the separate
 nightshift-provider-capacity operator crate. The foreman-facing boundary is the
 provider-neutral normalized observation, policy, and decision contract.
 
+An independent acceptance audit refused the predecessor result head because it
+could treat a missing quota window as complete testimony, did not close
+decision state/admission invariants at both Rust and JSON Schema boundaries,
+checked response size only after line allocation, and did not bind the executed
+Codex binary and reported protocol version. Commit c29c1c8 repairs all four
+findings without rewriting the rejected predecessor.
+
 ## Qualified subject
 
 The subject defines three closed contracts:
@@ -40,17 +48,27 @@ Every decision retains the exact observation and policy digests. Source class
 and confidence remain separate. ABUNDANT, NORMAL, CONSERVE, CRITICAL, and
 UNKNOWN are closed scheduling-policy states, not campaign classifications.
 
-The only live probe uses a fresh bounded foreground connection to the installed
-Codex App Server and sends initialize, initialized, and
-account/rateLimits/read. It performs no PTY interaction, browser access,
-configuration/session/credential-file read, account mutation, model turn,
-listener, or provider retry. It retains only a domain-separated digest of the
-exact response line. The process is killed and reaped on every result path.
+The default policy explicitly requires FIVE_HOUR and WEEKLY window types.
+Absence of either yields UNKNOWN and NO_NEW_WORK; the remaining fraction is
+evaluated only after the required set is complete. Rust validation and JSON
+Schema conditionals both refuse digest-consistent state/admission/flag
+substitution.
+
+The live probe requires an operator-supplied canonical native-executable path,
+raw executable SHA-256 digest, and expected protocol version. It opens and
+verifies the executable before descriptor-pinned invocation; initialize must
+report the exact expected `codex_cli_rs/VERSION` before
+account/rateLimits/read can become usable. Its collector checks the byte limit
+incrementally before extending its message buffer. It performs no PTY
+interaction, browser access, direct configuration/session/credential-file
+read, account mutation, model turn, listener, or provider retry. It retains
+only domain-separated digests, and kills, waits, and joins on every post-spawn
+result path.
 
 ## Deterministic qualification
 
 Commands run against exact qualified subject
-7578ad51eddfc61bc607ca531307e3d70a59b519:
+c29c1c8f7c0b9845499fd25d81a4e93ead839fcd:
 
 - cargo fmt --all -- --check
 - cargo test --locked --workspace --all-targets
@@ -64,11 +82,11 @@ Commands run against exact qualified subject
 
 Results:
 
-- Rust workspace: 319 passed, 0 failed, 13 ignored.
+- Rust workspace: 338 passed, 0 failed, 13 ignored.
 - The ignored set is the existing two opt-in real AG adapter cases, ten opt-in
   adjacent AG/Docket integration cases, and one opt-in Monitor/NQ/Pulse case.
-- Provider-capacity crate: 11 passed, 0 failed.
-- Python schema/report suites: 11 passed, 0 failed.
+- Provider-capacity crate: 19 passed, 0 failed.
+- Python schema/report suites: 13 passed, 0 failed.
 - Formatting and all-feature warnings-denied Clippy: passed.
 - Canonical Nightshift no-actuation, Casework backend/UI read-only, and provider
   capacity boundary gates: passed.
@@ -78,40 +96,48 @@ Qualification cases cover authoritative, observed, inferred, and unknown source
 classes; distinct confidence; all five states; impossible percentage; malformed
 and layout-mutated response; contradictory windows; provider refusal; timeout;
 no output; oversized output disposition; staleness; reset rollover; exact
-digest reproduction; content mutation; minimum-window policy; context/quota
-separation; and safe custody of already active work under CRITICAL or UNKNOWN.
+digest reproduction; content mutation; explicit required-window absence;
+digest-consistent decision substitution; minimum-window policy; context/quota
+separation; fixed-chunk oversized/no-output/timeout collection; executable
+symlink, wrapper, and digest substitution; initialize version substitution; and
+safe custody of already active work under CRITICAL or UNKNOWN.
 
-## Live supported-probe evidence
+## Historical unbound probe evidence
 
 Installed client: codex-cli 0.147.0
 Observed at: 2026-08-30T20:14:26.864158168Z
-Disposition: USABLE
-Source/confidence: OBSERVED / HIGH
+Remediation live probe launched: no
+Disposition: UNKNOWN
+Source/confidence: UNKNOWN / UNKNOWN
 Reported usable windows: one weekly window
 Remaining fraction: 0.94
 Reset: 2026-09-05T21:21:03Z
 Raw-response digest:
 sha256:3ad8332275fb815b4b20d6ff21d89a2e42b82e3510377933dc52de7ef9e6d58f
+Executable path/digest: unavailable in the historical capture
 Observation digest:
-sha256:611be49a04413b5e84321a2c19950bfde79ebf9a480d58678135a1ab64eea599
+sha256:ae0da1931218b4eee91052c316856c1737d32f7d039ee8dca37c7a5fa4bf9d86
 Policy digest:
-sha256:01d4b03d71901a04ff79e856bc389bcd9cfb1a9752fae4f8dad19c3f733724bb
+sha256:7567588f6fe319430e5d83e5955c7c20ded2dcb8e5554676db9a1a6482305cb0
 Decision digest:
-sha256:b0da49591b2ef22b9ce85c1106c1a2d969054e3cf17ff813afd48519576d4572
-Decision: ABUNDANT / ORDINARY_BOUNDED
+sha256:9d17f39b44fa3c9ad64856b5c17117cccc43af6df52198d1fb2e64d62ec40da6
+Decision: UNKNOWN / NO_NEW_WORK
+Reasons: EXECUTABLE_IDENTITY_UNBOUND, REQUIRED_WINDOW_MISSING_FIVE_HOUR
 
-The supported response supplied no separate short-window value. No short-window
-capacity was inferred. The live record expired after its bounded fifteen-minute
-observation lifetime; it remains historical qualification evidence and is not
-current scheduling testimony.
+The earlier supported response supplied no separate short-window value and did
+not capture the exact native executable identity. No missing capacity or
+executable identity was inferred. Its exact raw-response digest remains
+available as historical custody, but the repaired contract projects it to
+UNKNOWN and forbids new work. No replacement live probe was needed or launched.
 
 ## Negative boundaries
 
 The structural gate refuses provider mutation/login/reset methods, thread or
 turn creation, PTY/web/browser/configuration/session/credential surfaces,
-independent network clients or listeners, filesystem mutation, aggregate
-classification or health synthesis, and installed provider-capacity timers or
-services. Its deterministic substitution fixture proves those refusals.
+unbound PATH/pathname execution, independent network clients or listeners,
+filesystem mutation, aggregate classification or health synthesis, and
+installed provider-capacity timers or services. Its deterministic substitution
+fixture proves those refusals.
 
 CRITICAL and UNKNOWN allow admitted active work to reach receipt custody but
 admit no new work under the default policy. Reset rollover and expiry require a
@@ -122,13 +148,16 @@ exists.
 
 No raw provider response bytes, account identifier, secret, credential,
 provider session, browser profile, timer, service, listener, or spool were
-retained. The safe display locator local-codex-profile is mechanism metadata,
-not account identity.
+retained. No provider process was launched during remediation. The safe display
+locator local-codex-profile is mechanism metadata, not account identity.
 
-The Codex bootstrap parser is pinned to the qualified 0.147.0 App Server response
-shape. Layout movement becomes UNKNOWN. Other providers have no live adapter in
-this campaign. The durable foreman consumes these contracts in its own campaign;
-FUEL-NEEDLE does not modify foreman scheduler state.
+The Codex bootstrap parser is pinned to the expected 0.147.0 App Server response
+shape and requires executable plus initialize-version verification for usable
+testimony. Layout or identity movement becomes UNKNOWN. Descriptor-pinned
+execution is currently Linux-only; other platforms become UNKNOWN. Other
+providers have no live adapter in this campaign. The durable foreman consumes
+these contracts in its own campaign; FUEL-NEEDLE does not modify foreman
+scheduler state.
 
 Successor base policy: exact result ancestry. The final campaign result head is
 the remote-verified branch head reported at publication; the independently
