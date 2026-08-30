@@ -30,3 +30,4 @@ nightshiftd = { path = "../nightshiftd" }
 
 [dev-dependencies]
 tempfile.workspace = true
+nightshift-casework = { path = "../nightshift-casework" }

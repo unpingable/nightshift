@@ -497,6 +497,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "nightshift-casework",
  "nightshiftd",
  "rusqlite",
  "serde",

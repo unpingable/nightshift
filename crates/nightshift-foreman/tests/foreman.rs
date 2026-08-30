@@ -524,6 +524,17 @@ fn exact_closeout_requires_complete_explicit_receipts_and_reproduces() {
     assert_eq!(value["packet_digest"], packet.packet_digest);
     assert_eq!(value["work_items"].as_array().unwrap().len(), 4);
     assert!(value.get("aggregate_result").is_none());
+
+    let case_directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        case_directory.path().join("packet.v1.json"),
+        packet.canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    std::fs::write(case_directory.path().join("run-receipts.v1.json"), &first).unwrap();
+    let loaded = nightshift_casework::load_run_at(case_directory.path(), instant(9)).unwrap();
+    assert_eq!(loaded.receipt_bytes, first);
+    assert_eq!(loaded.projection.work_items.len(), 4);
 }
 
 #[test]

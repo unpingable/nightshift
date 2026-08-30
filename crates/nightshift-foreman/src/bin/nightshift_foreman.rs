@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use nightshift_foreman::ForemanStore;
+use nightshift_foreman::{ExecutionProfileV1, ForemanAdmissionV1, ForemanStore};
 
 #[derive(Parser)]
 #[command(
@@ -21,6 +21,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    SealAdmission {
+        #[arg(long)]
+        draft: PathBuf,
+    },
+    SealProfile {
+        #[arg(long)]
+        draft: PathBuf,
+    },
     Admit {
         #[arg(long)]
         db: PathBuf,
@@ -85,6 +93,12 @@ enum Command {
         #[arg(long)]
         run_id: String,
     },
+    Replay {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        run_id: String,
+    },
     Close {
         #[arg(long)]
         db: PathBuf,
@@ -110,6 +124,16 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::SealAdmission { draft } => {
+            let mut admission = ForemanAdmissionV1::from_slice(&read(&draft)?)?;
+            admission.seal()?;
+            write_raw(&serde_jcs::to_vec(&admission)?)?;
+        }
+        Command::SealProfile { draft } => {
+            let mut profile = ExecutionProfileV1::from_slice(&read(&draft)?)?;
+            profile.seal()?;
+            write_raw(&serde_jcs::to_vec(&profile)?)?;
+        }
         Command::Admit {
             db,
             packet,
@@ -167,7 +191,9 @@ fn main() -> Result<()> {
         Command::AcceptNotStarted { db, receipt } => {
             ForemanStore::open(db)?.accept_not_started(&read(&receipt)?)?;
         }
-        Command::Status { db, run_id } | Command::ExportLive { db, run_id } => {
+        Command::Status { db, run_id }
+        | Command::Replay { db, run_id }
+        | Command::ExportLive { db, run_id } => {
             print_json(&ForemanStore::open(db)?.projection(&run_id)?)?;
         }
         Command::Events { db, run_id } => {

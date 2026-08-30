@@ -105,7 +105,10 @@ Active state remains a distinct nightshift.foreman-live-run/v1 projection.
 Mutating local-scheduler operations are admit, run, resume, accept-event,
 accept-receipt, accept-not-started, and close.
 
-Read-only operations are status, events, export-live, and export-final.
+Seal-admission and seal-profile deterministically content-address draft
+records. They create no admission and perform no scheduler mutation.
+
+Read-only operations are status, replay, events, export-live, and export-final.
 
 Run emits a bound start request for an external registered adapter. The core
 contains no subprocess or target-actuator implementation. Export and replay
