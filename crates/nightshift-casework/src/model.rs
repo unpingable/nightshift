@@ -115,6 +115,7 @@ pub struct ExactWorkRefV1 {
     pub contract_kind: String,
     pub contract_schema: String,
     pub repository: String,
+
     pub branch: String,
     pub commit: String,
     pub path: String,
@@ -163,7 +164,8 @@ pub struct HumanQuestionV1 {
     pub derived_id: Option<String>,
     pub navigation_id: String,
     pub source_ordinal: usize,
-    pub work_item: String,
+    pub work_item: CompatibleValueV1,
+    pub linked_work_item: Option<String>,
     pub exact_question: CompatibleValueV1,
     pub evidence_exhausted: CompatibleValueV1,
     pub safe_default: CompatibleValueV1,
@@ -188,8 +190,10 @@ pub struct StartingCustodyV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FinalCustodyV1 {
-    pub derived_id: String,
-    pub repository: String,
+    pub derived_id: Option<String>,
+    pub navigation_id: String,
+    pub source_ordinal: usize,
+    pub repository: CompatibleValueV1,
     pub branch_head: CompatibleValueV1,
     pub push_custody: CompatibleValueV1,
     pub dirty: CompatibleValueV1,

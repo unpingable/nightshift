@@ -445,6 +445,8 @@
       "additionalProperties": false,
       "required": [
         "derived_id",
+        "navigation_id",
+        "source_ordinal",
         "repository",
         "branch_head",
         "push_custody",
@@ -455,11 +457,17 @@
       ],
       "properties": {
         "derived_id": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "repository": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "branch_head": {
           "$ref": "#/$defs/compatibleValue"
@@ -478,6 +486,13 @@
         },
         "teardown": {
           "$ref": "#/$defs/compatibleValue"
+        },
+        "navigation_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_ordinal": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -615,6 +630,7 @@
         "navigation_id",
         "source_ordinal",
         "work_item",
+        "linked_work_item",
         "exact_question",
         "evidence_exhausted",
         "safe_default",
@@ -642,7 +658,7 @@
           "minimum": 0
         },
         "work_item": {
-          "type": "string"
+          "$ref": "#/$defs/compatibleValue"
         },
         "exact_question": {
           "$ref": "#/$defs/compatibleValue"
@@ -658,6 +674,16 @@
         },
         "resume_point": {
           "$ref": "#/$defs/compatibleValue"
+        },
+        "linked_work_item": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }

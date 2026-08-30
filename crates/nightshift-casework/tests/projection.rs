@@ -137,7 +137,7 @@ fn checked_in_projection_and_exact_identity_vectors_are_independently_recalculat
         "nightshift.casework.question/v1",
         &[
             packet_digest,
-            first_question.work_item.as_str(),
+            first_question.linked_work_item.as_deref().unwrap(),
             exact_question,
         ],
     );
@@ -151,14 +151,11 @@ fn checked_in_projection_and_exact_identity_vectors_are_independently_recalculat
     );
     assert_eq!(
         first_question.navigation_id,
-        "sha256:c0dfdec93ec2b2e4700e133f6496b8e40a048838508f97b455d3d45e0776d29b"
+        "sha256:0455c0e4aa1aaa9dc8ae3b2f1382a12cda87c36271926de2b4c2f99607a16b9d"
     );
     assert_eq!(
         first_question.navigation_id,
-        independently_derived_id(
-            "nightshift.casework.question-row/v1",
-            &[packet_digest, first_question.work_item.as_str(), "0"],
-        )
+        independently_derived_id("nightshift.casework.question-row/v1", &[packet_digest, "0"],)
     );
 
     let first_starting = &projection.packet.repository_custody[0];
@@ -181,19 +178,30 @@ fn checked_in_projection_and_exact_identity_vectors_are_independently_recalculat
 
     let first_final = &projection.final_repository_custody[0];
     assert_eq!(
-        first_final.derived_id,
-        "sha256:01c5dda9a9208668481eb54dfb06cf8eebd829217478f3dbb12d5ed64904648f"
+        first_final.derived_id.as_deref(),
+        Some("sha256:01c5dda9a9208668481eb54dfb06cf8eebd829217478f3dbb12d5ed64904648f")
     );
     assert_eq!(
-        first_final.derived_id,
+        first_final.derived_id.as_deref().unwrap(),
         independently_derived_id(
             "nightshift.casework.custody-row/v1",
             &[
                 packet_digest,
                 "receipts",
-                first_final.repository.as_str(),
+                first_final.repository.recognized_string.as_deref().unwrap(),
                 "0"
             ],
+        )
+    );
+    assert_eq!(
+        first_final.navigation_id,
+        "sha256:d53dae4f65913014d5cf4521a56ba5fa8efd50bd7462931af1fa691cb329be85"
+    );
+    assert_eq!(
+        first_final.navigation_id,
+        independently_derived_id(
+            "nightshift.casework.custody-row-navigation/v1",
+            &[packet_digest, "receipts", "0"],
         )
     );
 
@@ -209,7 +217,7 @@ fn checked_in_projection_and_exact_identity_vectors_are_independently_recalculat
     let independent_projection_digest = format!("sha256:{:x}", digest.finalize());
     assert_eq!(
         projection.projection_digest,
-        "sha256:150cfb77cfa62113ff65da66b4f14017a5542721ba2859fbcf865dc415aec111"
+        "sha256:aa2e823cf8d8f323af1ed2e6a1cfc27dc84e8193f3915de75a03a348654651e8"
     );
     assert_eq!(projection.projection_digest, independent_projection_digest);
 }
@@ -404,14 +412,23 @@ fn renderer_loose_scalars_and_joinables_are_accepted_but_not_promoted() {
 fn renderer_loose_question_and_custody_cells_remain_raw_only() {
     let dir = fixture();
     mutate_receipts(dir.path(), |value| {
+        value["human_questions"][0]["work_item"] = json!({"future": "link"});
         value["human_questions"][0]["exact_question"] = json!({"future": "question"});
         value["human_questions"][0]["safe_default"] = json!(false);
         value["repository_custody"][0]["dirty"] = json!(false);
+        value["repository_custody"][0]["repository"] = json!(["future"]);
         value["repository_custody"][0]["teardown"] = json!(["none"]);
     });
     let run = load_run_at(dir.path(), instant()).unwrap();
     let question = &run.projection.human_questions[0];
     assert_eq!(question.derived_id, None);
+    assert_eq!(question.work_item.recognized_string, None);
+    assert_eq!(question.linked_work_item, None);
+    assert!(question.navigation_id.starts_with("sha256:"));
+    let custody = &run.projection.final_repository_custody[0];
+    assert_eq!(custody.derived_id, None);
+    assert_eq!(custody.repository.recognized_string, None);
+    assert!(custody.navigation_id.starts_with("sha256:"));
     assert_eq!(question.exact_question.recognized_string, None);
     assert_eq!(question.safe_default.recognized_string, None);
     assert_eq!(
@@ -426,6 +443,23 @@ fn renderer_loose_question_and_custody_cells_remain_raw_only() {
             .recognized_string,
         None
     );
+}
+
+#[test]
+fn renderer_unlinked_string_question_is_retained_without_semantic_linkage() {
+    let dir = fixture();
+    mutate_receipts(dir.path(), |value| {
+        value["human_questions"][0]["work_item"] = json!("future-work-item");
+    });
+    let run = load_run_at(dir.path(), instant()).unwrap();
+    let question = &run.projection.human_questions[0];
+    assert_eq!(
+        question.work_item.recognized_string.as_deref(),
+        Some("future-work-item")
+    );
+    assert_eq!(question.linked_work_item, None);
+    assert_eq!(question.derived_id, None);
+    assert!(question.navigation_id.starts_with("sha256:"));
 }
 
 #[test]
