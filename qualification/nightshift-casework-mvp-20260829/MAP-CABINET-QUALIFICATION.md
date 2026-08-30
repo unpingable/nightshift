@@ -15,6 +15,9 @@ Frontend implementation checkpoints:
 `01666c40b31d27a27cefaf344918b17548e23f6c`, and
 `020b405`.
 
+Qualified campaign commit:
+`4865d22751fe146236f2dd6b59c7084f668da785`.
+
 ## Qualified surface
 
 - React, TypeScript, Vite, and plain CSS operator surface under `ui/casework`.
@@ -43,12 +46,17 @@ cd ui/casework && npm test
 cd ui/casework && npm run build
 ```
 
-Vitest: 4 files, 16 tests passed. The production build completed and emitted
+Vitest: 5 files, 18 tests passed after independent fragment-navigation,
+exact empty/whitespace state-filter, and contrast remediation. The production
+build completed and emitted
 one hashed JavaScript asset, one hashed CSS asset, `index.html`, and the Vite
 manifest. Golden journeys cover 14 work items, RIVER-CLERK, GLASSHOPPER, all
 six human questions, exact filtering, every stable route, separate custody,
 raw bytes, unknown strings, raw-only values, nullable linkage identities, and
-the absence of mutation controls.
+the absence of mutation controls. The audited UI checkpoint is
+`4865d22751fe146236f2dd6b59c7084f668da785`; informative text has a
+documented minimum contrast of 5.0577:1, and activation tests cover both the
+skip link and human-question fragment link.
 
 ```text
 cargo test --workspace --locked
@@ -84,8 +92,9 @@ and control absence. The supplementary screenshot is
 
 ## Custody and limitations
 
-The campaign branch is locally committed and was not pushed, as directed by
-the frontend worker handoff. Compiled `dist` assets and dependency installation
+The campaign commit was pushed to the established Nightshift remote and
+independently resolved at the exact SHA before the enclosing run-closeout
+receipt was authored. Compiled `dist` assets and dependency installation
 directories remain ignored reproducible outputs. Browser qualification used
 headless Chrome rather than a screen-reader session; semantic HTML, keyboard
 navigation, visible focus, color-independent exact labels, and responsive

@@ -1,0 +1,63 @@
+{
+  "schema": "nightshift.casework-map-cabinet-qualification/v1",
+  "campaign": {
+    "codename": "MAP-CABINET",
+    "canonical_slug": "nightshift-read-only-casework-console-mvp-v1",
+    "work_item": "map-cabinet-frontend"
+  },
+  "dependency_contract": {
+    "index_wren_implementation": "f50e5c4ee64ae16d29fa5b39dedf166ad9dca4f9",
+    "index_wren_closeout": "83ad130468c940848d3d0fb89ed9f48925baabd8"
+  },
+  "qualified_campaign_commit": "4865d22751fe146236f2dd6b59c7084f668da785",
+  "remote_push_performed": true,
+  "remote_verified_commit": "4865d22751fe146236f2dd6b59c7084f668da785",
+  "classification": "NIGHTSHIFT-READ-ONLY-CASEWORK-CONSOLE-MVP-V1-QUALIFIED",
+  "authority_effect": "NONE",
+  "aggregate_result_created": false,
+  "qualification": {
+    "frontend_test_files": 5,
+    "frontend_tests_passed": 18,
+    "production_build": "PASSED",
+    "casework_rust_tests_passed": 28,
+    "workspace_tests": "PASSED_WITH_DOCUMENTED_ENVIRONMENT_DEPENDENT_IGNORES",
+    "strict_clippy": "PASSED",
+    "schema_cases_passed": 2,
+    "structural_gates_and_negative_controls": "PASSED",
+    "accessibility_audit": {
+      "fragment_activation": "PASSED",
+      "exact_empty_and_whitespace_state_filtering": "PASSED",
+      "informative_text_minimum_contrast": "5.0577:1",
+      "screen_reader_session_performed": false
+    }
+  },
+  "browser": {
+    "installed_browser": "Google Chrome 143.0.7499.109",
+    "browser_downloaded": false,
+    "loopback_port": 38176,
+    "velvet_work_item_count": 14,
+    "velvet_human_question_count": 6,
+    "river_exact_classification": "NOT-QUALIFIED-IDENTITY-CONTRACT-SUCCESSOR-REQUIRED",
+    "glasshopper_exact_state": "CLOSEOUT-COMPLETE-NOT-QUALIFIED",
+    "glasshopper_exact_classification": "CLOSEOUT-COMPLETE-CAMPAIGN-NOT-QUALIFIED",
+    "self_description_work_item_count": 2,
+    "self_description_human_question_count": 0,
+    "self_description_aggregate_field_present": false,
+    "post_status": 405,
+    "unlisted_asset_status": 404,
+    "raw_self_packet_exact": true,
+    "raw_self_receipts_exact": true,
+    "loaded_assets": [
+      "index-CBYqHxbq.js",
+      "index-DFJ93PMq.css"
+    ]
+  },
+  "screenshot": {
+    "path": "qualification/nightshift-casework-mvp-20260829/map-cabinet-run-case.png",
+    "sha256": "71e14a329cbbf7b070be042648a042badc263c6242503020af67a2c368f75a39"
+  },
+  "service_installed": false,
+  "listener_remaining": false,
+  "browser_process_remaining": false,
+  "teardown_obligation_remaining": false
+}

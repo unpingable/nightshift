@@ -16,7 +16,7 @@ Projection digest:
 
 The production Vite build was preloaded from `ui/casework/dist` by the
 casework binary and served at the temporary loopback address
-`127.0.0.1:38175`. HTTP checks observed:
+`127.0.0.1:38176`. HTTP checks observed:
 
 ```text
 healthz: 200 {"status":"ok"}
@@ -43,7 +43,19 @@ separately authorized versioned NQ prepared-occurrence contract binding NQ plan 
 
 The rendered run and RIVER DOM contained no `button`, `textarea`,
 `contenteditable`, or aggregate-verdict element. The browser loaded only the
-manifest-listed local assets `index-eeFaUpgO.js` and `index-3ba0qEVX.css`.
+manifest-listed local assets `index-CBYqHxbq.js` and `index-DFJ93PMq.css`.
+
+## Self-description case
+
+The same temporary listener loaded the completed Casework campaign packet and
+exact receipt snapshot as a second explicit `--run-dir`. The API index exposed
+two runs: VELVET-ORRERY with 14 work items and six questions, and
+`nightshift-casework-mvp-20260829` with two work items and zero questions. The
+self-description projection retained the exact states
+`CLOSEOUT-COMPLETE-INDEPENDENT-DIMENSIONS` and `QUALIFIED`, exposed no aggregate
+field, and returned its packet and receipt raw routes byte-for-byte. Headless
+Chrome rendered `INDEX-WREN`, `MAP-CABINET`, and `Showing 2 of 2 exact work
+items` with no button, textarea, contenteditable, or aggregate-verdict element.
 
 ## Visual artifact
 

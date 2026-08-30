@@ -46,8 +46,8 @@
     },
     {
       "dimension": "publication_custody",
-      "classification": "LOCAL-COMMITTED-NOT-PUSHED",
-      "reason": "Foreman instruction prohibited push; no remote custody is claimed."
+      "classification": "REMOTE-VERIFIED-EXACT",
+      "reason": "Campaign closeout commit 83ad130468c940848d3d0fb89ed9f48925baabd8 resolved at the established remote before enclosing run closeout."
     }
   ],
   "qualification_commands": [
@@ -62,5 +62,6 @@
   ],
   "listener_remaining": false,
   "service_installed": false,
-  "remote_push_performed": false
+  "remote_push_performed": true,
+  "published_closeout_commit": "83ad130468c940848d3d0fb89ed9f48925baabd8"
 }
