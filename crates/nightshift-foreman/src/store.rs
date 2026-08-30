@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     contract::{ContractError, TeardownDeclarationV1},
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
-    AdapterEventV1, ExecutionProfileV1, ForemanAdmissionV1, HumanQuestionV1, LiveRunProjectionV1,
+    AdapterEventV1, ExecutionProfileV2, ForemanAdmissionV1, HumanQuestionV1, LiveRunProjectionV1,
     NotStartedReceiptV1, ReceiptRepositoryV1, Scheduler, SchedulerStateV1, TerminalReceiptV1,
     WorkerStartRequestV1, WORKER_START_REQUEST_SCHEMA_V1, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
@@ -167,7 +167,7 @@ impl ForemanStore {
             .map_err(|error| ForemanError::Packet(error.to_string()))?;
         let admission = ForemanAdmissionV1::from_slice(admission_bytes)?;
         admission.validate_at(evaluated_at)?;
-        let profile = ExecutionProfileV1::from_slice(profile_bytes)?;
+        let profile = ExecutionProfileV2::from_slice(profile_bytes)?;
         profile.validate()?;
         validate_bindings(&packet, &admission, &profile)?;
 
@@ -427,6 +427,46 @@ impl ForemanStore {
         if &event.adapter_id != expected_adapter {
             return Err(ForemanError::IdentityMismatch("adapter_id"));
         }
+        let adapter = &profile.adapters[expected_adapter];
+        if event.adapter_version != adapter.adapter_version {
+            return Err(ForemanError::IdentityMismatch("adapter_version"));
+        }
+        let projection = load_projection(&transaction, &event.run_id)?;
+        let item = projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == event.work_item_id)
+            .ok_or_else(|| ForemanError::UnknownWorkItem(event.work_item_id.clone()))?;
+        validate_incremental_identity(
+            item.provider_identity.as_deref(),
+            event.provider_identity.as_deref(),
+            "provider_identity",
+        )?;
+        validate_incremental_identity(
+            item.model_identity.as_deref(),
+            event.model_identity.as_deref(),
+            "model_identity",
+        )?;
+        validate_incremental_identity(
+            item.session_identity.as_deref(),
+            event.session_identity.as_deref(),
+            "session_identity",
+        )?;
+        validate_incremental_identity(
+            item.thread_identity.as_deref(),
+            event.thread_identity.as_deref(),
+            "thread_identity",
+        )?;
+        validate_incremental_identity(
+            item.turn_identity.as_deref(),
+            event.turn_identity.as_deref(),
+            "turn_identity",
+        )?;
+        validate_incremental_identity(
+            item.queue_identity.as_deref(),
+            event.queue_identity.as_deref(),
+            "queue_identity",
+        )?;
         let duplicate: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND event_id = ?2)",
             params![event.run_id, event.event_id],
@@ -471,9 +511,49 @@ impl ForemanStore {
             &receipt.work_item_id,
             &receipt.attempt_id,
         )?;
-        if profile.work_items[&receipt.work_item_id].adapter_id != receipt.adapter_id {
+        let expected_adapter = &profile.work_items[&receipt.work_item_id].adapter_id;
+        if expected_adapter != &receipt.adapter_id {
             return Err(ForemanError::IdentityMismatch("adapter_id"));
         }
+        if profile.adapters[expected_adapter].adapter_version != receipt.adapter_version {
+            return Err(ForemanError::IdentityMismatch("adapter_version"));
+        }
+        let projection = load_projection(&transaction, &receipt.run_id)?;
+        let item = projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == receipt.work_item_id)
+            .ok_or_else(|| ForemanError::UnknownWorkItem(receipt.work_item_id.clone()))?;
+        validate_receipt_identity(
+            item.provider_identity.as_deref(),
+            Some(receipt.provider_identity.as_str()),
+            "provider_identity",
+        )?;
+        validate_receipt_identity(
+            item.model_identity.as_deref(),
+            Some(receipt.model_identity.as_str()),
+            "model_identity",
+        )?;
+        validate_receipt_identity(
+            item.session_identity.as_deref(),
+            receipt.session_identity.as_deref(),
+            "session_identity",
+        )?;
+        validate_receipt_identity(
+            item.thread_identity.as_deref(),
+            receipt.thread_identity.as_deref(),
+            "thread_identity",
+        )?;
+        validate_receipt_identity(
+            item.turn_identity.as_deref(),
+            receipt.turn_identity.as_deref(),
+            "turn_identity",
+        )?;
+        validate_receipt_identity(
+            item.queue_identity.as_deref(),
+            receipt.queue_identity.as_deref(),
+            "queue_identity",
+        )?;
         transaction.execute(
             "INSERT INTO terminal_receipts
              (run_id, work_item_id, attempt_id, receipt_digest, raw_bytes, receipt_kind)
@@ -631,6 +711,12 @@ impl ForemanStore {
             .collect();
         if !incomplete.is_empty() {
             return Err(ForemanError::IncompleteCloseout(incomplete.join(", ")));
+        }
+        let latest_evidence = latest_terminal_evidence_at(&transaction, run_id)?;
+        if updated_at < latest_evidence {
+            return Err(ForemanError::Transition(format!(
+                "closeout snapshot time {updated_at} precedes retained terminal evidence {latest_evidence}"
+            )));
         }
         let (packet, _, _, _) = load_contracts(&transaction, run_id)?;
         let document = build_final_document(&transaction, &packet, run_id, updated_at)?;
@@ -798,7 +884,7 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
 fn validate_bindings(
     packet: &NightshiftPacketV1,
     admission: &ForemanAdmissionV1,
-    profile: &ExecutionProfileV1,
+    profile: &ExecutionProfileV2,
 ) -> Result<(), ForemanError> {
     if admission.packet_digest != packet.packet_digest
         || profile.packet_digest != packet.packet_digest
@@ -869,7 +955,7 @@ fn load_contracts(
     (
         NightshiftPacketV1,
         ForemanAdmissionV1,
-        ExecutionProfileV1,
+        ExecutionProfileV2,
         u16,
     ),
     ForemanError,
@@ -891,7 +977,7 @@ fn load_contracts(
         .map_err(|error| ForemanError::Packet(error.to_string()))?;
     let admission = ForemanAdmissionV1::from_slice(&admission_raw)?;
     admission.validate()?;
-    let profile = ExecutionProfileV1::from_slice(&profile_raw)?;
+    let profile = ExecutionProfileV2::from_slice(&profile_raw)?;
     profile.validate()?;
     Ok((packet, admission, profile, maximum))
 }
@@ -1008,6 +1094,52 @@ fn exact_active_attempt(
     Ok(())
 }
 
+fn validate_incremental_identity(
+    frozen: Option<&str>,
+    observed: Option<&str>,
+    field: &'static str,
+) -> Result<(), ForemanError> {
+    if frozen.is_some() && observed.is_some() && frozen != observed {
+        return Err(ForemanError::IdentityMismatch(field));
+    }
+    Ok(())
+}
+
+fn validate_receipt_identity(
+    frozen: Option<&str>,
+    receipt: Option<&str>,
+    field: &'static str,
+) -> Result<(), ForemanError> {
+    if frozen.is_some() && frozen != receipt {
+        return Err(ForemanError::IdentityMismatch(field));
+    }
+    Ok(())
+}
+
+fn latest_terminal_evidence_at(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+) -> Result<DateTime<Utc>, ForemanError> {
+    let mut statement = transaction
+        .prepare("SELECT receipt_kind, raw_bytes FROM terminal_receipts WHERE run_id = ?1")?;
+    let rows = statement.query_map([run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut latest = None;
+    for row in rows {
+        let (kind, raw) = row?;
+        let observed_at = if kind == "terminal" {
+            TerminalReceiptV1::from_slice(&raw)?.ended_at
+        } else {
+            NotStartedReceiptV1::from_slice(&raw)?.recorded_at
+        };
+        latest = Some(latest.map_or(observed_at, |current: DateTime<Utc>| {
+            current.max(observed_at)
+        }));
+    }
+    latest.ok_or_else(|| ForemanError::IncompleteCloseout("no terminal evidence".to_owned()))
+}
+
 fn release_resources(
     transaction: &Transaction<'_>,
     run_id: &str,
@@ -1037,7 +1169,7 @@ fn release_resources(
 fn worker_brief_digest(
     connection: &Connection,
     packet: &NightshiftPacketV1,
-    profile: &ExecutionProfileV1,
+    profile: &ExecutionProfileV2,
     run_id: &str,
     work_item_id: &str,
 ) -> Result<String, ForemanError> {

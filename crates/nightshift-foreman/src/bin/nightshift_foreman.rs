@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use nightshift_foreman::{ExecutionProfileV1, ForemanAdmissionV1, ForemanStore};
+use nightshift_foreman::{ExecutionProfileV2, ForemanAdmissionV1, ForemanStore};
 
 #[derive(Parser)]
 #[command(
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
             write_raw(&serde_jcs::to_vec(&admission)?)?;
         }
         Command::SealProfile { draft } => {
-            let mut profile = ExecutionProfileV1::from_slice(&read(&draft)?)?;
+            let mut profile = ExecutionProfileV2::from_slice(&read(&draft)?)?;
             profile.seal()?;
             write_raw(&serde_jcs::to_vec(&profile)?)?;
         }

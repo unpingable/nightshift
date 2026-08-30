@@ -4,7 +4,7 @@ use nightshiftd::packet::NightshiftPacketV1;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AdapterEventKindV1, AdapterEventV1, ExecutionProfileV1, HumanQuestionV1, SchedulerStateV1,
+    AdapterEventKindV1, AdapterEventV1, ExecutionProfileV2, HumanQuestionV1, SchedulerStateV1,
     LIVE_RUN_PROJECTION_SCHEMA_V1,
 };
 
@@ -26,6 +26,7 @@ pub struct LiveWorkItemV1 {
     pub resource_lock_keys: Vec<String>,
     pub active_attempt_id: Option<String>,
     pub adapter_id: String,
+    pub adapter_version: String,
     pub provider_model_class: String,
     pub provider_identity: Option<String>,
     pub model_identity: Option<String>,
@@ -94,7 +95,7 @@ impl Scheduler {
         packet: &NightshiftPacketV1,
         run_id: &str,
         admission_digest: &str,
-        profile: &ExecutionProfileV1,
+        profile: &ExecutionProfileV2,
         maximum_concurrent_workers: u16,
         events: &[ReplayEvent],
     ) -> LiveRunProjectionV1 {
@@ -113,6 +114,9 @@ impl Scheduler {
                         resource_lock_keys: execution.resource_lock_keys.clone(),
                         active_attempt_id: None,
                         adapter_id: execution.adapter_id.clone(),
+                        adapter_version: profile.adapters[&execution.adapter_id]
+                            .adapter_version
+                            .clone(),
                         provider_model_class: execution.provider_model_class.clone(),
                         provider_identity: None,
                         model_identity: None,

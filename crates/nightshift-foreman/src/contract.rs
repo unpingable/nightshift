@@ -7,13 +7,13 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::{
-    FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V1,
+    FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
     WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V1,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 
 const ADMISSION_DOMAIN: &[u8] = b"nightshift.foreman-admission.digest/v1\0";
-const PROFILE_DOMAIN: &[u8] = b"nightshift.foreman-execution-profile.digest/v1\0";
+const PROFILE_DOMAIN_V2: &[u8] = b"nightshift.foreman-execution-profile.digest/v2\0";
 const START_DOMAIN: &[u8] = b"nightshift.worker-start-request.digest/v1\0";
 const EVENT_DOMAIN: &[u8] = b"nightshift.worker-adapter-event.digest/v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"nightshift.worker-terminal-receipt.digest/v1\0";
@@ -98,12 +98,12 @@ impl ForemanAdmissionV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecutionProfileV1 {
+pub struct ExecutionProfileV2 {
     pub schema: String,
     pub profile_digest: String,
     pub packet_digest: String,
     pub admission_digest: String,
-    pub adapters: BTreeMap<String, AdapterRegistrationV1>,
+    pub adapters: BTreeMap<String, AdapterRegistrationV2>,
     pub work_items: BTreeMap<String, WorkItemExecutionV1>,
     pub budget_policy_ref: String,
     pub log_custody_root: String,
@@ -116,9 +116,10 @@ pub struct ExecutionProfileV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdapterRegistrationV1 {
+pub struct AdapterRegistrationV2 {
     pub adapter_id: String,
     pub protocol: String,
+    pub adapter_version: String,
     pub executable_identity: String,
     pub bounded_arguments: Vec<String>,
 }
@@ -132,18 +133,18 @@ pub struct WorkItemExecutionV1 {
     pub provider_model_class: String,
 }
 
-impl ExecutionProfileV1 {
+impl ExecutionProfileV2 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
         parse(bytes)
     }
     pub fn seal(&mut self) -> Result<(), ContractError> {
-        self.profile_digest = digest_without(self, "profile_digest", PROFILE_DOMAIN)?;
+        self.profile_digest = digest_without(self, "profile_digest", PROFILE_DOMAIN_V2)?;
         self.validate()
     }
     pub fn validate(&self) -> Result<(), ContractError> {
-        schema(&self.schema, FOREMAN_EXECUTION_PROFILE_SCHEMA_V1)?;
+        schema(&self.schema, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2)?;
         digest("profile_digest", &self.profile_digest)?;
-        if digest_without(self, "profile_digest", PROFILE_DOMAIN)? != self.profile_digest {
+        if digest_without(self, "profile_digest", PROFILE_DOMAIN_V2)? != self.profile_digest {
             return Err(ContractError::DigestMismatch("profile_digest"));
         }
         digest("packet_digest", &self.packet_digest)?;
@@ -158,6 +159,7 @@ impl ExecutionProfileV1 {
             }
             id("adapter_id", &adapter.adapter_id)?;
             id("adapter protocol", &adapter.protocol)?;
+            id("adapter_version", &adapter.adapter_version)?;
             digest("executable_identity", &adapter.executable_identity)?;
             if adapter.bounded_arguments.len() > 32
                 || adapter.bounded_arguments.iter().any(|arg| arg.len() > 1024)
@@ -346,6 +348,18 @@ impl AdapterEventV1 {
         {
             return Err(ContractError::InvalidField("adapter event bounds"));
         }
+        for (field, value) in [
+            ("provider_identity", &self.provider_identity),
+            ("model_identity", &self.model_identity),
+            ("session_identity", &self.session_identity),
+            ("thread_identity", &self.thread_identity),
+            ("turn_identity", &self.turn_identity),
+            ("queue_identity", &self.queue_identity),
+        ] {
+            if let Some(value) = value {
+                id(field, value)?;
+            }
+        }
         Ok(())
     }
 }
@@ -462,6 +476,16 @@ impl TerminalReceiptV1 {
             ("next_lawful_action", &self.next_lawful_action),
         ] {
             text(field, value)?;
+        }
+        for (field, value) in [
+            ("session_identity", &self.session_identity),
+            ("thread_identity", &self.thread_identity),
+            ("turn_identity", &self.turn_identity),
+            ("queue_identity", &self.queue_identity),
+        ] {
+            if let Some(value) = value {
+                id(field, value)?;
+            }
         }
         for question in &self.human_questions {
             question.validate()?;

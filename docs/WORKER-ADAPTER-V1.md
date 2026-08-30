@@ -1,6 +1,6 @@
 # Nightshift Worker Adapter Protocol V1
 
-Status: CLOCKWORK-MOTH frozen generic contract. TUNNEL-FINCH may implement a
+Status: BOLT-LOOM corrected generic contract, built as a non-rewriting successor to CLOCKWORK-MOTH. TUNNEL-FINCH may implement a
 Switchyard adapter against it without changing packet semantics.
 
 The closed records are defined by
@@ -28,7 +28,7 @@ nightshift.worker-adapter-event/v1 supports adapter acceptance, provider
 identity, worker start, checkpoint, waiting approval, human question, provider
 completion observation, diagnostic, and mechanism-indeterminate events.
 
-Every event echoes packet/run/work-item/attempt and adapter identities.
+Every event echoes packet/run/work-item/attempt and adapter identities. The adapter version is bound by execution profile V2. Each provider, model, session, thread, turn, and queue identity freezes when first observed; later events may add previously absent fields but cannot change a frozen value.
 Provider, model, session, thread, turn, and queue identities remain distinct
 nullable fields. A duplicate event identity is refused. Wrong attempt or
 adapter identity is refused. Unknown material belongs only in the bounded
@@ -45,7 +45,7 @@ times, raw state and classification strings, repository custody, tests,
 evidence, live/production mutations, remaining trigger, next lawful action,
 human questions, and teardown declarations.
 
-Acceptance validates identity, structure, digest, size, and required fields.
+Acceptance validates identity, structure, digest, size, and required fields. Adapter ID and version must match the exact execution profile, and every provider identity already frozen by accepted events must match the terminal receipt.
 It does not certify the semantic truth of a worker's classification. Provider
 completion and process exit do not substitute for this receipt.
 

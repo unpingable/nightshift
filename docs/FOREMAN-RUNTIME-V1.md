@@ -1,6 +1,6 @@
 # Nightshift Foreman Runtime V1
 
-Status: CLOCKWORK-MOTH frozen operator-tool contract.
+Status: BOLT-LOOM corrected operator-tool contract; exact CLOCKWORK-MOTH head 30373353d4472720bf62f60d378056658d068e88 is retained but superseded as a successor base.
 
 The Nightshift foreman admits one exact sealed orientation packet for bounded
 local agent-compute scheduling. Packet possession is not admission. Admission
@@ -27,9 +27,11 @@ The following identities are independent:
 
 The closed admission and execution-profile contracts live in
 schemas/nightshift.foreman-admission.v1.schema.json and
-schemas/nightshift.foreman-execution-profile.v1.schema.json. Their Rust
+schemas/nightshift.foreman-execution-profile.v2.schema.json. Their Rust
 decoders deny unknown fields and recompute domain-separated RFC 8785/JCS
 digests.
+
+Execution profile V2 adds an exact adapter_version to each registered adapter and uses a new V2 digest domain; the historical V1 schema remains unchanged at the exact CLOCKWORK-MOTH head.
 
 The execution profile is mechanism metadata. It maps every exact packet work
 item to one admitted adapter, opaque workspace identity, opaque resource-lock
@@ -48,7 +50,7 @@ for all keys are inserted in one immediate transaction before dispatch and
 removed only after an exact accepted terminal receipt. Every claim and release
 also has an immutable journal event, so state remains reconstructible.
 
-No event is silently overwritten. Raw adapter events and terminal receipts are
+No event is silently overwritten. Once a provider, model, session, thread, turn, or queue identity appears for an attempt, later events may omit it but cannot substitute a different value. Terminal receipts must agree with every identity already frozen by the journal and with the profile-bound adapter ID and version. Raw adapter events and terminal receipts are
 retained byte-for-byte with separate retained-byte digests. Explicit
 extensions retain unknown material but do not change scheduler semantics.
 
@@ -92,7 +94,7 @@ cannot close a work item.
 ## Closeout
 
 Close refuses while any packet item lacks an accepted terminal or not-started
-receipt. It then generates the existing nightshift.run-receipts/v1 shape in
+receipt. Its requested snapshot timestamp must be at or after the latest retained terminal receipt end time or not-started receipt time. It then generates the existing nightshift.run-receipts/v1 shape in
 packet order. Raw state and classification strings are copied verbatim. No
 aggregate result is generated.
 

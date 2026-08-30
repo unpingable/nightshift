@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
-    AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV1, ExecutionProfileV1,
+    AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, ExecutionProfileV2,
     ForemanAdmissionV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
     ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
-    WorkItemExecutionV1, FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V1,
+    WorkItemExecutionV1, FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
     WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
     WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
@@ -141,7 +141,7 @@ fn admission(packet: &NightshiftPacketV1) -> ForemanAdmissionV1 {
     admission
 }
 
-fn profile(packet: &NightshiftPacketV1, admission: &ForemanAdmissionV1) -> ExecutionProfileV1 {
+fn profile(packet: &NightshiftPacketV1, admission: &ForemanAdmissionV1) -> ExecutionProfileV2 {
     let mut work_items = BTreeMap::new();
     for item in &packet.work_items {
         let locks = match item.id.as_str() {
@@ -159,16 +159,17 @@ fn profile(packet: &NightshiftPacketV1, admission: &ForemanAdmissionV1) -> Execu
             },
         );
     }
-    let mut profile = ExecutionProfileV1 {
-        schema: FOREMAN_EXECUTION_PROFILE_SCHEMA_V1.into(),
+    let mut profile = ExecutionProfileV2 {
+        schema: FOREMAN_EXECUTION_PROFILE_SCHEMA_V2.into(),
         profile_digest: format!("sha256:{}", "0".repeat(64)),
         packet_digest: packet.packet_digest.clone(),
         admission_digest: admission.admission_digest.clone(),
         adapters: BTreeMap::from([(
             "fixture-adapter".into(),
-            AdapterRegistrationV1 {
+            AdapterRegistrationV2 {
                 adapter_id: "fixture-adapter".into(),
                 protocol: "fixture.adapter/v1".into(),
+                adapter_version: "fixture.adapter/v1".into(),
                 executable_identity: format!("sha256:{}", "e".repeat(64)),
                 bounded_arguments: vec![],
             },
@@ -191,7 +192,7 @@ fn setup() -> (
     ForemanStore,
     NightshiftPacketV1,
     ForemanAdmissionV1,
-    ExecutionProfileV1,
+    ExecutionProfileV2,
 ) {
     let directory = tempfile::tempdir().unwrap();
     let packet = packet();
@@ -330,6 +331,15 @@ fn admission_is_closed_bound_and_current() {
     let mut unknown = serde_json::to_value(&admission).unwrap();
     unknown["authority"] = Value::Bool(true);
     assert!(ForemanAdmissionV1::from_slice(&serde_json::to_vec(&unknown).unwrap()).is_err());
+
+    let mut unversioned_adapter = serde_json::to_value(&profile).unwrap();
+    unversioned_adapter["adapters"]["fixture-adapter"]
+        .as_object_mut()
+        .unwrap()
+        .remove("adapter_version");
+    assert!(
+        ExecutionProfileV2::from_slice(&serde_json::to_vec(&unversioned_adapter).unwrap()).is_err()
+    );
 }
 
 #[test]
@@ -515,6 +525,10 @@ fn exact_closeout_requires_complete_explicit_receipts_and_reproduces() {
             .accept_not_started(&serde_jcs::to_vec(&receipt).unwrap())
             .unwrap();
     }
+    assert!(matches!(
+        store.close("run-fixture", instant(5)),
+        Err(ForemanError::Transition(_))
+    ));
     let first = store.close("run-fixture", instant(6)).unwrap();
     let second = store.close("run-fixture", instant(9)).unwrap();
     assert_eq!(first, second);
@@ -587,6 +601,52 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
         .accept_adapter_event(&serde_jcs::to_vec(&completed).unwrap())
         .unwrap();
 
+    let mut wrong_version = completed.clone();
+    wrong_version.event_id = "wrong-adapter-version".into();
+    wrong_version.adapter_version = "fixture.adapter/v2".into();
+    wrong_version.seal().unwrap();
+    assert!(matches!(
+        store.accept_adapter_event(&serde_jcs::to_vec(&wrong_version).unwrap()),
+        Err(ForemanError::IdentityMismatch("adapter_version"))
+    ));
+
+    let mut checkpoint = completed.clone();
+    checkpoint.event_id = "incremental-provider-custody".into();
+    checkpoint.kind = AdapterEventKindV1::Checkpoint;
+    checkpoint.thread_identity = Some("thread:fixture".into());
+    checkpoint.turn_identity = Some("turn:fixture".into());
+    checkpoint.queue_identity = Some("queue:fixture".into());
+    checkpoint.seal().unwrap();
+    store
+        .accept_adapter_event(&serde_jcs::to_vec(&checkpoint).unwrap())
+        .unwrap();
+
+    for field in [
+        "provider_identity",
+        "model_identity",
+        "session_identity",
+        "thread_identity",
+        "turn_identity",
+        "queue_identity",
+    ] {
+        let mut contradiction = checkpoint.clone();
+        contradiction.event_id = format!("contradiction-{field}");
+        match field {
+            "provider_identity" => contradiction.provider_identity = Some("provider:other".into()),
+            "model_identity" => contradiction.model_identity = Some("model:other".into()),
+            "session_identity" => contradiction.session_identity = Some("session:other".into()),
+            "thread_identity" => contradiction.thread_identity = Some("thread:other".into()),
+            "turn_identity" => contradiction.turn_identity = Some("turn:other".into()),
+            "queue_identity" => contradiction.queue_identity = Some("queue:other".into()),
+            _ => unreachable!(),
+        }
+        contradiction.seal().unwrap();
+        assert!(matches!(
+            store.accept_adapter_event(&serde_jcs::to_vec(&contradiction).unwrap()),
+            Err(ForemanError::IdentityMismatch(observed)) if observed == field
+        ));
+    }
+
     drop(store);
     let store = ForemanStore::open(directory.path().join("foreman.sqlite")).unwrap();
     let item = store
@@ -596,11 +656,48 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
         .into_iter()
         .find(|item| item.work_item_id == "root-a")
         .unwrap();
-    assert_eq!(item.scheduler_state, SchedulerStateV1::WaitingProvider);
+    assert_eq!(item.scheduler_state, SchedulerStateV1::Checkpointed);
+    assert_eq!(item.adapter_version, "fixture.adapter/v1");
+    assert_eq!(item.provider_identity.as_deref(), Some("provider:fixture"));
+    assert_eq!(item.model_identity.as_deref(), Some("model:fixture"));
+    assert_eq!(item.session_identity.as_deref(), Some("session:fixture"));
+    assert_eq!(item.thread_identity.as_deref(), Some("thread:fixture"));
+    assert_eq!(item.turn_identity.as_deref(), Some("turn:fixture"));
+    assert_eq!(item.queue_identity.as_deref(), Some("queue:fixture"));
     assert!(item.accepted_terminal_outcome.is_none());
 
     assert!(store.accept_terminal_receipt(b"{}").is_err());
-    let receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    receipt.thread_identity = Some("thread:fixture".into());
+    receipt.turn_identity = Some("turn:fixture".into());
+    receipt.queue_identity = Some("queue:fixture".into());
+    receipt.seal().unwrap();
+    for field in [
+        "adapter_version",
+        "provider_identity",
+        "model_identity",
+        "session_identity",
+        "thread_identity",
+        "turn_identity",
+        "queue_identity",
+    ] {
+        let mut substitution = receipt.clone();
+        match field {
+            "adapter_version" => substitution.adapter_version = "fixture.adapter/v2".into(),
+            "provider_identity" => substitution.provider_identity = "provider:other".into(),
+            "model_identity" => substitution.model_identity = "model:other".into(),
+            "session_identity" => substitution.session_identity = Some("session:other".into()),
+            "thread_identity" => substitution.thread_identity = Some("thread:other".into()),
+            "turn_identity" => substitution.turn_identity = Some("turn:other".into()),
+            "queue_identity" => substitution.queue_identity = Some("queue:other".into()),
+            _ => unreachable!(),
+        }
+        substitution.seal().unwrap();
+        assert!(matches!(
+            store.accept_terminal_receipt(&serde_jcs::to_vec(&substitution).unwrap()),
+            Err(ForemanError::IdentityMismatch(observed)) if observed == field
+        ));
+    }
     let mut missing = serde_json::to_value(&receipt).unwrap();
     missing
         .as_object_mut()
@@ -648,7 +745,7 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
 fn checked_in_contract_schemas_are_closed_json_documents() {
     for bytes in [
         include_bytes!("../../../schemas/nightshift.foreman-admission.v1.schema.json").as_slice(),
-        include_bytes!("../../../schemas/nightshift.foreman-execution-profile.v1.schema.json")
+        include_bytes!("../../../schemas/nightshift.foreman-execution-profile.v2.schema.json")
             .as_slice(),
         include_bytes!("../../../schemas/nightshift.worker-adapter.v1.schema.json").as_slice(),
     ] {
