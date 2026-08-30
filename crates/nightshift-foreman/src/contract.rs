@@ -695,7 +695,7 @@ impl AdapterEventV1 {
         if self
             .message
             .as_ref()
-            .is_some_and(|value| value.len() > 65_536)
+            .is_some_and(|value| value.chars().count() > 65_536)
         {
             return Err(ContractError::InvalidField("adapter event bounds"));
         }
@@ -1054,7 +1054,7 @@ fn custody_root(value: &str) -> Result<(), ContractError> {
 }
 
 fn text(field: &'static str, value: &str) -> Result<(), ContractError> {
-    if value.trim().is_empty() || value.len() > 65_536 {
+    if value.trim().is_empty() || value.chars().count() > 65_536 {
         return Err(ContractError::InvalidField(field));
     }
     Ok(())

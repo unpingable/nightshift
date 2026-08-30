@@ -1353,6 +1353,51 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
 }
 
 #[test]
+fn receipt_and_event_text_bounds_count_unicode_codepoints() {
+    let (_directory, store, packet, _, _) = setup();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "é", "EXACT-CLASSIFICATION");
+    receipt.state = "é".repeat(65_536);
+    receipt.seal().unwrap();
+    receipt.state.push('é');
+    assert!(matches!(
+        receipt.seal(),
+        Err(ContractError::InvalidField("state"))
+    ));
+
+    let mut event = AdapterEventV1 {
+        schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+        event_digest: format!("sha256:{}", "0".repeat(64)),
+        event_id: "event-unicode-bound".into(),
+        packet_digest: packet.packet_digest.clone(),
+        run_id: request.run_id.clone(),
+        work_item_id: request.work_item_id.clone(),
+        attempt_id: request.attempt_id.clone(),
+        adapter_id: request.adapter_id.clone(),
+        adapter_version: request.adapter_version.clone(),
+        occurred_at: instant(2),
+        kind: AdapterEventKindV1::Checkpoint,
+        provider_identity: None,
+        model_identity: None,
+        session_identity: None,
+        thread_identity: None,
+        turn_identity: None,
+        queue_identity: None,
+        message: Some("é".repeat(65_536)),
+        human_question: None,
+        extensions: BTreeMap::new(),
+    };
+    event.seal().unwrap();
+    event.message.as_mut().unwrap().push('é');
+    assert!(matches!(
+        event.seal(),
+        Err(ContractError::InvalidField("adapter event bounds"))
+    ));
+}
+
+#[test]
 fn receipt_timestamp_lexemes_are_canonical_utc_and_nanosecond_exact() {
     let (_directory, store, packet, _, _) = setup();
     let request = store
