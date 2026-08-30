@@ -99,6 +99,12 @@ Historical sealed packets, receipts, and campaign artifacts are not retrofitted
 to add these fields. A later campaign may record the missing relationship in
 its own immutable evidence.
 
+Receipt identity is SHA-256 over the ASCII domain
+`nightshift.base-admission-receipt.digest/v1`, one NUL byte, and RFC 8785 JCS
+of the complete receipt object with `receipt_digest` omitted. The closed schema
+contains no numeric semantic fields, so exact commit, digest, token, Boolean,
+array, and string values reproduce without a second identity law.
+
 ## Machine-readable receipt
 
 `nightshift.base-admission-receipt/v1` is a small campaign-practice artifact,

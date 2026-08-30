@@ -1,0 +1,71 @@
+{
+  "schema": "nightshift.base-admission-receipt/v1",
+  "receipt_digest": "sha256:47d863411be5f8800a53f8e8a0d79576834d51736925fcb8e48c1083a411df14",
+  "evaluated_at": "2026-08-30T02:48:36Z",
+  "repository": {
+    "name": "nightshift",
+    "remote": "git@github-unpingable:unpingable/nightshift.git"
+  },
+  "candidate_base_head": "397ee9fe7f405ae3c0b44b3942fa003c47861c17",
+  "predecessors": [
+    {
+      "campaign": "INDEX-WREN",
+      "result_head": "83ad130468c940848d3d0fb89ed9f48925baabd8",
+      "qualified_subject_commits": [
+        "f50e5c4ee64ae16d29fa5b39dedf166ad9dca4f9"
+      ],
+      "successor_base_policy": "exact_result_ancestry"
+    },
+    {
+      "campaign": "MAP-CABINET",
+      "result_head": "ad36932be2d4aceeff71b848bad534aae1c3c938",
+      "qualified_subject_commits": [
+        "4865d22751fe146236f2dd6b59c7084f668da785"
+      ],
+      "successor_base_policy": "exact_result_ancestry"
+    }
+  ],
+  "checks": [
+    {
+      "campaign": "INDEX-WREN",
+      "result_head": "83ad130468c940848d3d0fb89ed9f48925baabd8",
+      "disposition": "EXACT-RESULT-ANCESTRY",
+      "evidence": [
+        "git merge-base --is-ancestor returned zero for the exact result head and candidate base"
+      ]
+    },
+    {
+      "campaign": "MAP-CABINET",
+      "result_head": "ad36932be2d4aceeff71b848bad534aae1c3c938",
+      "disposition": "EXACT-RESULT-ANCESTRY",
+      "evidence": [
+        "the exact MAP result head is the first parent of the integration commit"
+      ]
+    },
+    {
+      "campaign": "INDEX-WREN",
+      "result_head": "83ad130468c940848d3d0fb89ed9f48925baabd8",
+      "disposition": "VERIFIED-CONTENT-EQUIVALENCE",
+      "evidence": [
+        "four stable patch identities match the prior MAP adoption",
+        "content equivalence is recorded only as implementation provenance"
+      ]
+    }
+  ],
+  "integration": {
+    "head": "397ee9fe7f405ae3c0b44b3942fa003c47861c17",
+    "parents": [
+      "ad36932be2d4aceeff71b848bad534aae1c3c938",
+      "83ad130468c940848d3d0fb89ed9f48925baabd8"
+    ],
+    "history_rewritten": false,
+    "default_branch_mutated": false
+  },
+  "overall_disposition": "EXACT-RESULT-ANCESTRY",
+  "principle": "Qualification attaches to the exact subject it qualified. Repository ancestry establishes custody lineage. Content equivalence establishes implementation provenance. None may silently stand in for another.",
+  "nonclaims": [
+    "this receipt is not authority",
+    "this receipt does not qualify runtime behavior",
+    "this receipt does not alter either predecessor result"
+  ]
+}
