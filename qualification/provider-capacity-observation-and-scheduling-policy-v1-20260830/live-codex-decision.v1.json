@@ -1,0 +1,16 @@
+{
+  "schema": "nightshift.provider-capacity-decision/v1",
+  "provider_id": "openai-codex",
+  "decision_at": "2026-08-30T20:15:00Z",
+  "state": "ABUNDANT",
+  "admission": "ORDINARY_BOUNDED",
+  "allow_new_expensive_work": true,
+  "allow_new_speculative_work": true,
+  "allow_active_work_to_reach_custody": true,
+  "reason_codes": [
+    "MINIMUM_REMAINING_WINDOW_ABUNDANT"
+  ],
+  "observation_digest": "sha256:611be49a04413b5e84321a2c19950bfde79ebf9a480d58678135a1ab64eea599",
+  "policy_digest": "sha256:01d4b03d71901a04ff79e856bc389bcd9cfb1a9752fae4f8dad19c3f733724bb",
+  "decision_digest": "sha256:b0da49591b2ef22b9ce85c1106c1a2d969054e3cf17ff813afd48519576d4572"
+}
