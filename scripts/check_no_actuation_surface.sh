@@ -53,6 +53,17 @@ if rg -n 'nightshift[_-]casework|casework::' "$manifest" "$production_src" \
     cat /tmp/nightshift_exclusivity_hits >&2
 fi
 
+# Canonical Nightshift is not a server. Protect this generically so a renamed
+# HTTP stack or listener cannot enter the closed production graph.
+if rg -n '^[[:space:]]*(axum|actix-web|rocket|warp|hyper|tower-http|tiny_http|rouille)[[:space:]]*=' "$manifest" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "HTTP/listener dependency entered canonical nightshiftd:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+if rg -n '(TcpListener|UnixListener|axum::serve|hyper::server|Server::bind|(^|[^[:alnum:]_])serve\()' "$production_src" >/tmp/nightshift_exclusivity_hits 2>/dev/null; then
+    fail "HTTP/listener site entered canonical nightshiftd:"
+    cat /tmp/nightshift_exclusivity_hits >&2
+fi
+
 # The observation resolver is the one permitted second binary: a read-only
 # evidence translator for AG's observation-resolution boundary. It must open
 # no subprocess, must not use the migrating store open path, and must call no
@@ -541,6 +552,7 @@ if [ "${1:-}" = "--self-test-inject" ]; then
 use wicket::Intent;
 fn bad() {
     let _ = std::process::Command::new("docket");
+    let _ = std::net::TcpListener::bind("127.0.0.1:0");
     let _ = "--no-governor";
     let _ = "ProposedAction";
 }
@@ -553,14 +565,14 @@ EOF
         printf 'self-test FAILED: injected legacy authority/execution surface passed\n' >&2
         exit 1
     fi
-    for marker in wicket wlp docket no-governor ProposedAction; do
+    for marker in wicket wlp docket listener no-governor ProposedAction; do
         if ! rg -q -i -- "$marker" /tmp/nightshift_exclusivity_selftest; then
             printf 'self-test FAILED: injection %s was not reported\n' "$marker" >&2
             cat /tmp/nightshift_exclusivity_selftest >&2
             exit 1
         fi
     done
-    printf 'self-test PASSED: Wicket, WLP, Docket, Governor-mode, and prose-action resurrections were rejected.\n' >&2
+    printf 'self-test PASSED: Wicket, WLP, Docket, generic listener, Governor-mode, and prose-action resurrections were rejected.\n' >&2
     exit 0
 fi
 
