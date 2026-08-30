@@ -794,7 +794,10 @@ pub struct TerminalReceiptV1 {
 
 impl TerminalReceiptV1 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
-        parse(bytes)
+        let value: Value = parse(bytes)?;
+        canonical_timestamp_value("started_at", &value)?;
+        canonical_timestamp_value("ended_at", &value)?;
+        serde_json::from_value(value).map_err(json_error)
     }
     pub fn seal(&mut self) -> Result<(), ContractError> {
         self.receipt_digest = digest_without(self, "receipt_digest", TERMINAL_DOMAIN)?;
@@ -867,7 +870,9 @@ pub struct NotStartedReceiptV1 {
 
 impl NotStartedReceiptV1 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
-        parse(bytes)
+        let value: Value = parse(bytes)?;
+        canonical_timestamp_value("recorded_at", &value)?;
+        serde_json::from_value(value).map_err(json_error)
     }
     pub fn seal(&mut self) -> Result<(), ContractError> {
         self.receipt_digest = digest_without(self, "receipt_digest", NOT_STARTED_DOMAIN)?;
@@ -950,6 +955,22 @@ fn interoperable_json(value: &Value) -> Result<(), ContractError> {
 
 fn json_error(error: impl std::fmt::Display) -> ContractError {
     ContractError::Json(error.to_string())
+}
+
+fn canonical_timestamp_value(field: &'static str, object: &Value) -> Result<(), ContractError> {
+    let raw = object
+        .as_object()
+        .and_then(|values| values.get(field))
+        .and_then(Value::as_str)
+        .ok_or(ContractError::InvalidField(field))?;
+    let parsed = DateTime::parse_from_rfc3339(raw)
+        .map_err(|_| ContractError::InvalidField(field))?
+        .with_timezone(&Utc);
+    let canonical = serde_json::to_value(parsed).map_err(json_error)?;
+    if canonical.as_str() != Some(raw) {
+        return Err(ContractError::InvalidField(field));
+    }
+    Ok(())
 }
 
 fn domain_digest_bytes(domain: &[u8], bytes: &[u8]) -> String {

@@ -242,6 +242,28 @@ class ForemanSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validator.validate(nested_unknown)
 
+    def test_receipt_timestamp_lexical_law_is_canonical_utc(self):
+        contract = schema("nightshift.worker-adapter.v2.schema.json")
+        validator = Draft202012Validator({
+            "$schema": contract["$schema"],
+            "$ref": "#/$defs/canonical_timestamp",
+            "$defs": contract["$defs"],
+        })
+        for admitted in (
+            "2026-08-29T16:00:01Z",
+            "2026-08-29T16:00:01.123Z",
+            "2026-08-29T16:00:01.123456Z",
+            "2026-08-29T16:00:01.000000100Z",
+        ):
+            validator.validate(admitted)
+        for refused in (
+            "2026-08-29T12:00:01-04:00",
+            "2026-08-29T16:00:01.1000Z",
+            "2026-08-29T16:00:01.123000Z",
+            "2026-08-29T16:00:01.0000001Z",
+        ):
+            with self.assertRaises(ValidationError):
+                validator.validate(refused)
 
 if __name__ == "__main__":
     unittest.main()

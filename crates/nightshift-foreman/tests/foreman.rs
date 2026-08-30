@@ -1353,6 +1353,52 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
 }
 
 #[test]
+fn receipt_timestamp_lexemes_are_canonical_utc_and_nanosecond_exact() {
+    let (_directory, store, packet, _, _) = setup();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    receipt.started_at = chrono::DateTime::parse_from_rfc3339("2026-08-29T16:00:01.000000100Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    receipt.ended_at = chrono::DateTime::parse_from_rfc3339("2026-08-29T16:00:05.123456Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    receipt.seal().unwrap();
+    let raw = serde_jcs::to_vec(&receipt).unwrap();
+    assert_eq!(TerminalReceiptV1::from_slice(&raw).unwrap(), receipt);
+
+    for substituted in [
+        "2026-08-29T12:00:01-04:00",
+        "2026-08-29T16:00:01.1000Z",
+        "2026-08-29T16:00:01.123000Z",
+        "2026-08-29T16:00:01.0000001Z",
+    ] {
+        let mut value = serde_json::to_value(&receipt).unwrap();
+        value["started_at"] = Value::String(substituted.into());
+        assert!(matches!(
+            TerminalReceiptV1::from_slice(&serde_json::to_vec(&value).unwrap()),
+            Err(ContractError::InvalidField("started_at"))
+        ));
+    }
+
+    let mut absent = not_started(&packet, "root-b");
+    absent.recorded_at = chrono::DateTime::parse_from_rfc3339("2026-08-29T16:00:06.123Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    absent.seal().unwrap();
+    let raw = serde_jcs::to_vec(&absent).unwrap();
+    assert_eq!(NotStartedReceiptV1::from_slice(&raw).unwrap(), absent);
+    let mut value = serde_json::to_value(&absent).unwrap();
+    value["recorded_at"] = Value::String("2026-08-29T16:00:06.123000Z".into());
+    assert!(matches!(
+        NotStartedReceiptV1::from_slice(&serde_json::to_vec(&value).unwrap()),
+        Err(ContractError::InvalidField("recorded_at"))
+    ));
+}
+
+#[test]
 fn checked_in_contract_schemas_are_closed_json_documents() {
     for bytes in [
         include_bytes!("../../../schemas/nightshift.foreman-admission.v1.schema.json").as_slice(),
