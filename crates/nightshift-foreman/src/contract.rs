@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::{
     FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+    MAXIMUM_ADAPTER_TIMEOUT_SECONDS, MAXIMUM_WORKER_OUTPUT_BYTES,
     WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
     WORKER_ATTEMPT_BINDING_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
@@ -359,7 +360,9 @@ impl WorkerStartRequestV2 {
         }
         digest("worker_brief_digest", &self.worker_brief_digest)?;
         if self.timeout_seconds == 0
+            || self.timeout_seconds > MAXIMUM_ADAPTER_TIMEOUT_SECONDS
             || self.maximum_output_bytes < 1024
+            || self.maximum_output_bytes > MAXIMUM_WORKER_OUTPUT_BYTES
             || !self.recursive_worker_swarms_forbidden
             || self.approval_policy != "SURFACE_ONLY_NO_RESPONSE"
             || self.expected_receipt_schema != WORKER_TERMINAL_RECEIPT_SCHEMA_V1

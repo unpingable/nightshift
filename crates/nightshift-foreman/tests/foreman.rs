@@ -6,7 +6,7 @@ use std::{
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
-    AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, ExecutionProfileV2,
+    AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, ContractError, ExecutionProfileV2,
     ForemanAdmissionV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
     ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
     WorkItemExecutionV1, WorkerAdapterCapabilitiesV1, FOREMAN_ADMISSION_SCHEMA_V1,
@@ -406,6 +406,18 @@ fn wal_journal_locks_restart_and_classification_separation_qualify() {
     assert_eq!(root_a.schema, WORKER_START_REQUEST_SCHEMA_V2);
     assert_eq!(root_a.adapter_id, "fixture-adapter");
     assert_eq!(root_a.adapter_version, "fixture.adapter/v1");
+    let mut excessive_timeout = root_a.clone();
+    excessive_timeout.timeout_seconds = 86_401;
+    assert!(matches!(
+        excessive_timeout.seal(),
+        Err(ContractError::InvalidField("worker start boundary"))
+    ));
+    let mut excessive_output = root_a.clone();
+    excessive_output.maximum_output_bytes = 16 * 1024 * 1024 + 1;
+    assert!(matches!(
+        excessive_output.seal(),
+        Err(ContractError::InvalidField("worker start boundary"))
+    ));
     let binding = root_a.attempt_binding();
     binding.validate().unwrap();
     assert_eq!(binding.request_digest, root_a.request_digest);

@@ -122,8 +122,8 @@
         "worker_brief_digest": {"$ref": "#/$defs/digest"},
         "workspace_identity": {"$ref": "#/$defs/id"},
         "provider_model_class": {"$ref": "#/$defs/id"},
-        "timeout_seconds": {"type": "integer", "minimum": 1},
-        "maximum_output_bytes": {"type": "integer", "minimum": 1024},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "maximum_output_bytes": {"type": "integer", "minimum": 1024, "maximum": 16777216},
         "recursive_worker_swarms_forbidden": {"const": true},
         "approval_policy": {"const": "SURFACE_ONLY_NO_RESPONSE"},
         "expected_receipt_schema": {"const": "nightshift.worker-terminal-receipt/v1"}

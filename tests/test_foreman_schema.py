@@ -120,6 +120,14 @@ class ForemanSchemaTests(unittest.TestCase):
         )
         validator.validate(document)
         unknown = copy.deepcopy(document)
+        excessive_timeout = copy.deepcopy(document)
+        excessive_timeout["timeout_seconds"] = 86401
+        with self.assertRaises(ValidationError):
+            validator.validate(excessive_timeout)
+        excessive_output = copy.deepcopy(document)
+        excessive_output["maximum_output_bytes"] = 16777217
+        with self.assertRaises(ValidationError):
+            validator.validate(excessive_output)
         unknown["respond_to_approval"] = True
         with self.assertRaises(ValidationError):
             validator.validate(unknown)
