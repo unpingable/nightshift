@@ -1,0 +1,724 @@
+{
+  "schema": "nightshift.orientation-packet/v1",
+  "packet_id": "nightshift-operational-spine-ecad-20260829-v2",
+  "packet_digest": "",
+  "created_at": "2026-08-30T03:07:18Z",
+  "current_until": "2026-09-13T03:07:18Z",
+  "authoring": {
+    "agent": "Codex large-model operational-spine convergence foreman",
+    "session": "nightshift-operational-spine-ecad-v2-20260829",
+    "authority_basis": "Operator instruction /home/jbeck/nightshift-foreman-operational-spine-ecad-codex-handoff-2026-08-29-v2.md (sha256:bc3c19f1a4d3ebb53821fd5129404935f6d2d11cdea75bf311190f9390c89d5d) plus explicit MORTISE-OWL precursor/resume authorization; this packet is non-authorizing."
+  },
+  "canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "digest_algorithm": "SHA-256",
+    "digest_preimage": "domain prefix nightshift.orientation-packet.digest/v1 NUL, then packet object with packet_digest and switchyard.plan_ref omitted as RFC8785-JCS"
+  },
+  "source_evidence": [
+    {
+      "repository": "nightshift",
+      "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+      "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+      "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+      "file_digest": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563",
+      "predecessor_classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED"
+    },
+    {
+      "repository": "nightshift",
+      "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+      "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+      "path": "docs/BASE_ADMISSION_AND_QUALIFIED_LINEAGE_V1.md",
+      "file_digest": "sha256:6e368ae2f1ac00848ac7e156d008cbf274044a6b00c47906348ec7a16c9ecfd2",
+      "predecessor_classification": "NIGHTSHIFT-BASE-ADMISSION-CAMPAIGN-PRACTICE-V1"
+    }
+  ],
+  "repository_custody": [
+    {
+      "repository": "nightshift",
+      "path": "/data/git/.worktrees/nightshift-mortise-owl",
+      "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+      "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+      "remote": "origin",
+      "remote_commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+      "worktree_clean": true,
+      "discrepancy": null
+    },
+    {
+      "repository": "monitor-skunkworks",
+      "path": "/data/git/monitor-skunkworks",
+      "branch": "campaign/project-predicate-support-json-custody",
+      "commit": "8c70c439f2ae74c917bfcf99f0822d3da8f17b41",
+      "remote": "origin",
+      "remote_commit": null,
+      "worktree_clean": true,
+      "discrepancy": "The checkout is provisional campaign work; FIELD-CLOCK must use the separately identified canonical receiver baseline f5d7b09596f85ee08a821f81e24260b0afdf646f and must not promote provisional office identity."
+    },
+    {
+      "repository": "nq-ng",
+      "path": "/data/git/skunkworks/nq-ng",
+      "branch": "campaign/passive-watcher-succession-v1",
+      "commit": "675e247e85d8e2e1f2801c06445bf863f82b3a5b",
+      "remote": "origin",
+      "remote_commit": "675e247e85d8e2e1f2801c06445bf863f82b3a5b",
+      "worktree_clean": false,
+      "discrepancy": "Pre-existing untracked campaign-local and audit receipt directories remain untouched; new NQ work must use a clean isolated worktree from main 59abd3bcb2d0cc30657a659b3ebc57b981289d9f."
+    },
+    {
+      "repository": "switchyard",
+      "path": "/data/git/switchyard-explicit-plan-ref-transport-v1",
+      "branch": "campaign/quiet-bridge-switchyard-explicit-plan-ref-transport-v1",
+      "commit": "053e561b0fed5af15de04b1d25f09ecea639d3fd",
+      "remote": null,
+      "remote_commit": null,
+      "worktree_clean": true,
+      "discrepancy": "The configured local-bundle origin is absent; exact custody is sole-local and no publication destination may be invented."
+    }
+  ],
+  "global_constraints": {
+    "allowed_actions": [
+      "perform the nine bounded V2 campaigns in isolated branches and campaign-owned fixtures",
+      "build local operator-tool foreman, observation, qualification, store-and-forward, and read-only Casework surfaces",
+      "run deterministic and isolated provider/browser/loopback qualification without production activation",
+      "commit coherent campaign checkpoints and push campaign branches only to already-established authorized remotes"
+    ],
+    "forbidden_actions": [
+      "change canonical nightshiftd's two-production-binary graph or place provider, dispatch, wire ingress, or UI machinery in it",
+      "answer approvals, authorize target effects, merge default branches, rewrite history, activate production services, or implement remote control",
+      "treat agent runs as the operational ontology, transport as identity/authority, delivery as truth, process exit as ECAD success, or missing evidence as a world claim",
+      "create aggregate campaign verdicts or aggregate operational health"
+    ],
+    "invariants": [
+      "The packet is orientation only and local foreman admission authorizes only bounded local agent-compute scheduling.",
+      "Scheduler mechanism state, work-item result classification, provider capacity, operational testimony, NQ qualification, Nightshift currentness, and Casework presentation remain distinct.",
+      "Monitor acquisition, NQ claim-support qualification, Nightshift temporal lineage, and Casework read projection remain separate owner transitions.",
+      "Observation transport is testimony-only, address-independent, bounded, authenticated, durable, and contains no reverse control plane.",
+      "Every campaign closes independently and no run closes without an explicit accepted terminal or not-started receipt for every packet work item."
+    ]
+  },
+  "work_items": [
+    {
+      "id": "foreman-core",
+      "track": "nightshift-orchestration-runtime",
+      "campaign": {
+        "codename": "CLOCKWORK-MOTH",
+        "canonical_slug": "nightshift-durable-foreman-state-machine-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "crates/nightshift-foreman, workspace membership, closed schemas, tests, structural gates, operator docs, and campaign-owned qualification artifacts"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "SQLite WAL append-only event journal reconstructs deterministic scheduler state across restart",
+        "DAG entry evaluation, atomic resource exclusion, fresh attempt identity, no automatic retry, lane-local human questions, and exact final receipt export qualify",
+        "wrong identity, duplicate event, crash seams, malformed receipt, missing closeout, and classification-as-success fixtures fail closed"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "CLOCKWORK-MOTH independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Admission/profile, durable scheduler, attempt/restart law, and semantic-result separation define the core runtime boundary.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "budget-observation",
+      "track": "provider-capacity-observation",
+      "campaign": {
+        "codename": "FUEL-NEEDLE",
+        "canonical_slug": "provider-capacity-observation-and-scheduling-policy-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "nightshift-foreman provider-capacity contracts, bounded Codex status probe, scheduling policy, fixtures, docs, and qualification artifacts"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "source and confidence remain distinct; impossible, stale, absent, contradictory, and layout-mutated inputs become explicit UNKNOWN/refusal",
+        "ABUNDANT, NORMAL, CONSERVE, CRITICAL, and UNKNOWN decisions reproduce from exact observation and policy digests",
+        "CRITICAL and UNKNOWN refuse new speculative expensive work while active work may reach custody; qualification timers remain disabled"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "FUEL-NEEDLE independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Provider observation and scheduling policy must be exact without becoming provider account authority.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "worker-adapter",
+      "track": "agent-operations",
+      "campaign": {
+        "codename": "TUNNEL-FINCH",
+        "canonical_slug": "nightshift-worker-adapter-and-switchyard-codex-bootstrap-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [
+        "foreman-core"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "Nightshift-owned generic adapter protocol and a narrow Switchyard adapter/shim on isolated campaign branches with disposable qualification repositories"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "capabilities/start/resume/status/collect preserve exact run/work-item/attempt identity with no approve command",
+        "same-attempt restart reconciliation, queue ordering, checkpoint, terminal receipt, malformed identity refusal, and WAITING_APPROVAL with no protected effect qualify",
+        "global Codex sessions and provider configuration remain untouched"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "TUNNEL-FINCH independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Adapter protocol ownership and exact Switchyard/App Server reuse require cross-repository custody.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "live-casework",
+      "track": "nightshift-operator-surface",
+      "campaign": {
+        "codename": "LEDGER-FOX",
+        "canonical_slug": "nightshift-live-run-casework-projection-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [
+        "foreman-core"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "separate nightshift.casework-live-run/v1 projection, loopback GET API, existing Casework UI extensions, tests, docs, and qualification artifacts"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "active foreman runs and sealed cases remain separate families; scheduler state never becomes result classification",
+        "raw packet/journal bytes, live deep links, restart history, capacity observation, resource ownership, human/approval waits, and accepted receipt presence render exactly",
+        "all write methods return 405, arbitrary paths fail, no aggregate result or mutation controls exist, and installed-browser journeys pass"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "LEDGER-FOX independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Live Casework extends the read-only operator tool without revising final Casework V1.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "integrated-dogfood",
+      "track": "nightshift-integration-qualification",
+      "campaign": {
+        "codename": "MIDNIGHT-RAIL",
+        "canonical_slug": "nightshift-restartable-autonomous-foreman-qualification-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [
+        "foreman-core",
+        "budget-observation",
+        "worker-adapter",
+        "live-casework"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "campaign-owned deterministic adapters, disposable repositories, isolated Codex sessions, exact run artifacts, reports, browser traces, and qualification records"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "all durability seams qualify through a deterministic adapter matrix",
+        "a four-item disposable real run proves bounded concurrency, lock serialization, same-attempt restart, capacity refresh, lane-local human question, exact final receipts, reports, and live/final Casework",
+        "a protected approval specimen remains unanswered and produces no protected effect"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "MIDNIGHT-RAIL independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Integrated dogfood must exercise the exact qualified components without broadening their authority.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "operational-spine",
+      "track": "operational-evidence",
+      "campaign": {
+        "codename": "FIELD-CLOCK",
+        "canonical_slug": "monitor-nq-nightshift-operational-evidence-spine-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "owner-repository operational subject/observation/NQ qualification/Nightshift lineage contracts, deterministic fixtures, source map, docs, gates, and qualification artifacts"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "typed subject and observation identities remain independent of paths, host labels, DNS, addresses, sockets, and connections",
+        "acquisition/no-response/malformed/refusal/contradiction/staleness/current negative evidence remain distinct",
+        "NQ claim support cannot be widened by Nightshift and agent-authored evidence receives no source-class privilege"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "FIELD-CLOCK independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Cross-office identity and claim-support ownership must freeze before wire or operational UI work.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "observation-wire",
+      "track": "distributed-observation",
+      "campaign": {
+        "codename": "DISTANT-BELL",
+        "canonical_slug": "authenticated-store-and-forward-observation-ingress-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [
+        "operational-spine"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "Monitor-owned or receiver-owned authenticated envelope, durable spool/inbox, delivery receipt, local two-process qualification, docs, gates, and campaign evidence"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "message authentication, audience, payload digest, lineage, idempotency, restart, lost acknowledgement, partition, backpressure, expiry, and bounded size qualify",
+        "delivery retry preserves observation identity; delivery acknowledgement never becomes NQ qualification or subject truth",
+        "ingress exposes no shell, filesystem browser, remediation, dispatch, retry command, or reverse control channel"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "DISTANT-BELL independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Durable store-and-forward testimony must be invented without promoting existing session or persistence candidates beyond their claims.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "operational-casework",
+      "track": "nightshift-operator-surface",
+      "campaign": {
+        "codename": "SHIFT-ATLAS",
+        "canonical_slug": "nightshift-operational-condition-casework-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [
+        "operational-spine",
+        "live-casework"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "distinct closed operational-condition projection, loopback read API, Casework family navigation/UI, tests, browser/accessibility evidence, docs, and qualification artifacts"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "run, live-run, and operational-condition cases stay typed and separate",
+        "typed subject, observation custody, NQ support/cannot-testify, Nightshift lineage, uncertainty, triggers, questions, and raw artifacts render exactly",
+        "GET/HEAD-only behavior, no aggregate health, no remediation controls, exact deep links, unknown raw-only payloads, and keyboard journey qualify"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "SHIFT-ATLAS independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "Operational Casework must display office-owned artifacts without flattening them into the run schema.",
+        "maximum_mutating_workers": 1
+      }
+    },
+    {
+      "id": "ecad-pilot",
+      "track": "ecad-operations",
+      "campaign": {
+        "codename": "SILICON-ORCHARD",
+        "canonical_slug": "ecad-operational-observation-golden-journey-v1"
+      },
+      "predecessor_lineage": [
+        {
+          "campaign": "MORTISE-OWL",
+          "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05"
+        }
+      ],
+      "dependencies": [
+        "operational-spine",
+        "observation-wire",
+        "operational-casework"
+      ],
+      "exact_work_refs": [
+        {
+          "contract_kind": "repository_actual_equivalent",
+          "contract_schema": "nightshift.casework-custody-convergence-qualification/v1",
+          "repository": "nightshift",
+          "branch": "campaign/mortise-owl-nightshift-casework-qualified-head-custody-convergence-v1-20260829",
+          "commit": "888dd1e140200394cfadb81dc0c9377887585b05",
+          "path": "qualification/nightshift-casework-custody-convergence-20260829/MORTISE-OWL-QUALIFICATION.md",
+          "proposal_ref": "sha256:24bce8a53d7543eaa444e779cb743512f53cf258dd218859c7103b2267f28563"
+        }
+      ],
+      "entry_predicates": [
+        "the exact remote-verified MORTISE-OWL head is present as the Nightshift base",
+        "the campaign codename and canonical slug are collision-free",
+        "the exact predecessor receipts and owner contracts required by the V2 handoff are inspected before mutation"
+      ],
+      "allowed_mutation_surfaces": [
+        "campaign-owned deterministic open fake/minimal ECAD corpus, producer adapters, exact observations/qualifications/lineage/cases, browser evidence, docs, and qualification artifacts"
+      ],
+      "forbidden_actions": [
+        "default-branch merge, history rewrite, production activation, or protected approval response",
+        "semantic success inference from scheduler, transport, process exit, missing evidence, or arbitrary classification strings",
+        "aggregate result or health synthesis, remote control, secret capture, or mutation outside declared owner surfaces"
+      ],
+      "acceptance_tests": [
+        "design, job, worker, tool, PDK, license, repository, input, output, and stage identities remain exact and separately evidenced",
+        "exit-zero/missing output, digest mismatch, wrong revision/tool/PDK, license no-response, worker loss, scheduler contradiction, stale artifact, delayed duplicate delivery, and agent contradiction remain independent cases",
+        "at least one observation traverses exact store-and-forward ingress and Casework exposes no retry/remediation or aggregate health"
+      ],
+      "stop_conditions": [
+        "an exact required predecessor or owner contract cannot be established",
+        "the work would collapse an authority, identity, qualification, temporal, transport, or presentation boundary",
+        "a required mutation exceeds the operator-authorized local campaign scope"
+      ],
+      "expected_receipts": [
+        "SILICON-ORCHARD independent qualification receipt",
+        "exact branch/head and repository custody receipt",
+        "tests, deterministic negative controls, limitations, and next lawful action"
+      ],
+      "closeout_requirements": [
+        "retain an independent classification with no aggregate result",
+        "commit and publish only to an already-established authorized campaign remote where available",
+        "leave no process, listener, service, timer, key, secret, spool, temporary profile, or undeclared teardown obligation"
+      ],
+      "model_routing": {
+        "class": "large",
+        "reason": "The first operations specimen must prove the substrate is not an agent-only harness and uses no proprietary material.",
+        "maximum_mutating_workers": 1
+      }
+    }
+  ],
+  "worker_budget": {
+    "maximum_concurrent_mutating_workers": 4,
+    "recursive_worker_swarms_forbidden": true,
+    "reserve_posture": "Preserve approximately 20 percent weekly and 15 percent short-window capacity when trustworthy telemetry exists; under UNKNOWN stop speculative expansion while admitted bounded work reaches safe custody."
+  },
+  "human_question_criteria": [
+    "unavailable secret or protected approval",
+    "physical action or privileged host capability",
+    "unauthorized production or default-branch mutation",
+    "genuinely missing repository provenance not reconstructible from exact local evidence",
+    "two materially incompatible constitutional interpretations remaining after code, history, tests, and records are exhausted"
+  ],
+  "switchyard": {
+    "alias": "nightshift-operational-spine-ecad-v2-20260829",
+    "plan_ref": "",
+    "transport_fields": [
+      "alias",
+      "plan_ref",
+      "nonce"
+    ]
+  }
+}
