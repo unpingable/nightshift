@@ -77,6 +77,43 @@ class ProviderCapacitySchemaTests(unittest.TestCase):
         )
         self.assertEqual(decision["policy_digest"], policy["policy_digest"])
 
+    def test_policy_requires_explicit_unique_window_types(self):
+        schema_path, record_path, _, _ = CASES["policy"]
+        schema = json.loads(schema_path.read_bytes())
+        policy = json.loads(record_path.read_bytes())
+        policy.pop("required_window_types")
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(schema).validate(policy)
+
+        policy = json.loads(record_path.read_bytes())
+        policy["required_window_types"] = ["WEEKLY", "WEEKLY"]
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(schema).validate(policy)
+
+    def test_decision_schema_refuses_state_admission_substitution(self):
+        schema_path, record_path, domain, digest_field = CASES["decision"]
+        schema = json.loads(schema_path.read_bytes())
+        decision = json.loads(record_path.read_bytes())
+        decision.update(
+            {
+                "state": "CRITICAL",
+                "admission": "ORDINARY_BOUNDED",
+                "allow_new_expensive_work": True,
+                "allow_new_speculative_work": True,
+                "reason_codes": ["MINIMUM_REMAINING_WINDOW_CRITICAL"],
+            }
+        )
+        decision.pop(digest_field)
+        canonical = json.dumps(
+            decision,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        decision[digest_field] = f"sha256:{hashlib.sha256(domain + canonical).hexdigest()}"
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(schema).validate(decision)
+
 
 if __name__ == "__main__":
     unittest.main()

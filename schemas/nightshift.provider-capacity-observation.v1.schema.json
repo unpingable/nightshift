@@ -51,11 +51,13 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["probe_id", "protocol_method", "protocol_version", "raw_source_digest"],
+      "required": ["probe_id", "protocol_method", "protocol_version", "executable_path", "executable_digest", "raw_source_digest"],
       "properties": {
         "probe_id": {"$ref": "#/$defs/nonempty"},
         "protocol_method": {"$ref": "#/$defs/nonempty"},
-        "protocol_version": {"$ref": "#/$defs/nonempty"},
+        "protocol_version": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]},
+        "executable_path": {"oneOf": [{"type": "string", "pattern": "^/"}, {"type": "null"}]},
+        "executable_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
         "raw_source_digest": {"$ref": "#/$defs/digest"}
       }
     },
@@ -64,7 +66,19 @@
   "allOf": [
     {
       "if": {"properties": {"disposition": {"const": "USABLE"}}},
-      "then": {"properties": {"unknown_reasons": {"maxItems": 0}, "windows": {"minItems": 1}}}
+      "then": {
+        "properties": {
+          "unknown_reasons": {"maxItems": 0},
+          "windows": {"minItems": 1},
+          "evidence": {
+            "properties": {
+              "protocol_version": {"$ref": "#/$defs/nonempty"},
+              "executable_path": {"type": "string", "pattern": "^/"},
+              "executable_digest": {"$ref": "#/$defs/digest"}
+            }
+          }
+        }
+      }
     },
     {
       "if": {"properties": {"disposition": {"const": "UNKNOWN"}}},

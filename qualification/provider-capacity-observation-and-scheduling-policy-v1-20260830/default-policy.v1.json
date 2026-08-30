@@ -5,6 +5,10 @@
   "normal_min_remaining": 0.25,
   "conserve_min_remaining": 0.1,
   "minimum_confidence": "MEDIUM",
+  "required_window_types": [
+    "FIVE_HOUR",
+    "WEEKLY"
+  ],
   "unknown_allows_new_cheap_work": false,
-  "policy_digest": "sha256:01d4b03d71901a04ff79e856bc389bcd9cfb1a9752fae4f8dad19c3f733724bb"
+  "policy_digest": "sha256:7567588f6fe319430e5d83e5955c7c20ded2dcb8e5554676db9a1a6482305cb0"
 }

@@ -44,7 +44,7 @@ pub enum ObservationDisposition {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum WindowType {
     FiveHour,
@@ -75,7 +75,9 @@ pub struct CapacityWindow {
 pub struct ObservationEvidence {
     pub probe_id: String,
     pub protocol_method: String,
-    pub protocol_version: String,
+    pub protocol_version: Option<String>,
+    pub executable_path: Option<String>,
+    pub executable_digest: Option<String>,
     pub raw_source_digest: String,
 }
 
@@ -106,6 +108,7 @@ pub struct CapacityPolicyV1 {
     pub normal_min_remaining: f64,
     pub conserve_min_remaining: f64,
     pub minimum_confidence: Confidence,
+    pub required_window_types: Vec<WindowType>,
     pub unknown_allows_new_cheap_work: bool,
     pub policy_digest: String,
 }
@@ -154,6 +157,7 @@ impl Default for CapacityPolicyV1 {
             normal_min_remaining: 0.25,
             conserve_min_remaining: 0.10,
             minimum_confidence: Confidence::Medium,
+            required_window_types: vec![WindowType::FiveHour, WindowType::Weekly],
             unknown_allows_new_cheap_work: false,
             policy_digest: String::new(),
         };
@@ -184,6 +188,36 @@ impl CapacityObservationV1 {
                 return Err(invalid("unknown observation needs a reason"));
             }
             _ => {}
+        }
+        nonempty("probe_id", &self.evidence.probe_id)?;
+        nonempty("protocol_method", &self.evidence.protocol_method)?;
+        if !is_sha256_digest(&self.evidence.raw_source_digest) {
+            return Err(invalid("raw source digest must be an exact SHA-256 digest"));
+        }
+        match self.disposition {
+            ObservationDisposition::Usable
+                if self.evidence.protocol_version.is_none()
+                    || self.evidence.executable_path.is_none()
+                    || self.evidence.executable_digest.is_none() =>
+            {
+                return Err(invalid(
+                    "usable observation requires verified executable and protocol identity",
+                ));
+            }
+            _ => {}
+        }
+        if let Some(version) = &self.evidence.protocol_version {
+            nonempty("protocol_version", version)?;
+        }
+        if let Some(path) = &self.evidence.executable_path {
+            if !std::path::Path::new(path).is_absolute() {
+                return Err(invalid("executable_path must be absolute"));
+            }
+        }
+        if let Some(digest) = &self.evidence.executable_digest {
+            if !is_sha256_digest(digest) {
+                return Err(invalid("executable_digest must be an exact SHA-256 digest"));
+            }
         }
         for window in &self.windows {
             nonempty("window_id", &window.window_id)?;
@@ -237,6 +271,20 @@ impl CapacityPolicyV1 {
                 "policy thresholds must descend within zero and one",
             ));
         }
+        if self.required_window_types.is_empty() {
+            return Err(invalid(
+                "policy must declare at least one required window type",
+            ));
+        }
+        if self
+            .required_window_types
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(invalid(
+                "required window types must be unique and in canonical order",
+            ));
+        }
         check_digest(&self.policy_digest, &self.compute_digest()?, "policy")
     }
 
@@ -249,6 +297,65 @@ impl CapacityDecisionV1 {
     pub fn validate(&self) -> Result<(), CapacityError> {
         if self.schema != CAPACITY_DECISION_SCHEMA_V1 {
             return Err(invalid("unknown decision schema"));
+        }
+        nonempty("provider_id", &self.provider_id)?;
+        if self.reason_codes.is_empty()
+            || self
+                .reason_codes
+                .iter()
+                .any(|reason| !is_reason_token(reason))
+        {
+            return Err(invalid(
+                "decision reason codes must be nonempty closed tokens",
+            ));
+        }
+        let mut unique_reasons = self.reason_codes.clone();
+        unique_reasons.sort();
+        unique_reasons.dedup();
+        if unique_reasons.len() != self.reason_codes.len() {
+            return Err(invalid("decision reason codes must be unique"));
+        }
+        if !is_sha256_digest(&self.observation_digest) || !is_sha256_digest(&self.policy_digest) {
+            return Err(invalid(
+                "decision must bind exact SHA-256 observation and policy digests",
+            ));
+        }
+        if !self.allow_active_work_to_reach_custody {
+            return Err(invalid("active work must remain able to reach custody"));
+        }
+        let fields_match_state = match self.state {
+            CapacityState::Abundant => {
+                self.admission == AdmissionDisposition::OrdinaryBounded
+                    && self.allow_new_expensive_work
+                    && self.allow_new_speculative_work
+            }
+            CapacityState::Normal => {
+                self.admission == AdmissionDisposition::OrdinaryBounded
+                    && self.allow_new_expensive_work
+                    && !self.allow_new_speculative_work
+            }
+            CapacityState::Conserve => {
+                self.admission == AdmissionDisposition::CheapBoundedOnly
+                    && !self.allow_new_expensive_work
+                    && !self.allow_new_speculative_work
+            }
+            CapacityState::Critical => {
+                self.admission == AdmissionDisposition::NoNewWork
+                    && !self.allow_new_expensive_work
+                    && !self.allow_new_speculative_work
+            }
+            CapacityState::Unknown => {
+                matches!(
+                    self.admission,
+                    AdmissionDisposition::CheapBoundedOnly | AdmissionDisposition::NoNewWork
+                ) && !self.allow_new_expensive_work
+                    && !self.allow_new_speculative_work
+            }
+        };
+        if !fields_match_state {
+            return Err(invalid(
+                "decision admission fields contradict capacity state",
+            ));
         }
         check_digest(&self.decision_digest, &self.compute_digest()?, "decision")
     }
@@ -267,8 +374,25 @@ pub fn decide_capacity(
     policy.validate()?;
 
     let mut reasons = Vec::new();
+    let missing_window_reasons: Vec<String> = policy
+        .required_window_types
+        .iter()
+        .filter(|required| {
+            !observation
+                .windows
+                .iter()
+                .any(|window| window.window_type == **required)
+        })
+        .map(|window_type| {
+            format!(
+                "REQUIRED_WINDOW_MISSING_{}",
+                window_type_token(*window_type)
+            )
+        })
+        .collect();
     let state = if observation.disposition == ObservationDisposition::Unknown {
         reasons.extend(observation.unknown_reasons.iter().cloned());
+        reasons.extend(missing_window_reasons.clone());
         CapacityState::Unknown
     } else if decision_at < observation.observed_at {
         reasons.push("DECISION_PRECEDES_OBSERVATION".into());
@@ -287,6 +411,9 @@ pub fn decide_capacity(
         || observation.confidence < policy.minimum_confidence
     {
         reasons.push("SOURCE_OR_CONFIDENCE_INSUFFICIENT".into());
+        CapacityState::Unknown
+    } else if !missing_window_reasons.is_empty() {
+        reasons.extend(missing_window_reasons);
         CapacityState::Unknown
     } else {
         match observation
@@ -371,6 +498,28 @@ fn nonempty(field: &str, value: &str) -> Result<(), CapacityError> {
     } else {
         Ok(())
     }
+}
+
+fn window_type_token(window_type: WindowType) -> &'static str {
+    match window_type {
+        WindowType::FiveHour => "FIVE_HOUR",
+        WindowType::Weekly => "WEEKLY",
+        WindowType::ProviderDefined => "PROVIDER_DEFINED",
+    }
+}
+
+fn is_reason_token(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z'))
+        && bytes.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 fn invalid(message: impl Into<String>) -> CapacityError {

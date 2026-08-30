@@ -2,15 +2,16 @@
   "schema": "nightshift.provider-capacity-decision/v1",
   "provider_id": "openai-codex",
   "decision_at": "2026-08-30T20:15:00Z",
-  "state": "ABUNDANT",
-  "admission": "ORDINARY_BOUNDED",
-  "allow_new_expensive_work": true,
-  "allow_new_speculative_work": true,
+  "state": "UNKNOWN",
+  "admission": "NO_NEW_WORK",
+  "allow_new_expensive_work": false,
+  "allow_new_speculative_work": false,
   "allow_active_work_to_reach_custody": true,
   "reason_codes": [
-    "MINIMUM_REMAINING_WINDOW_ABUNDANT"
+    "EXECUTABLE_IDENTITY_UNBOUND",
+    "REQUIRED_WINDOW_MISSING_FIVE_HOUR"
   ],
-  "observation_digest": "sha256:611be49a04413b5e84321a2c19950bfde79ebf9a480d58678135a1ab64eea599",
-  "policy_digest": "sha256:01d4b03d71901a04ff79e856bc389bcd9cfb1a9752fae4f8dad19c3f733724bb",
-  "decision_digest": "sha256:b0da49591b2ef22b9ce85c1106c1a2d969054e3cf17ff813afd48519576d4572"
+  "observation_digest": "sha256:ae0da1931218b4eee91052c316856c1737d32f7d039ee8dca37c7a5fa4bf9d86",
+  "policy_digest": "sha256:7567588f6fe319430e5d83e5955c7c20ded2dcb8e5554676db9a1a6482305cb0",
+  "decision_digest": "sha256:9d17f39b44fa3c9ad64856b5c17117cccc43af6df52198d1fb2e64d62ec40da6"
 }

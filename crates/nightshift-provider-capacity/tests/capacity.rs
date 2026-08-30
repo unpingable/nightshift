@@ -6,6 +6,7 @@ use nightshift_provider_capacity::{
     CAPACITY_OBSERVATION_SCHEMA_V1,
 };
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::time::Duration as StdDuration;
 
 fn at(seconds: i64) -> DateTime<Utc> {
@@ -14,6 +15,9 @@ fn at(seconds: i64) -> DateTime<Utc> {
 
 fn options() -> CodexProbeOptions {
     CodexProbeOptions {
+        codex_executable: PathBuf::from("/fixture/codex-native"),
+        expected_executable_digest: format!("sha256:{}", "0".repeat(64)),
+        expected_protocol_version: "0.147.0".into(),
         account_profile_locator: "local-codex-profile".into(),
         observed_at: at(1_800_000_000),
         expires_after: Duration::minutes(15),
@@ -58,18 +62,29 @@ fn synthetic(source: SourceClass, confidence: Confidence, remaining: f64) -> Cap
         confidence,
         disposition: ObservationDisposition::Usable,
         unknown_reasons: vec![],
-        windows: vec![CapacityWindow {
-            window_id: "weekly".into(),
-            window_type: WindowType::Weekly,
-            remaining_fraction: Some(remaining),
-            remaining_units: None,
-            resets_at: Some(at(1_800_604_800)),
-        }],
+        windows: vec![
+            CapacityWindow {
+                window_id: "five-hour".into(),
+                window_type: WindowType::FiveHour,
+                remaining_fraction: Some(remaining),
+                remaining_units: None,
+                resets_at: Some(at(1_800_003_600)),
+            },
+            CapacityWindow {
+                window_id: "weekly".into(),
+                window_type: WindowType::Weekly,
+                remaining_fraction: Some(remaining),
+                remaining_units: None,
+                resets_at: Some(at(1_800_604_800)),
+            },
+        ],
         evidence: ObservationEvidence {
             probe_id: "fixture".into(),
             protocol_method: "fixture/read".into(),
-            protocol_version: "fixture/v1".into(),
-            raw_source_digest: "sha256:fixture".into(),
+            protocol_version: Some("fixture/v1".into()),
+            executable_path: Some("/fixture/codex-native".into()),
+            executable_digest: Some(format!("sha256:{}", "0".repeat(64))),
+            raw_source_digest: format!("sha256:{}", "1".repeat(64)),
         },
         observation_digest: String::new(),
     };
@@ -238,6 +253,28 @@ fn weekly_and_short_window_minimum_controls_while_context_is_distinct() {
 }
 
 #[test]
+fn missing_required_window_is_unknown_and_admits_no_new_work() {
+    let mut observation = synthetic(SourceClass::Observed, Confidence::High, 0.95);
+    observation
+        .windows
+        .retain(|window| window.window_type == WindowType::Weekly);
+    observation.observation_digest = observation.compute_digest().unwrap();
+
+    let decision = decide_capacity(
+        &observation,
+        &CapacityPolicyV1::default(),
+        at(1_800_000_001),
+    )
+    .unwrap();
+    assert_eq!(decision.state, CapacityState::Unknown);
+    assert_eq!(decision.admission, AdmissionDisposition::NoNewWork);
+    assert!(!decision.allow_new_expensive_work);
+    assert!(!decision.allow_new_speculative_work);
+    assert!(decision.allow_active_work_to_reach_custody);
+    assert_eq!(decision.reason_codes, ["REQUIRED_WINDOW_MISSING_FIVE_HOUR"]);
+}
+
+#[test]
 fn stale_reset_rollover_and_unknown_refuse_new_work_but_preserve_custody() {
     let policy = CapacityPolicyV1::default();
     let observation = synthetic(SourceClass::Observed, Confidence::High, 0.9);
@@ -299,4 +336,26 @@ fn closed_records_refuse_unknown_semantic_fields() {
     let mut value = serde_json::to_value(observation).unwrap();
     value["aggregateResult"] = json!("fine");
     assert!(serde_json::from_value::<CapacityObservationV1>(value).is_err());
+}
+
+#[test]
+fn digest_consistent_decision_state_substitution_is_refused() {
+    let observation = synthetic(SourceClass::Observed, Confidence::High, 0.01);
+    let mut decision = decide_capacity(
+        &observation,
+        &CapacityPolicyV1::default(),
+        at(1_800_000_001),
+    )
+    .unwrap();
+    assert_eq!(decision.state, CapacityState::Critical);
+
+    decision.admission = AdmissionDisposition::OrdinaryBounded;
+    decision.allow_new_expensive_work = true;
+    decision.allow_new_speculative_work = true;
+    decision.decision_digest = decision.compute_digest().unwrap();
+    assert!(decision
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("contradict capacity state"));
 }

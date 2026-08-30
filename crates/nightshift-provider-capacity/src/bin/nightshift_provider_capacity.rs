@@ -20,6 +20,15 @@ struct Cli {
 enum Commands {
     /// Read supported Codex rate-limit testimony through App Server stdio.
     ProbeCodex {
+        /// Canonical absolute path to the native Codex executable, not a wrapper.
+        #[arg(long)]
+        codex_executable: PathBuf,
+        /// Exact raw SHA-256 digest of the native executable.
+        #[arg(long)]
+        expected_executable_digest: String,
+        /// Exact Codex protocol version expected from initialize.userAgent.
+        #[arg(long)]
+        expected_protocol_version: String,
         #[arg(long, default_value = "local-codex-profile")]
         account_profile_locator: String,
         #[arg(long)]
@@ -48,6 +57,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::ProbeCodex {
+            codex_executable,
+            expected_executable_digest,
+            expected_protocol_version,
             account_profile_locator,
             observed_at,
             expires_after_minutes,
@@ -61,6 +73,9 @@ fn main() -> Result<()> {
                 "response bound must be positive"
             );
             let options = CodexProbeOptions {
+                codex_executable,
+                expected_executable_digest,
+                expected_protocol_version,
                 account_profile_locator,
                 observed_at: observed_at.unwrap_or_else(Utc::now),
                 expires_after: Duration::minutes(expires_after_minutes),

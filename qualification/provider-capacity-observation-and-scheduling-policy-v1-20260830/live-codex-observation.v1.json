@@ -5,10 +5,12 @@
   "model_family": null,
   "observed_at": "2026-08-30T20:14:26.864158168Z",
   "expires_at": "2026-08-30T20:29:26.864158168Z",
-  "source_class": "OBSERVED",
-  "confidence": "HIGH",
-  "disposition": "USABLE",
-  "unknown_reasons": [],
+  "source_class": "UNKNOWN",
+  "confidence": "UNKNOWN",
+  "disposition": "UNKNOWN",
+  "unknown_reasons": [
+    "EXECUTABLE_IDENTITY_UNBOUND"
+  ],
   "windows": [
     {
       "window_id": "primary",
@@ -21,8 +23,10 @@
   "evidence": {
     "probe_id": "codex-app-server-rate-limits-read-v1",
     "protocol_method": "account/rateLimits/read",
-    "protocol_version": "codex-cli-0.147.0",
+    "protocol_version": null,
+    "executable_path": null,
+    "executable_digest": null,
     "raw_source_digest": "sha256:3ad8332275fb815b4b20d6ff21d89a2e42b82e3510377933dc52de7ef9e6d58f"
   },
-  "observation_digest": "sha256:611be49a04413b5e84321a2c19950bfde79ebf9a480d58678135a1ab64eea599"
+  "observation_digest": "sha256:ae0da1931218b4eee91052c316856c1737d32f7d039ee8dca37c7a5fa4bf9d86"
 }

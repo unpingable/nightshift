@@ -30,10 +30,23 @@ if [ "$(rg -c '^\[\[bin\]\]$' "$manifest" || true)" -ne 1 ] ||
    ! rg -q '^name = "nightshift-provider-capacity"$' "$manifest"; then
     fail "operator binary graph is not the exact single explicit target"
 fi
-if [ "$(rg -c 'Command::new\("codex"\)' "$snapshot" || true)" -ne 1 ] ||
+if [ "$(rg -c 'Command::new\(descriptor_path\)' "$snapshot" || true)" -ne 1 ] ||
+   ! rg -q '"/proc/self/fd/\{\}"' "$snapshot" ||
    ! rg -q '\.args\(\["app-server", "--listen", "stdio://"\]\)' "$snapshot"; then
-    fail "probe command is not pinned to one foreground Codex App Server stdio process"
+    fail "probe command is not pinned to one descriptor-bound foreground Codex App Server stdio process"
 fi
+if rg -n 'Command::new\("codex"\)|Command::new\(&?options\.codex_executable\)' "$snapshot" >"$hits"; then
+    fail "unbound PATH or pathname-based executable launch is present"
+    cat "$hits" >&2
+fi
+for binding in 'fs::canonicalize' 'expected_executable_digest' \
+               'EXECUTABLE_DIGEST_MISMATCH' 'expected_protocol_version' \
+               'PROTOCOL_VERSION_MISMATCH' 'userAgent' \
+               'PROBE_RESPONSE_OVERSIZED' 'read_bounded_response'; do
+    if ! rg -q "$binding" "$snapshot"; then
+        fail "exact executable/protocol or bounded-reader binding is missing: $binding"
+    fi
+done
 if [ "$(rg -c '"account/rateLimits/read"' "$snapshot" || true)" -ne 2 ]; then
     fail "supported read method is not pinned in request and evidence"
 fi
@@ -80,6 +93,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
     printf '%s\n' \
       'fn injected_boundary_failure() {' \
       ' let _ = std::net::TcpStream::connect("127.0.0.1:9");' \
+      ' let _ = std::process::Command::new("codex");' \
       ' let _ = "account/login/start";' \
       ' let _ = "turn/start";' \
       ' let _ = "auth.json";' \
@@ -91,7 +105,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
         printf 'self-test FAILED: deterministic boundary substitutions passed\n' >&2
         exit 1
     fi
-    for marker in mutation configuration network filesystem aggregate timer; do
+    for marker in mutation configuration network filesystem aggregate timer 'unbound PATH'; do
         if ! rg -q "$marker" "$self_log"; then
             printf 'self-test FAILED: %s substitution was not reported\n' "$marker" >&2
             cat "$self_log" >&2

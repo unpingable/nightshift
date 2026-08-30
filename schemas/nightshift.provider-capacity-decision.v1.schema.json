@@ -17,5 +17,27 @@
     "observation_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "policy_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "decision_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "ABUNDANT"}}},
+      "then": {"properties": {"admission": {"const": "ORDINARY_BOUNDED"}, "allow_new_expensive_work": {"const": true}, "allow_new_speculative_work": {"const": true}}}
+    },
+    {
+      "if": {"properties": {"state": {"const": "NORMAL"}}},
+      "then": {"properties": {"admission": {"const": "ORDINARY_BOUNDED"}, "allow_new_expensive_work": {"const": true}, "allow_new_speculative_work": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"state": {"const": "CONSERVE"}}},
+      "then": {"properties": {"admission": {"const": "CHEAP_BOUNDED_ONLY"}, "allow_new_expensive_work": {"const": false}, "allow_new_speculative_work": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"state": {"const": "CRITICAL"}}},
+      "then": {"properties": {"admission": {"const": "NO_NEW_WORK"}, "allow_new_expensive_work": {"const": false}, "allow_new_speculative_work": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"state": {"const": "UNKNOWN"}}},
+      "then": {"properties": {"admission": {"enum": ["CHEAP_BOUNDED_ONLY", "NO_NEW_WORK"]}, "allow_new_expensive_work": {"const": false}, "allow_new_speculative_work": {"const": false}}}
+    }
+  ]
 }
