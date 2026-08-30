@@ -923,6 +923,76 @@ fn worker_brief_v2_digest_has_an_independent_fixed_vector() {
 }
 
 #[test]
+fn rfc8785_cross_language_vector_covers_numeric_unicode_and_escape_edges() {
+    let value = serde_json::json!({
+        "numbers": [
+            1e-7, 1e-6, 1e20, 1e21, -0.0,
+            9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64
+        ],
+        "unicode": {"€": "euro", "\r": "cr", "דּ": "hebrew", "😀": "grin", "\u{0080}": "control"},
+        "escapes": "\u{0008}\t\n\u{000c}\r\"\\\0",
+    });
+    let canonical = serde_json_canonicalizer::to_vec(&value).unwrap();
+    let expected = "{\"escapes\":\"\\b\\t\\n\\f\\r\\\"\\\\\\u0000\",\"numbers\":[1e-7,0.000001,100000000000000000000,1e+21,0,9007199254740991,-9007199254740991],\"unicode\":{\"\\r\":\"cr\",\"\u{0080}\":\"control\",\"€\":\"euro\",\"😀\":\"grin\",\"דּ\":\"hebrew\"}}";
+    assert_eq!(canonical, expected.as_bytes());
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&canonical)),
+        "3e01e561f7ea8f1c5774a2d6f5608067675a43316cb41c9d91cdcd2440b4d90f"
+    );
+
+    let admitted = serde_json::json!({
+        "numbers": [
+            1e-7, 1e-6, 1e20, 1e21, -0.0,
+            9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64
+        ],
+        "unicode_values": ["€", "\u{0080}", "😀", "דּ"],
+        "escapes": "\u{0008}\t\n\u{000c}\r\"\\\0",
+    });
+    assert_eq!(
+        serde_jcs::to_vec(&admitted).unwrap(),
+        serde_json_canonicalizer::to_vec(&admitted).unwrap()
+    );
+}
+
+#[test]
+fn worker_receipts_refuse_json_integers_outside_the_cross_language_safe_domain() {
+    let (_directory, store, packet, _, _) = setup();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    receipt.extensions.insert(
+        "nested".into(),
+        serde_json::json!({"unsafe_integer": 9_007_199_254_740_992_u64}),
+    );
+    assert!(matches!(
+        receipt.seal(),
+        Err(ContractError::InvalidField("RFC8785 number"))
+    ));
+
+    let mut top_level_unicode_key =
+        terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    top_level_unicode_key.extensions.insert(
+        "😀".into(),
+        serde_json::json!("not in the admitted object-key alphabet"),
+    );
+    assert!(matches!(
+        top_level_unicode_key.seal(),
+        Err(ContractError::InvalidField("RFC8785 object key"))
+    ));
+
+    let mut nested_unicode_key = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    nested_unicode_key.extensions.insert(
+        "nested".into(),
+        serde_json::json!({"😀": "not in the admitted object-key alphabet"}),
+    );
+    assert!(matches!(
+        nested_unicode_key.seal(),
+        Err(ContractError::InvalidField("RFC8785 object key"))
+    ));
+}
+
+#[test]
 fn worker_brief_preserves_exact_packet_and_predecessor_receipt_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let packet = packet();

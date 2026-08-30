@@ -696,10 +696,10 @@ impl AdapterEventV1 {
             .message
             .as_ref()
             .is_some_and(|value| value.len() > 65_536)
-            || self.extensions.len() > 64
         {
             return Err(ContractError::InvalidField("adapter event bounds"));
         }
+        extensions(&self.extensions)?;
         for (field, value) in [
             ("provider_identity", &self.provider_identity),
             ("model_identity", &self.model_identity),
@@ -842,9 +842,7 @@ impl TerminalReceiptV1 {
         for question in &self.human_questions {
             question.validate()?;
         }
-        if self.extensions.len() > 64 {
-            return Err(ContractError::InvalidField("extensions"));
-        }
+        extensions(&self.extensions)?;
         Ok(())
     }
 }
@@ -895,10 +893,56 @@ impl NotStartedReceiptV1 {
         for question in &self.human_questions {
             question.validate()?;
         }
-        if self.extensions.len() > 64 {
-            return Err(ContractError::InvalidField("extensions"));
-        }
+        extensions(&self.extensions)?;
         Ok(())
+    }
+}
+
+fn extensions(values: &BTreeMap<String, Value>) -> Result<(), ContractError> {
+    if values.len() > 64 {
+        return Err(ContractError::InvalidField("extensions"));
+    }
+    for (key, value) in values {
+        id("RFC8785 object key", key)?;
+        interoperable_json(value)?;
+    }
+    Ok(())
+}
+
+fn interoperable_json(value: &Value) -> Result<(), ContractError> {
+    const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+    match value {
+        Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
+        Value::Number(number) => {
+            let admitted = if let Some(value) = number.as_i64() {
+                (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value)
+            } else if let Some(value) = number.as_u64() {
+                value <= MAX_SAFE_INTEGER as u64
+            } else {
+                number.as_f64().is_some_and(f64::is_finite)
+            };
+            if admitted {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidField("RFC8785 number"))
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                interoperable_json(value)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            if values.len() > 64 {
+                return Err(ContractError::InvalidField("extensions"));
+            }
+            for (key, value) in values {
+                id("RFC8785 object key", key)?;
+                interoperable_json(value)?;
+            }
+            Ok(())
+        }
     }
 }
 

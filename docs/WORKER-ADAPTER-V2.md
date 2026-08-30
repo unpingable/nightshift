@@ -14,6 +14,12 @@ For ergonomics, the brief carries recursively closed recognized-contract wrapper
 
 The store obtains packet and predecessor BLOB lengths first and computes the exact canonical JSON expansion size using closed metadata before loading or hexadecimal expansion of predecessor BLOBs. Oversized input fails closed.
 
+## Canonicalization compatibility domain
+
+Foreman runtime digest production remains solely on the established `serde_jcs` implementation; `serde_json_canonicalizer = 0.3.2` (MIT) is pinned only as an independent qualification oracle. The open extension-value surface is mechanically restricted, recursively, to object keys in the existing ASCII identifier alphabet, at most 64 members per object, and integer values in `[-9007199254740991, 9007199254740991]`. Fixed schema keys and dependency identifiers already occupy that same ASCII ordering subset. These bounds exclude the known UTF-16 key-order and integer-rounding divergence surfaces while retaining Unicode string values and finite non-integer numbers.
+
+The oracle vector covers exponent formatting, negative zero, Unicode UTF-16 key ordering, control escapes, and both safe-integer boundaries; the established serializer and oracle are byte-identical over the admitted vector. Unicode extension-object keys and integers at plus or minus `9007199254740992` are refused by owner validation. Qualification attaches the oracle to tests only; it is not a second production digest law.
+
 ## Exact byte digest laws
 
 Retained packet and receipt source bytes use the preimage: ASCII `nightshift.foreman-retained-raw.digest/v1`, one NUL byte, then the exact source byte sequence without normalization. For exact bytes `{}`, the fixed result is `sha256:defbb1499ef874d99cdf029e5c1dc04dc253d0fc1e0f88f966278cf3934302fe`.

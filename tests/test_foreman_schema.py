@@ -145,6 +145,38 @@ class ForemanSchemaTests(unittest.TestCase):
             validator.validate(unknown)
 
 
+    def test_adapter_extensions_use_the_recursively_closed_interoperable_subset(self):
+        document = {
+            "schema": "nightshift.worker-adapter-event/v1",
+            "event_digest": DIGEST,
+            "packet_digest": DIGEST,
+            "run_id": "run-fixture",
+            "work_item_id": "root-a",
+            "attempt_id": "attempt-fixture",
+            "adapter_id": "fixture-adapter",
+            "adapter_version": "fixture.adapter/v1",
+            "event_id": "event-fixture",
+            "occurred_at": "2026-08-29T16:01:00Z",
+            "kind": "checkpoint",
+            "provider_identity": None,
+            "model_identity": None,
+            "session_identity": None,
+            "thread_identity": None,
+            "turn_identity": None,
+            "queue_identity": None,
+            "message": "bounded local progress",
+            "human_question": None,
+            "extensions": {"nested": {"safe_key": ["unicode value \u20ac", 0.0000001, None, True]}},
+        }
+        validator = Draft202012Validator(
+            schema("nightshift.worker-adapter.v2.schema.json")
+        )
+        validator.validate(document)
+        unicode_key = copy.deepcopy(document)
+        unicode_key["extensions"] = {"nested": {"\U0001f600": "not admitted as an object key"}}
+        with self.assertRaises(ValidationError):
+            validator.validate(unicode_key)
+
     def test_v2_worker_brief_is_closed_and_carries_exact_sources(self):
         document = {
             "schema": "nightshift.worker-brief-basis/v2",

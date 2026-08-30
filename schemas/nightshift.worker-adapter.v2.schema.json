@@ -17,7 +17,22 @@
     "id": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9._:/-]+$"},
     "nullable_id": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
     "strings": {"type": "array", "items": {"type": "string", "maxLength": 65536}},
-    "extensions": {"type": "object", "maxProperties": 64},
+    "extensions": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/extension_value"}
+    },
+    "extension_value": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "array", "items": {"$ref": "#/$defs/extension_value"}},
+        {"$ref": "#/$defs/extensions"}
+      ]
+    },
     "question": {
       "type": "object", "additionalProperties": false,
       "required": ["question_id", "question", "exhausted_evidence", "safe_default", "consequences", "resume_point"],
