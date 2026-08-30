@@ -290,6 +290,13 @@ mod tests {
         assert!(StaticUi::load(directory.path()).is_err());
 
         let directory = fixture();
+        let vite = directory.path().join(".vite");
+        let moved_vite = directory.path().join("moved-vite");
+        fs::rename(&vite, &moved_vite).unwrap();
+        symlink("moved-vite", &vite).unwrap();
+        assert!(StaticUi::load(directory.path()).is_err());
+
+        let directory = fixture();
         let asset = directory.path().join("assets/index-Ab12.js");
         fs::remove_file(&asset).unwrap();
         symlink("index-Cd34.css", &asset).unwrap();
