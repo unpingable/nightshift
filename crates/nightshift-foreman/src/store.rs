@@ -290,9 +290,12 @@ impl ForemanStore {
     }
 
     pub fn worker_brief(&self, run_id: &str, work_item_id: &str) -> Result<Vec<u8>, ForemanError> {
-        let connection = self.connection()?;
-        let (packet, _, profile, _) = load_contracts(&connection, run_id)?;
-        worker_brief_bytes(&connection, &packet, &profile, run_id, work_item_id)
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let (packet, _, profile, _) = load_contracts(&transaction, run_id)?;
+        let brief = worker_brief_bytes(&transaction, &packet, &profile, run_id, work_item_id)?;
+        transaction.commit()?;
+        Ok(brief)
     }
 
     pub fn prepare_attempt(

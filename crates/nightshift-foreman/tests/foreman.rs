@@ -925,6 +925,10 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
         reader.projection("run-fixture").unwrap().work_items.len(),
         4
     );
+    assert!(!reader
+        .worker_brief("run-fixture", "root-a")
+        .unwrap()
+        .is_empty());
     assert!(!reader.export_events("run-fixture").unwrap().is_empty());
     drop(reader);
     assert_eq!(schema_snapshot(&database), schema_before_live);

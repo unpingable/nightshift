@@ -23,7 +23,7 @@ check_query_only_tree() {
   rg -q 'O_NOFOLLOW' "$store" || return 1
   rg -q '/proc/self/fd/' "$store" || return 1
   rg -q 'ForemanStore::open_read_only' "$cli" || return 1
-  if rg -n 'ForemanStore::open\(db\)\?\.(projection|export_events|export_final)' "$cli" >/dev/null; then
+  if rg -n 'ForemanStore::open\(db\)\?\.(projection|worker_brief|export_events|export_final)' "$cli" >/dev/null; then
     return 1
   fi
 }

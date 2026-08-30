@@ -178,7 +178,7 @@ fn main() -> Result<()> {
             db,
             run_id,
             work_item,
-        } => write_raw(&ForemanStore::open(db)?.worker_brief(&run_id, &work_item)?)?,
+        } => write_raw(&ForemanStore::open_read_only(db)?.worker_brief(&run_id, &work_item)?)?,
         Command::Resume {
             db,
             run_id,
