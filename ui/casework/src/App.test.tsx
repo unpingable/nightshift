@@ -67,7 +67,7 @@ describe("Nightshift Casework golden journeys", () => {
     for (const label of ["Evidence exhausted", "Safe default", "Consequences", "Resume point"]) {
       expect(screen.getByText(label)).toBeVisible();
     }
-    expect(screen.getByRole("link", { name: question.work_item })).toBeVisible();
+    expect(screen.getByRole("link", { name: question.linked_work_item! })).toBeVisible();
   });
 
   it("keeps starting and final custody separate and leaves exact custody prose uninterpreted", async () => {

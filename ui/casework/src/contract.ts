@@ -48,8 +48,10 @@ export interface StartingCustody {
 }
 
 export interface FinalCustody {
-  derived_id: string;
-  repository: string;
+  derived_id: string | null;
+  navigation_id: string;
+  source_ordinal: number;
+  repository: CompatibleValue;
   branch_head: CompatibleValue;
   push_custody: CompatibleValue;
   dirty: CompatibleValue;
@@ -100,7 +102,8 @@ export interface HumanQuestion {
   derived_id: string | null;
   navigation_id: string;
   source_ordinal: number;
-  work_item: string;
+  work_item: CompatibleValue;
+  linked_work_item: string | null;
   exact_question: CompatibleValue;
   evidence_exhausted: CompatibleValue;
   safe_default: CompatibleValue;

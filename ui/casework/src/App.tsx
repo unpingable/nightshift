@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getRaw, getRun, getRunIndex } from "./api";
 import { DefinitionGrid, Exact, Field, Section, StringList } from "./components";
-import { CompatibleExact, CompatibleList, recognized, timestampText, UNRECOGNIZED_RECEIPT_VALUE } from "./compatible";
+import { CompatibleExact, CompatibleList, recognized, timestampText, UnrecognizedValue, UNRECOGNIZED_RECEIPT_VALUE } from "./compatible";
 import { parseRoute, questionPath, runPath, workItemPath, type Route } from "./router";
 import type { CaseworkRun, HumanQuestion, RunIndex, WorkItem } from "./contract";
 
@@ -132,7 +132,7 @@ function RunCaseView({ digest }: { digest: string }) {
   const [trackFilter, setTrackFilter] = useState("");
   const [questionFilter, setQuestionFilter] = useState("all");
   const run = state.data;
-  const questionItems = useMemo(() => new Set(run?.human_questions.map((question) => question.work_item) ?? []), [run]);
+  const questionItems = useMemo(() => new Set(run?.human_questions.flatMap((question) => question.linked_work_item ? [question.linked_work_item] : []) ?? []), [run]);
   const states = useMemo(() => [...new Set(run?.work_items.map((item) => recognized(item.outcome.state)).filter((value): value is string => value !== null) ?? [])].sort(), [run]);
   const tracks = useMemo(() => [...new Set(run?.work_items.map((item) => item.track) ?? [])].sort(), [run]);
   const items = useMemo(() => {
@@ -175,7 +175,7 @@ function RunCaseView({ digest }: { digest: string }) {
 function QuestionList({ run }: { run: CaseworkRun }) {
   return <Section title={`Human questions · ${run.human_questions.length}`} className="questions" >
     <p>These are exact receipt fields. This surface records no disposition.</p>
-    <ol>{run.human_questions.map((question) => <li key={question.navigation_id}><article><h3><Link href={questionPath(run.run_id, question.navigation_id)}>{recognized(question.exact_question) ?? UNRECOGNIZED_RECEIPT_VALUE}</Link></h3><p><span className="field-label">Linked work item</span> <Link href={workItemPath(run.run_id, question.work_item)}><Exact>{question.work_item}</Exact></Link></p></article></li>)}</ol>
+    <ol>{run.human_questions.map((question) => <li key={question.navigation_id}><article><h3><Link href={questionPath(run.run_id, question.navigation_id)}>{recognized(question.exact_question) ?? UNRECOGNIZED_RECEIPT_VALUE}</Link></h3>{recognized(question.exact_question) === null && <p><UnrecognizedValue runId={run.run_id} /></p>}<p><span className="field-label">Linked work item</span> {question.linked_work_item ? <Link href={workItemPath(run.run_id, question.linked_work_item)}><Exact>{question.linked_work_item}</Exact></Link> : <CompatibleExact value={question.work_item} runId={run.run_id} />}</p></article></li>)}</ol>
   </Section>;
 }
 
@@ -204,7 +204,7 @@ function WorkItemView({ digest, id }: { digest: string; id: string }) {
       </section>
       <section className="case-column outcome"><header><p className="eyebrow">Receipt snapshot</p><h2>Recorded outcome</h2></header>
         <DefinitionGrid><Field label="Exact state"><CompatibleExact value={item.outcome.state} runId={run.run_id} /></Field><Field label="Exact classification"><CompatibleExact value={item.outcome.result_classification} runId={run.run_id} /></Field></DefinitionGrid>
-        <h3>Resulting repositories and custody</h3>{item.outcome.repositories.recognized_rows ? <div className="record-stack">{item.outcome.repositories.recognized_rows.map((row, index) => <DefinitionGrid key={index}><Field label="Repository"><Exact>{row.repository}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Head"><Exact wrap>{row.head}</Exact></Field><Field label="Push status"><Exact wrap>{row.push_status}</Exact></Field></DefinitionGrid>)}</div> : <p className="empty">Receipt value does not have the recognized repository-row shape.</p>}
+        <h3>Resulting repositories and custody</h3>{item.outcome.repositories.recognized_rows ? <div className="record-stack">{item.outcome.repositories.recognized_rows.map((row, index) => <DefinitionGrid key={index}><Field label="Repository"><Exact>{row.repository}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Head"><Exact wrap>{row.head}</Exact></Field><Field label="Push status"><Exact wrap>{row.push_status}</Exact></Field></DefinitionGrid>)}</div> : <p className="unrecognized">Receipt value does not have the recognized repository-row shape. <a href={runPath(run.run_id) + "/raw"}>inspect raw receipts</a></p>}
         <div className="list-block"><h3>Tests</h3><CompatibleList value={item.outcome.tests} runId={run.run_id} /></div><div className="list-block"><h3>Evidence</h3><CompatibleList value={item.outcome.evidence} runId={run.run_id} /></div><div className="list-block"><h3>Live or production mutations</h3><CompatibleList value={item.outcome.live_or_production_mutations} runId={run.run_id} /></div>
         <h3>Remaining trigger</h3><p><CompatibleExact value={item.outcome.remaining_trigger} runId={run.run_id} /></p><h3>Next lawful action</h3><p><CompatibleExact value={item.outcome.next_lawful_action} runId={run.run_id} /></p>
       </section>
@@ -213,9 +213,9 @@ function WorkItemView({ digest, id }: { digest: string; id: string }) {
 }
 
 function QuestionRecord({ run, question }: { run: CaseworkRun; question: HumanQuestion }) {
-  return <article className="question-record"><header><p className="eyebrow">Exact receipt question</p><h1>{recognized(question.exact_question) ?? UNRECOGNIZED_RECEIPT_VALUE}</h1></header><DefinitionGrid>
+  return <article className="question-record"><header><p className="eyebrow">Exact receipt question</p><h1>{recognized(question.exact_question) ?? <UnrecognizedValue runId={run.run_id} />}</h1></header><DefinitionGrid>
     <Field label="Question identifier">{question.derived_id ? <Exact wrap>{question.derived_id}</Exact> : <span className="unrecognized">Not derived from an unrecognized question value</span>}</Field><Field label="Navigation identifier"><Exact wrap>{question.navigation_id}</Exact></Field><Field label="Source ordinal">{question.source_ordinal}</Field>
-    <Field label="Linked work item"><Link href={workItemPath(run.run_id, question.work_item)}><Exact>{question.work_item}</Exact></Link></Field>
+    <Field label="Linked work item">{question.linked_work_item ? <Link href={workItemPath(run.run_id, question.linked_work_item)}><Exact>{question.linked_work_item}</Exact></Link> : <CompatibleExact value={question.work_item} runId={run.run_id} />}</Field>
     <Field label="Evidence exhausted"><CompatibleExact value={question.evidence_exhausted} runId={run.run_id} /></Field>
     <Field label="Safe default"><CompatibleExact value={question.safe_default} runId={run.run_id} /></Field>
     <Field label="Consequences"><CompatibleExact value={question.consequences} runId={run.run_id} /></Field>
@@ -235,7 +235,7 @@ function CustodyView({ digest }: { digest: string }) {
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   return <main id="main" className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source sections</p><h1>Repository custody</h1><p>Starting packet custody and final receipt custody remain separate. Text is displayed without inferred disposition.</p></div></header>
     <div className="paired-columns custody-columns"><Section title="Starting packet custody"><div className="record-stack">{run.packet.repository_custody.map((row) => <article className="custody-row" key={row.derived_id}><h3>{row.repository}</h3><DefinitionGrid><Field label="Path"><Exact wrap>{row.path}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Commit"><Exact wrap>{row.commit}</Exact></Field><Field label="Remote"><Exact wrap>{row.remote ?? "null"}</Exact></Field><Field label="Remote commit"><Exact wrap>{row.remote_commit ?? "null"}</Exact></Field><Field label="Worktree clean"><Exact>{String(row.worktree_clean)}</Exact></Field><Field label="Discrepancy"><Exact wrap>{row.discrepancy ?? "null"}</Exact></Field></DefinitionGrid></article>)}</div></Section>
-      <Section title="Final receipt custody"><div className="record-stack">{run.final_repository_custody.map((row) => <article className="custody-row" key={row.derived_id}><h3>{row.repository}</h3><DefinitionGrid><Field label="Branch head"><CompatibleExact value={row.branch_head} runId={run.run_id} /></Field><Field label="Push custody"><CompatibleExact value={row.push_custody} runId={run.run_id} /></Field><Field label="Dirty"><CompatibleExact value={row.dirty} runId={run.run_id} /></Field><Field label="Live runtime"><CompatibleExact value={row.live_runtime} runId={run.run_id} /></Field><Field label="Secrets"><CompatibleExact value={row.secrets} runId={run.run_id} /></Field><Field label="Teardown"><CompatibleExact value={row.teardown} runId={run.run_id} /></Field></DefinitionGrid></article>)}</div></Section>
+      <Section title="Final receipt custody"><div className="record-stack">{run.final_repository_custody.map((row) => <article className="custody-row" key={row.navigation_id}><h3><CompatibleExact value={row.repository} runId={run.run_id} /></h3><DefinitionGrid><Field label="Branch head"><CompatibleExact value={row.branch_head} runId={run.run_id} /></Field><Field label="Push custody"><CompatibleExact value={row.push_custody} runId={run.run_id} /></Field><Field label="Dirty"><CompatibleExact value={row.dirty} runId={run.run_id} /></Field><Field label="Live runtime"><CompatibleExact value={row.live_runtime} runId={run.run_id} /></Field><Field label="Secrets"><CompatibleExact value={row.secrets} runId={run.run_id} /></Field><Field label="Teardown"><CompatibleExact value={row.teardown} runId={run.run_id} /></Field></DefinitionGrid></article>)}</div></Section>
     </div></main>;
 }
 

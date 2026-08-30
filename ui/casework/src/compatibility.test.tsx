@@ -34,7 +34,7 @@ describe("renderer-compatible raw-only values", () => {
     const { container } = render(<App />);
 
     expect(await screen.findByText("Receipt value does not have the recognized repository-row shape.")).toBeVisible();
-    expect(container.querySelectorAll(".unrecognized")).toHaveLength(3);
+    expect(container.querySelectorAll(".unrecognized")).toHaveLength(4);
     expect(screen.queryByText(/canonical renderer json/i)).not.toBeInTheDocument();
   });
 });
