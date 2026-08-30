@@ -10,8 +10,9 @@ use nightshift_foreman::{
     ForemanAdmissionV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
     ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
     WorkItemExecutionV1, WorkerAdapterCapabilitiesV1, FOREMAN_ADMISSION_SCHEMA_V1,
-    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
+    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_WORKER_BRIEF_BYTES,
+    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
+    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshiftd::packet::{
@@ -410,10 +411,19 @@ fn wal_journal_locks_restart_and_classification_separation_qualify() {
     assert_eq!(binding.request_digest, root_a.request_digest);
     let brief = store.worker_brief("run-fixture", "root-a").unwrap();
     let brief_value: Value = serde_json::from_slice(&brief).unwrap();
+    assert_eq!(brief_value["schema"], WORKER_BRIEF_BASIS_SCHEMA_V2);
     assert_eq!(brief_value["packet_digest"], packet.packet_digest);
-    assert_eq!(brief_value["work_item"]["id"], "root-a");
+    assert_eq!(
+        serde_json::from_str::<Value>(brief_value["work_item"]["canonical_json"].as_str().unwrap())
+            .unwrap()["id"],
+        "root-a"
+    );
+    assert_eq!(
+        hex::decode(brief_value["packet_source"]["bytes_hex"].as_str().unwrap()).unwrap(),
+        packet.canonical_bytes().unwrap()
+    );
     let mut digest = Sha256::new();
-    digest.update(b"nightshift.worker-brief.digest/v1\0");
+    digest.update(b"nightshift.worker-brief.digest/v2\0");
     digest.update(&brief);
     assert_eq!(
         root_a.worker_brief_digest,
@@ -782,6 +792,124 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
     assert!(matches!(
         store.record_resume_requested("run-fixture", "root-a", &request.attempt_id, instant(6)),
         Err(ForemanError::Transition(_))
+    ));
+}
+
+#[test]
+fn worker_brief_v2_digest_has_an_independent_fixed_vector() {
+    let mut v2 = Sha256::new();
+    v2.update(b"nightshift.worker-brief.digest/v2\0");
+    v2.update(b"{}");
+    assert_eq!(
+        format!("sha256:{:x}", v2.finalize()),
+        "sha256:ddd2a21b47c3abf533d27d85a53eb3ac93805d5d938f612929ea410a6ec705e7"
+    );
+    let mut v1 = Sha256::new();
+    v1.update(b"nightshift.worker-brief.digest/v1\0");
+    v1.update(b"{}");
+    assert_ne!(
+        format!("sha256:{:x}", v1.finalize()),
+        "sha256:ddd2a21b47c3abf533d27d85a53eb3ac93805d5d938f612929ea410a6ec705e7"
+    );
+}
+
+#[test]
+fn worker_brief_preserves_exact_packet_and_predecessor_receipt_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let packet = packet();
+    let packet_raw = serde_json::to_vec_pretty(&packet).unwrap();
+    let admission = admission(&packet);
+    let profile = profile(&packet, &admission);
+    let store = ForemanStore::open(directory.path().join("foreman.sqlite")).unwrap();
+    store
+        .admit(
+            &packet_raw,
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            instant(0),
+        )
+        .unwrap();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-RAW", "INDEPENDENT-RAW");
+    receipt.extensions.insert(
+        "raw_extension".into(),
+        serde_json::json!({"unknown": ["preserve", "exact", "bytes"]}),
+    );
+    receipt.seal().unwrap();
+    let receipt_raw = serde_json::to_vec_pretty(&receipt).unwrap();
+    store.accept_terminal_receipt(&receipt_raw).unwrap();
+    assert_eq!(
+        store
+            .projection("run-fixture")
+            .unwrap()
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "dependent")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::ReadyEntryEvaluation
+    );
+
+    let brief_raw = store.worker_brief("run-fixture", "dependent").unwrap();
+    assert!(brief_raw.len() <= MAXIMUM_WORKER_BRIEF_BYTES);
+    let brief: Value = serde_json::from_slice(&brief_raw).unwrap();
+    assert_eq!(brief["schema"], WORKER_BRIEF_BASIS_SCHEMA_V2);
+    let recognized_item: Value =
+        serde_json::from_str(brief["work_item"]["canonical_json"].as_str().unwrap()).unwrap();
+    assert_eq!(recognized_item["id"], "dependent");
+    assert_eq!(
+        recognized_item["dependencies"],
+        serde_json::json!(["root-a"])
+    );
+    assert_eq!(
+        hex::decode(brief["packet_source"]["bytes_hex"].as_str().unwrap()).unwrap(),
+        packet_raw
+    );
+    let predecessor = &brief["predecessor_receipts"]["root-a"];
+    assert_eq!(predecessor["receipt_kind"], "terminal");
+    assert_eq!(
+        hex::decode(predecessor["bytes_hex"].as_str().unwrap()).unwrap(),
+        receipt_raw
+    );
+    assert!(String::from_utf8(receipt_raw)
+        .unwrap()
+        .contains("raw_extension"));
+}
+
+#[test]
+fn worker_brief_total_bound_refuses_oversized_exact_predecessor_custody() {
+    let directory = tempfile::tempdir().unwrap();
+    let packet = packet();
+    let admission = admission(&packet);
+    let mut profile = profile(&packet, &admission);
+    profile.maximum_receipt_bytes = 16 * 1024 * 1024;
+    profile.seal().unwrap();
+    let store = ForemanStore::open(directory.path().join("foreman.sqlite")).unwrap();
+    store
+        .admit(
+            &packet.canonical_bytes().unwrap(),
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            instant(0),
+        )
+        .unwrap();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-RAW", "INDEPENDENT-RAW");
+    receipt.extensions.insert(
+        "bounded_fixture".into(),
+        Value::String("x".repeat(MAXIMUM_WORKER_BRIEF_BYTES / 2 + 4096)),
+    );
+    receipt.seal().unwrap();
+    let raw = serde_jcs::to_vec(&receipt).unwrap();
+    assert!(raw.len() < profile.maximum_receipt_bytes as usize);
+    store.accept_terminal_receipt(&raw).unwrap();
+    assert!(matches!(
+        store.worker_brief("run-fixture", "dependent"),
+        Err(ForemanError::InputTooLarge("worker brief"))
     ));
 }
 

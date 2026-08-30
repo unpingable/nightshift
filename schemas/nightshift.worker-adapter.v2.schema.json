@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:nightshift:worker-adapter:v2",
-  "title": "Nightshift worker adapter V1 records",
+  "title": "Nightshift worker adapter V2 records",
   "oneOf": [
+    {"$ref": "#/$defs/brief"},
     {"$ref": "#/$defs/capabilities"},
     {"$ref": "#/$defs/attempt_binding"},
     {"$ref": "#/$defs/start_request"},
@@ -26,6 +27,38 @@
         "safe_default": {"type": "string", "minLength": 1, "maxLength": 65536},
         "consequences": {"type": "string", "minLength": 1, "maxLength": 65536},
         "resume_point": {"type": "string", "minLength": 1, "maxLength": 65536}
+      }
+    },
+    "brief_source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["retained_raw_digest", "encoding", "bytes_hex"],
+      "properties": {
+        "retained_raw_digest": {"$ref": "#/$defs/digest"},
+        "encoding": {"const": "hex"},
+        "bytes_hex": {"type": "string", "pattern": "^(?:[0-9a-f]{2})*$", "maxLength": 33554432}
+      }
+    },
+    "brief_predecessor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["receipt_kind", "retained_raw_digest", "encoding", "bytes_hex"],
+      "properties": {
+        "receipt_kind": {"enum": ["terminal", "not_started"]},
+        "retained_raw_digest": {"$ref": "#/$defs/digest"},
+        "encoding": {"const": "hex"},
+        "bytes_hex": {"type": "string", "pattern": "^(?:[0-9a-f]{2})*$", "maxLength": 33554432}
+      }
+    },
+    "brief": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "packet_digest", "packet_source", "work_item", "predecessor_receipts", "global_constraints", "execution"],
+      "properties": {
+        "schema": {"const": "nightshift.worker-brief-basis/v2"},
+        "packet_digest": {"$ref": "#/$defs/digest"},
+        "packet_source": {"$ref": "#/$defs/brief_source"},
+        "work_item": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.orientation-packet/v1#work-item"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}},
+        "predecessor_receipts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/brief_predecessor"}},
+        "global_constraints": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.orientation-packet/v1#global-constraints"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}},
+        "execution": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.foreman-execution-profile/v2#work-item"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}}
       }
     },
     "capabilities": {

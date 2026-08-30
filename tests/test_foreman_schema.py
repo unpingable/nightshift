@@ -125,5 +125,40 @@ class ForemanSchemaTests(unittest.TestCase):
             validator.validate(unknown)
 
 
+    def test_v2_worker_brief_is_closed_and_carries_exact_sources(self):
+        document = {
+            "schema": "nightshift.worker-brief-basis/v2",
+            "packet_digest": DIGEST,
+            "packet_source": {
+                "retained_raw_digest": DIGEST,
+                "encoding": "hex",
+                "bytes_hex": "7b7d",
+            },
+            "work_item": {"contract": "nightshift.orientation-packet/v1#work-item", "canonical_json": "{\"dependencies\":[\"root-a\"],\"id\":\"dependent\"}"},
+            "predecessor_receipts": {
+                "root-a": {
+                    "receipt_kind": "terminal",
+                    "retained_raw_digest": DIGEST,
+                    "encoding": "hex",
+                    "bytes_hex": "7b2022657874656e73696f6e223a2074727565207d",
+                }
+            },
+            "global_constraints": {"contract": "nightshift.orientation-packet/v1#global-constraints", "canonical_json": "{}"},
+            "execution": {"contract": "nightshift.foreman-execution-profile/v2#work-item", "canonical_json": "{}"},
+        }
+        validator = Draft202012Validator(
+            schema("nightshift.worker-adapter.v2.schema.json")
+        )
+        validator.validate(document)
+        unknown = copy.deepcopy(document)
+        unknown["semantic_summary"] = "not admitted"
+        with self.assertRaises(ValidationError):
+            validator.validate(unknown)
+        nested_unknown = copy.deepcopy(document)
+        nested_unknown["work_item"]["interpreted_result"] = "not admitted"
+        with self.assertRaises(ValidationError):
+            validator.validate(nested_unknown)
+
+
 if __name__ == "__main__":
     unittest.main()

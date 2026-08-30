@@ -497,6 +497,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "hex",
  "libc",
  "nightshift-casework",
  "nightshiftd",

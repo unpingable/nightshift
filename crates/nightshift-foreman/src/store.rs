@@ -22,11 +22,12 @@ use crate::{
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
     AdapterEventV1, ExecutionProfileV2, ForemanAdmissionV1, HumanQuestionV1, LiveRunProjectionV1,
     NotStartedReceiptV1, ReceiptRepositoryV1, Scheduler, SchedulerStateV1, TerminalReceiptV1,
-    WorkerStartRequestV2, WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    WorkerStartRequestV2, MAXIMUM_WORKER_BRIEF_BYTES, WORKER_BRIEF_BASIS_SCHEMA_V2,
+    WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 
 const INTERNAL_EVENT_SCHEMA: &str = "nightshift.foreman-journal-event/v1";
-const BRIEF_DIGEST_DOMAIN: &[u8] = b"nightshift.worker-brief.digest/v1\0";
+const BRIEF_DIGEST_DOMAIN: &[u8] = b"nightshift.worker-brief.digest/v2\0";
 const RAW_DIGEST_DOMAIN: &[u8] = b"nightshift.foreman-retained-raw.digest/v1\0";
 
 #[derive(Debug, Error)]
@@ -1387,24 +1388,60 @@ fn worker_brief_bytes(
         .iter()
         .find(|item| item.id == work_item_id)
         .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?;
+    let packet_raw: Vec<u8> = connection.query_row(
+        "SELECT packet_bytes FROM runs WHERE run_id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
     let mut predecessors = BTreeMap::new();
     for dependency in &item.dependencies {
-        let raw: Vec<u8> = connection.query_row(
-            "SELECT raw_bytes FROM terminal_receipts WHERE run_id = ?1 AND work_item_id = ?2",
+        let (receipt_kind, raw): (String, Vec<u8>) = connection.query_row(
+            "SELECT receipt_kind, raw_bytes FROM terminal_receipts \
+             WHERE run_id = ?1 AND work_item_id = ?2",
             params![run_id, dependency],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        predecessors.insert(dependency.clone(), raw_digest(&raw));
+        predecessors.insert(
+            dependency.clone(),
+            serde_json::json!({
+                "receipt_kind": receipt_kind,
+                "retained_raw_digest": raw_digest(&raw),
+                "encoding": "hex",
+                "bytes_hex": hex::encode(&raw),
+            }),
+        );
     }
     let value = serde_json::json!({
-        "schema": "nightshift.worker-brief-basis/v1",
+        "schema": WORKER_BRIEF_BASIS_SCHEMA_V2,
         "packet_digest": packet.packet_digest,
-        "work_item": item,
-        "predecessor_receipt_raw_digests": predecessors,
-        "global_constraints": packet.global_constraints,
-        "execution": profile.work_items[work_item_id],
+        "packet_source": {
+            "retained_raw_digest": raw_digest(&packet_raw),
+            "encoding": "hex",
+            "bytes_hex": hex::encode(&packet_raw),
+        },
+        "work_item": {
+            "contract": "nightshift.orientation-packet/v1#work-item",
+            "canonical_json": serde_jcs::to_string(item)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        },
+        "predecessor_receipts": predecessors,
+        "global_constraints": {
+            "contract": "nightshift.orientation-packet/v1#global-constraints",
+            "canonical_json": serde_jcs::to_string(&packet.global_constraints)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        },
+        "execution": {
+            "contract": "nightshift.foreman-execution-profile/v2#work-item",
+            "canonical_json": serde_jcs::to_string(&profile.work_items[work_item_id])
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        },
     });
-    serde_jcs::to_vec(&value).map_err(|error| ForemanError::Serialization(error.to_string()))
+    let bytes = serde_jcs::to_vec(&value)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    if bytes.len() > MAXIMUM_WORKER_BRIEF_BYTES {
+        return Err(ForemanError::InputTooLarge("worker brief"));
+    }
+    Ok(bytes)
 }
 
 fn build_final_document(
