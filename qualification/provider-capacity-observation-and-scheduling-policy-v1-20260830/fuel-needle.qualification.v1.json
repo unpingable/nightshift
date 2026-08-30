@@ -1,0 +1,45 @@
+{
+  "schema": "nightshift.provider-capacity-qualification/v1",
+  "campaign": {
+    "codename": "FUEL-NEEDLE",
+    "canonical_slug": "provider-capacity-observation-and-scheduling-policy-v1",
+    "track": "provider-capacity-observation"
+  },
+  "packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "authorized_integration_base": "888dd1e140200394cfadb81dc0c9377887585b05",
+  "starting_seed": "20e56f983923d5fdb198b0fa4a43d86707c5c49b",
+  "qualified_subject": "7578ad504071e95b8cb3bd5e0e7cb1935bc790c6",
+  "classification": "PROVIDER-CAPACITY-OBSERVATION-AND-SCHEDULING-POLICY-V1-QUALIFIED",
+  "classifications_aggregated": false,
+  "live_probe": {
+    "client": "codex-cli 0.147.0",
+    "observed_at": "2026-08-30T20:14:26.864158168Z",
+    "disposition": "USABLE",
+    "source_class": "OBSERVED",
+    "confidence": "HIGH",
+    "observation_digest": "sha256:611be49a04413b5e84321a2c19950bfde79ebf9a480d58678135a1ab64eea599",
+    "policy_digest": "sha256:01d4b03d71901a04ff79e856bc389bcd9cfb1a9752fae4f8dad19c3f733724bb",
+    "decision_digest": "sha256:b0da49591b2ef22b9ce85c1106c1a2d969054e3cf17ff813afd48519576d4572",
+    "decision_state": "ABUNDANT"
+  },
+  "qualification": {
+    "rust_passed": 319,
+    "rust_failed": 0,
+    "rust_ignored_environment_dependent": 13,
+    "provider_capacity_tests_passed": 11,
+    "schema_report_tests_passed": 11,
+    "format_passed": true,
+    "clippy_warnings_denied_passed": true,
+    "structural_gates_and_negative_controls_passed": true
+  },
+  "human_questions": [],
+  "timers_enabled": false,
+  "services_enabled": false,
+  "limitations": [
+    "The Codex adapter is qualified against codex-cli 0.147.0 and becomes UNKNOWN on layout movement.",
+    "The live snapshot supplied no separate short-window value and none was inferred.",
+    "Other provider adapters remain outside this campaign.",
+    "Foreman integration belongs to CLOCKWORK-MOTH."
+  ],
+  "successor_base_policy": "exact_result_ancestry"
+}
