@@ -6,6 +6,7 @@ use clap::Parser;
 use nightshift_casework::{
     load_runs_at,
     server::{bind_loopback, serve, Api},
+    static_ui::StaticUi,
 };
 
 #[derive(Debug, Parser)]
@@ -17,6 +18,10 @@ struct Args {
     /// Explicit run directory containing packet.v1.json and run-receipts.v1.json.
     #[arg(long = "run-dir", required = true)]
     run_dirs: Vec<PathBuf>,
+
+    /// Explicit compiled UI directory containing index.html, .vite/manifest.json, and assets.
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
 
     /// Loopback socket address. Non-loopback addresses are refused.
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -31,10 +36,15 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let evaluated_now = args.evaluated_at.unwrap_or_else(Utc::now);
     let runs = load_runs_at(&args.run_dirs, evaluated_now).context("load casework runs")?;
+    let api = match args.ui_dir {
+        Some(directory) => Api::new(runs)
+            .with_static_ui(StaticUi::load(&directory).context("load closed compiled UI assets")?),
+        None => Api::new(runs),
+    };
     let listener = bind_loopback(args.bind).context("bind read-only loopback API")?;
     println!(
         "nightshift-casework listening on http://{}",
         listener.local_addr()?
     );
-    serve(listener, Api::new(runs)).context("serve read-only loopback API")
+    serve(listener, api).context("serve read-only loopback API")
 }

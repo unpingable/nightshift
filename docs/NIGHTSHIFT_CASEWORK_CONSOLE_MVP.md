@@ -46,9 +46,10 @@ operational verbs because exact packet and receipt values must remain visible;
 those values are never rendered as controls.
 
 Receipt fields that the historical renderer accepted as loose JSON remain
-compatibility values in the closed projection. The UI displays their canonical
-renderer representation and uses a recognized typed view only where the
-backend provides one. It does not infer meaning from an unrecognized value.
+compatibility values in the closed projection. The UI displays only a recognized
+typed value where the backend provides one. An unrecognized shape stays solely
+in the exact raw receipts; semantic views label it as unrecognized and link to
+those bytes. The browser does not infer meaning from an unrecognized value.
 
 ## Accessibility and layout
 
@@ -73,8 +74,20 @@ npm run build
 
 The Vite development listener is loopback-only and proxies `/api` and
 `/healthz` to a loopback casework API at port 8080. It is development machinery,
-not a production service. Production demonstration uses the separately built
-static assets and the documented casework integration command.
+not a production service. For local operator use, the casework binary accepts
+an explicit compiled `--ui-dir`, preloads the manifest-closed asset set with
+directory-relative no-follow opens, and then serves only those in-memory bytes.
+No HTTP request selects a filesystem pathname.
+
+After building the UI, a local integrated run is:
+
+```bash
+cargo run --locked -p nightshift-casework --bin nightshift-casework -- \
+  --run-dir qualification/nightshift-packet-v1/velvet-orrery \
+  --ui-dir ui/casework/dist \
+  --bind 127.0.0.1:8080 \
+  --evaluated-at 2026-08-31T00:00:00Z
+```
 
 The committed VELVET-ORRERY casework projection is the frontend golden fixture.
 Unit journeys cover all stable routes, the 14-item ledger, RIVER-CLERK,

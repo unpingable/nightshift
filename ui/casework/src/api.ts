@@ -1,4 +1,4 @@
-import type { CaseworkRun, RunIndex } from "./types";
+import type { CaseworkRun, RunIndex } from "./contract";
 
 async function get(path: string): Promise<Response> {
   const response = await fetch(path, { method: "GET", headers: { Accept: "application/json" } });

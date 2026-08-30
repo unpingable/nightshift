@@ -1,5 +1,5 @@
 import projectionJson from "../../../../qualification/nightshift-casework-mvp-20260829/velvet-orrery.casework-run.v1.json";
-import type { CaseworkRun, RunIndex } from "../types";
+import type { CaseworkRun, RunIndex } from "../contract";
 
 export const run = projectionJson as CaseworkRun;
 

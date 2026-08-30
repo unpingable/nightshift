@@ -8,7 +8,7 @@ use std::{
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::{LoadedRun, RunIndexEntryV1, RunIndexV1, RunSummaryV1};
+use crate::{static_ui::StaticUi, LoadedRun, RunIndexEntryV1, RunIndexV1, RunSummaryV1};
 
 const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
 const MAX_HEADER_LINES: usize = 100;
@@ -16,6 +16,7 @@ const MAX_HEADER_LINES: usize = 100;
 #[derive(Clone, Debug)]
 pub struct Api {
     runs: BTreeMap<String, LoadedRun>,
+    static_ui: Option<StaticUi>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,7 +30,15 @@ pub struct Response {
 
 impl Api {
     pub fn new(runs: BTreeMap<String, LoadedRun>) -> Self {
-        Self { runs }
+        Self {
+            runs,
+            static_ui: None,
+        }
+    }
+
+    pub fn with_static_ui(mut self, static_ui: StaticUi) -> Self {
+        self.static_ui = Some(static_ui);
+        self
     }
 
     pub fn response(&self, method: &str, path: &str) -> Response {
@@ -50,6 +59,21 @@ impl Api {
                 runs: self.runs.values().map(index_entry).collect(),
             };
             return json_response(&index, None);
+        }
+        if !path.starts_with("/api/") {
+            if let Some(asset) = self
+                .static_ui
+                .as_ref()
+                .and_then(|ui| ui.response_asset(path))
+            {
+                return Response {
+                    status: 200,
+                    reason: "OK",
+                    content_type: asset.content_type,
+                    etag: Some(asset.etag.clone()),
+                    body: asset.bytes.clone(),
+                };
+            }
         }
         let Some((run_id, suffix)) = parse_run_path(path) else {
             return Response::text(404, "Not Found", b"not found\n".to_vec());

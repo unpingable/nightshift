@@ -7,6 +7,7 @@
 mod loader;
 mod model;
 pub mod server;
+pub mod static_ui;
 
 pub use loader::{load_run_at, load_runs_at, CaseworkError, LoadedRun};
 pub use model::*;

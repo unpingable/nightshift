@@ -28,7 +28,8 @@ if rg -n -i '(https?://|//fonts\.|analytics|telemetry)' \
 fi
 
 if rg -n -i "<(button|textarea)|contentEditable|type=['\"](submit|button)['\"]" \
-    "$app_source" >/tmp/nightshift_casework_ui_hits 2>/dev/null; then
+    "$ui_root/src" -g '!*.test.ts' -g '!*.test.tsx' -g '!**/test/**' \
+    >/tmp/nightshift_casework_ui_hits 2>/dev/null; then
     fail "operator mutation-capable control element found:"
     cat /tmp/nightshift_casework_ui_hits >&2
 fi
@@ -51,9 +52,10 @@ fi
 if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
     sandbox=$(mktemp -d)
     trap 'rm -rf "$sandbox" /tmp/nightshift_casework_ui_hits /tmp/nightshift_casework_ui_selftest' EXIT
-    mkdir -p "$sandbox/repo/ui"
+    mkdir -p "$sandbox/repo/ui/casework/src"
     cp -a scripts "$sandbox/repo/"
-    cp -a "$ui_root" "$sandbox/repo/ui/casework"
+    cp "$ui_root/package-lock.json" "$ui_root/index.html" "$sandbox/repo/ui/casework/"
+    cp -a "$ui_root/src/." "$sandbox/repo/ui/casework/src/"
     printf '\nexport const injectedWriteControl = <button>Dispatch case</button>;\n' \
         >>"$sandbox/repo/ui/casework/src/App.tsx"
     if (cd "$sandbox/repo" && bash scripts/check_casework_ui_read_only_surface.sh \

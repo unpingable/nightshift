@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   preview: { host: "127.0.0.1" },
-  build: { sourcemap: true },
+  build: { sourcemap: true, manifest: true },
   test: {
     globals: true,
     environment: "jsdom",

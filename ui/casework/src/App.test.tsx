@@ -62,8 +62,8 @@ describe("Nightshift Casework golden journeys", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(6);
     unmount();
     const question = run.human_questions[0];
-    at(questionPath(digest, question.derived_id)); render(<App />);
-    expect(await screen.findByRole("heading", { name: question.exact_question })).toBeVisible();
+    at(questionPath(digest, question.navigation_id)); render(<App />);
+    expect(await screen.findByRole("heading", { name: question.exact_question.recognized_string! })).toBeVisible();
     for (const label of ["Evidence exhausted", "Safe default", "Consequences", "Resume point"]) {
       expect(screen.getByText(label)).toBeVisible();
     }
@@ -92,8 +92,8 @@ describe("Nightshift Casework golden journeys", () => {
 
   it("preserves an unknown state and classification verbatim", async () => {
     const changed = structuredClone(run);
-    changed.work_items[0].outcome.state = "STATE-NOT-IN-ANY-TAXONOMY";
-    changed.work_items[0].outcome.result_classification = "UNCLASSIFIED-LITERAL";
+    changed.work_items[0].outcome.state.recognized_string = "STATE-NOT-IN-ANY-TAXONOMY";
+    changed.work_items[0].outcome.result_classification.recognized_string = "UNCLASSIFIED-LITERAL";
     installApiMock(changed); at(runPath(digest)); render(<App />);
     expect((await screen.findAllByText("STATE-NOT-IN-ANY-TAXONOMY")).length).toBeGreaterThan(0);
     expect(screen.getByText("UNCLASSIFIED-LITERAL")).toBeVisible();

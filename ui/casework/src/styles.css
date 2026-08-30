@@ -59,7 +59,7 @@ a:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 3px s
 .run-nav { display: flex; align-items: center; gap: .35rem; padding: .45rem; background: var(--surface); border: 1px solid var(--line); position: sticky; top: 4.7rem; z-index: 4; }
 .run-nav a { padding: .55rem .75rem; color: var(--paper); font-size: .84rem; font-weight: 700; text-decoration: none; border: 1px solid transparent; }
 .run-nav a:hover { border-color: var(--line-strong); background: var(--surface-raised); }
-.summary-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); margin: 1.2rem 0; background: var(--surface); }
+.summary-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--line); margin: 1.2rem 0; background: var(--surface); }
 .summary-strip > div { padding: .8rem; border-left: 1px solid var(--line); min-width: 0; }
 .summary-strip > div:first-child { border-left: 0; }
 .summary-strip span { display: block; color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .35rem; }
@@ -83,6 +83,7 @@ a:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 3px s
 .ledger-table td .exact + .exact { display: block; margin-top: .3rem; }
 .label { color: var(--amber); font-family: ui-monospace, monospace; font-size: .76rem; text-transform: uppercase; letter-spacing: .06em; }
 .empty { color: var(--faint); font-style: italic; }
+.unrecognized { color: var(--amber); font-size: .82rem; }
 .questions > p { color: var(--muted); }
 .questions ol { margin: 0; padding-left: 2.3rem; }
 .questions li { padding: .3rem 0 .8rem .35rem; border-bottom: 1px solid var(--line); }
@@ -118,8 +119,8 @@ footer { display: flex; justify-content: space-between; gap: 1rem; padding: 1.2r
 @media (max-width: 900px) {
   .page, .page.wide { width: min(100% - 1rem, 1000px); }
   .summary-strip { grid-template-columns: repeat(3, 1fr); }
-  .summary-strip > div:nth-child(4) { border-left: 0; border-top: 1px solid var(--line); }
-  .summary-strip > div:nth-child(5) { border-top: 1px solid var(--line); }
+  .summary-strip > div:nth-child(4) { border-left: 0; }
+  .summary-strip > div:nth-child(n + 4) { border-top: 1px solid var(--line); }
   .paired-columns, .raw-grid { grid-template-columns: 1fr; }
   .record-heading { flex-direction: column; gap: 1rem; }
   .classification-block { flex-basis: auto; }
