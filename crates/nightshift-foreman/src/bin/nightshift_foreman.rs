@@ -51,6 +51,14 @@ enum Command {
         #[arg(long)]
         recorded_at: String,
     },
+    Brief {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        work_item: String,
+    },
     Resume {
         #[arg(long)]
         db: PathBuf,
@@ -166,6 +174,11 @@ fn main() -> Result<()> {
             )?;
             print_json(&request)?;
         }
+        Command::Brief {
+            db,
+            run_id,
+            work_item,
+        } => write_raw(&ForemanStore::open(db)?.worker_brief(&run_id, &work_item)?)?,
         Command::Resume {
             db,
             run_id,

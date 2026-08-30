@@ -22,6 +22,7 @@ class ForemanSchemaTests(unittest.TestCase):
             "nightshift.foreman-execution-profile.v1.schema.json",
             "nightshift.foreman-execution-profile.v2.schema.json",
             "nightshift.worker-adapter.v1.schema.json",
+            "nightshift.worker-adapter.v2.schema.json",
         ]:
             Draft202012Validator.check_schema(schema(name))
 
@@ -96,8 +97,10 @@ class ForemanSchemaTests(unittest.TestCase):
 
     def test_adapter_start_request_has_no_approval_response_extension(self):
         document = {
-            "schema": "nightshift.worker-start-request/v1",
+            "schema": "nightshift.worker-start-request/v2",
             "request_digest": DIGEST,
+            "adapter_id": "fixture-adapter",
+            "adapter_version": "fixture.adapter/v1",
             "adapter_protocol": "fixture.adapter/v1",
             "packet_digest": DIGEST,
             "run_id": "run-fixture",
@@ -113,7 +116,7 @@ class ForemanSchemaTests(unittest.TestCase):
             "expected_receipt_schema": "nightshift.worker-terminal-receipt/v1",
         }
         validator = Draft202012Validator(
-            schema("nightshift.worker-adapter.v1.schema.json")
+            schema("nightshift.worker-adapter.v2.schema.json")
         )
         validator.validate(document)
         unknown = copy.deepcopy(document)

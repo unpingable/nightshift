@@ -17,7 +17,7 @@ use crate::{
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
     AdapterEventV1, ExecutionProfileV2, ForemanAdmissionV1, HumanQuestionV1, LiveRunProjectionV1,
     NotStartedReceiptV1, ReceiptRepositoryV1, Scheduler, SchedulerStateV1, TerminalReceiptV1,
-    WorkerStartRequestV1, WORKER_START_REQUEST_SCHEMA_V1, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    WorkerStartRequestV2, WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 
 const INTERNAL_EVENT_SCHEMA: &str = "nightshift.foreman-journal-event/v1";
@@ -64,7 +64,7 @@ enum InternalPayload {
     RunAdmitted,
     AttemptCreated {
         resource_lock_keys: Vec<String>,
-        start_request: Box<WorkerStartRequestV1>,
+        start_request: Box<WorkerStartRequestV2>,
     },
     DispatchRequested,
     ResumeRequested,
@@ -234,12 +234,18 @@ impl ForemanStore {
         load_projection(&self.connection()?, run_id)
     }
 
+    pub fn worker_brief(&self, run_id: &str, work_item_id: &str) -> Result<Vec<u8>, ForemanError> {
+        let connection = self.connection()?;
+        let (packet, _, profile, _) = load_contracts(&connection, run_id)?;
+        worker_brief_bytes(&connection, &packet, &profile, run_id, work_item_id)
+    }
+
     pub fn prepare_attempt(
         &self,
         run_id: &str,
         work_item_id: &str,
         recorded_at: DateTime<Utc>,
-    ) -> Result<WorkerStartRequestV1, ForemanError> {
+    ) -> Result<WorkerStartRequestV2, ForemanError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let projection = load_projection(&transaction, run_id)?;
@@ -298,8 +304,10 @@ impl ForemanStore {
         let adapter = &profile.adapters[&execution.adapter_id];
         let worker_brief_digest =
             worker_brief_digest(&transaction, &packet, &profile, run_id, work_item_id)?;
-        let mut request = WorkerStartRequestV1 {
-            schema: WORKER_START_REQUEST_SCHEMA_V1.to_owned(),
+        let mut request = WorkerStartRequestV2 {
+            schema: WORKER_START_REQUEST_SCHEMA_V2.to_owned(),
+            adapter_id: adapter.adapter_id.clone(),
+            adapter_version: adapter.adapter_version.clone(),
             request_digest: placeholder_digest(),
             adapter_protocol: adapter.protocol.clone(),
             packet_digest: packet.packet_digest.clone(),
@@ -1173,6 +1181,17 @@ fn worker_brief_digest(
     run_id: &str,
     work_item_id: &str,
 ) -> Result<String, ForemanError> {
+    let canonical = worker_brief_bytes(connection, packet, profile, run_id, work_item_id)?;
+    Ok(domain_digest(BRIEF_DIGEST_DOMAIN, &canonical))
+}
+
+fn worker_brief_bytes(
+    connection: &Connection,
+    packet: &NightshiftPacketV1,
+    profile: &ExecutionProfileV2,
+    run_id: &str,
+    work_item_id: &str,
+) -> Result<Vec<u8>, ForemanError> {
     let item = packet
         .work_items
         .iter()
@@ -1195,9 +1214,7 @@ fn worker_brief_digest(
         "global_constraints": packet.global_constraints,
         "execution": profile.work_items[work_item_id],
     });
-    let canonical = serde_jcs::to_vec(&value)
-        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
-    Ok(domain_digest(BRIEF_DIGEST_DOMAIN, &canonical))
+    serde_jcs::to_vec(&value).map_err(|error| ForemanError::Serialization(error.to_string()))
 }
 
 fn build_final_document(

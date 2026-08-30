@@ -5,9 +5,10 @@ use nightshift_foreman::{
     AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, ExecutionProfileV2,
     ForemanAdmissionV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
     ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
-    WorkItemExecutionV1, FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
-    WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+    WorkItemExecutionV1, WorkerAdapterCapabilitiesV1, FOREMAN_ADMISSION_SCHEMA_V1,
+    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
+    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
+    WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshiftd::packet::{
     AuthoringIdentityV1, CampaignIdentityV1, CanonicalizationV1, ExactWorkRefV1,
@@ -18,6 +19,7 @@ use nightshiftd::packet::{
 };
 use rusqlite::Connection;
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
 fn instant(second: u32) -> chrono::DateTime<Utc> {
@@ -212,7 +214,7 @@ fn setup() -> (
 
 fn terminal(
     packet: &NightshiftPacketV1,
-    request: &nightshift_foreman::WorkerStartRequestV1,
+    request: &nightshift_foreman::WorkerStartRequestV2,
     state: &str,
     classification: &str,
 ) -> TerminalReceiptV1 {
@@ -340,6 +342,27 @@ fn admission_is_closed_bound_and_current() {
     assert!(
         ExecutionProfileV2::from_slice(&serde_json::to_vec(&unversioned_adapter).unwrap()).is_err()
     );
+
+    let capabilities = WorkerAdapterCapabilitiesV1 {
+        schema: WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1.into(),
+        adapter_id: "fixture-adapter".into(),
+        adapter_protocol: "fixture.adapter/v1".into(),
+        adapter_version: "fixture.adapter/v1".into(),
+        adapter_executable_identity: format!("sha256:{}", "e".repeat(64)),
+        provider_kind: "fixture-provider".into(),
+        commands: ["capabilities", "start", "resume", "status", "collect"]
+            .map(str::to_owned)
+            .to_vec(),
+        approval_policy: "SURFACE_ONLY_NO_RESPONSE".into(),
+        expected_start_request_schema: WORKER_START_REQUEST_SCHEMA_V2.into(),
+        event_schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+        terminal_receipt_schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.into(),
+        target_effects_authorized: false,
+    };
+    capabilities.validate().unwrap();
+    let mut widened = capabilities;
+    widened.commands.push("approve".into());
+    assert!(widened.validate().is_err());
 }
 
 #[test]
@@ -375,6 +398,23 @@ fn wal_journal_locks_restart_and_classification_separation_qualify() {
     let root_a = store
         .prepare_attempt("run-fixture", "root-a", instant(1))
         .unwrap();
+    assert_eq!(root_a.schema, WORKER_START_REQUEST_SCHEMA_V2);
+    assert_eq!(root_a.adapter_id, "fixture-adapter");
+    assert_eq!(root_a.adapter_version, "fixture.adapter/v1");
+    let binding = root_a.attempt_binding();
+    binding.validate().unwrap();
+    assert_eq!(binding.request_digest, root_a.request_digest);
+    let brief = store.worker_brief("run-fixture", "root-a").unwrap();
+    let brief_value: Value = serde_json::from_slice(&brief).unwrap();
+    assert_eq!(brief_value["packet_digest"], packet.packet_digest);
+    assert_eq!(brief_value["work_item"]["id"], "root-a");
+    let mut digest = Sha256::new();
+    digest.update(b"nightshift.worker-brief.digest/v1\0");
+    digest.update(&brief);
+    assert_eq!(
+        root_a.worker_brief_digest,
+        format!("sha256:{:x}", digest.finalize())
+    );
     assert!(matches!(
         store.prepare_attempt("run-fixture", "root-c", instant(1)),
         Err(ForemanError::ResourceUnavailable(_))
@@ -747,7 +787,7 @@ fn checked_in_contract_schemas_are_closed_json_documents() {
         include_bytes!("../../../schemas/nightshift.foreman-admission.v1.schema.json").as_slice(),
         include_bytes!("../../../schemas/nightshift.foreman-execution-profile.v2.schema.json")
             .as_slice(),
-        include_bytes!("../../../schemas/nightshift.worker-adapter.v1.schema.json").as_slice(),
+        include_bytes!("../../../schemas/nightshift.worker-adapter.v2.schema.json").as_slice(),
     ] {
         let schema: Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(

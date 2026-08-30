@@ -8,13 +8,14 @@ use thiserror::Error;
 
 use crate::{
     FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V1,
+    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
+    WORKER_ATTEMPT_BINDING_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 
 const ADMISSION_DOMAIN: &[u8] = b"nightshift.foreman-admission.digest/v1\0";
 const PROFILE_DOMAIN_V2: &[u8] = b"nightshift.foreman-execution-profile.digest/v2\0";
-const START_DOMAIN: &[u8] = b"nightshift.worker-start-request.digest/v1\0";
+const START_DOMAIN_V2: &[u8] = b"nightshift.worker-start-request.digest/v2\0";
 const EVENT_DOMAIN: &[u8] = b"nightshift.worker-adapter-event.digest/v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"nightshift.worker-terminal-receipt.digest/v1\0";
 const NOT_STARTED_DOMAIN: &[u8] = b"nightshift.work-item-not-started-receipt.digest/v1\0";
@@ -192,6 +193,89 @@ impl ExecutionProfileV2 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerAdapterCapabilitiesV1 {
+    pub schema: String,
+    pub adapter_id: String,
+    pub adapter_protocol: String,
+    pub adapter_version: String,
+    pub adapter_executable_identity: String,
+    pub provider_kind: String,
+    pub commands: Vec<String>,
+    pub approval_policy: String,
+    pub expected_start_request_schema: String,
+    pub event_schema: String,
+    pub terminal_receipt_schema: String,
+    pub target_effects_authorized: bool,
+}
+
+impl WorkerAdapterCapabilitiesV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        parse(bytes)
+    }
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1)?;
+        for (field, value) in [
+            ("adapter_id", &self.adapter_id),
+            ("adapter_protocol", &self.adapter_protocol),
+            ("adapter_version", &self.adapter_version),
+            ("provider_kind", &self.provider_kind),
+        ] {
+            id(field, value)?;
+        }
+        digest(
+            "adapter_executable_identity",
+            &self.adapter_executable_identity,
+        )?;
+        let expected = ["capabilities", "start", "resume", "status", "collect"];
+        if self.commands.iter().map(String::as_str).collect::<Vec<_>>() != expected
+            || self.approval_policy != "SURFACE_ONLY_NO_RESPONSE"
+            || self.expected_start_request_schema != WORKER_START_REQUEST_SCHEMA_V2
+            || self.event_schema != WORKER_ADAPTER_EVENT_SCHEMA_V1
+            || self.terminal_receipt_schema != WORKER_TERMINAL_RECEIPT_SCHEMA_V1
+            || self.target_effects_authorized
+        {
+            return Err(ContractError::InvalidField("adapter capabilities boundary"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerAttemptBindingV1 {
+    pub schema: String,
+    pub request_digest: String,
+    pub packet_digest: String,
+    pub run_id: String,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
+}
+
+impl WorkerAttemptBindingV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        parse(bytes)
+    }
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, WORKER_ATTEMPT_BINDING_SCHEMA_V1)?;
+        digest("request_digest", &self.request_digest)?;
+        digest("packet_digest", &self.packet_digest)?;
+        for (field, value) in [
+            ("run_id", &self.run_id),
+            ("work_item_id", &self.work_item_id),
+            ("attempt_id", &self.attempt_id),
+            ("adapter_id", &self.adapter_id),
+            ("adapter_version", &self.adapter_version),
+        ] {
+            id(field, value)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SchedulerStateV1 {
     WaitingDependencies,
@@ -217,9 +301,11 @@ impl SchedulerStateV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkerStartRequestV1 {
+pub struct WorkerStartRequestV2 {
     pub schema: String,
     pub request_digest: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
     pub adapter_protocol: String,
     pub packet_digest: String,
     pub run_id: String,
@@ -235,19 +321,33 @@ pub struct WorkerStartRequestV1 {
     pub expected_receipt_schema: String,
 }
 
-impl WorkerStartRequestV1 {
+impl WorkerStartRequestV2 {
     pub fn seal(&mut self) -> Result<(), ContractError> {
-        self.request_digest = digest_without(self, "request_digest", START_DOMAIN)?;
+        self.request_digest = digest_without(self, "request_digest", START_DOMAIN_V2)?;
         self.validate()
     }
+    pub fn attempt_binding(&self) -> WorkerAttemptBindingV1 {
+        WorkerAttemptBindingV1 {
+            schema: WORKER_ATTEMPT_BINDING_SCHEMA_V1.to_owned(),
+            request_digest: self.request_digest.clone(),
+            packet_digest: self.packet_digest.clone(),
+            run_id: self.run_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            adapter_id: self.adapter_id.clone(),
+            adapter_version: self.adapter_version.clone(),
+        }
+    }
     pub fn validate(&self) -> Result<(), ContractError> {
-        schema(&self.schema, WORKER_START_REQUEST_SCHEMA_V1)?;
+        schema(&self.schema, WORKER_START_REQUEST_SCHEMA_V2)?;
         digest("request_digest", &self.request_digest)?;
-        if digest_without(self, "request_digest", START_DOMAIN)? != self.request_digest {
+        if digest_without(self, "request_digest", START_DOMAIN_V2)? != self.request_digest {
             return Err(ContractError::DigestMismatch("request_digest"));
         }
         digest("packet_digest", &self.packet_digest)?;
         for (field, value) in [
+            ("adapter_id", &self.adapter_id),
+            ("adapter_version", &self.adapter_version),
             ("adapter_protocol", &self.adapter_protocol),
             ("run_id", &self.run_id),
             ("work_item_id", &self.work_item_id),
