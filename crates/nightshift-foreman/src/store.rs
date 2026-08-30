@@ -22,8 +22,9 @@ use crate::{
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
     AdapterEventV1, ExecutionProfileV2, ForemanAdmissionV1, HumanQuestionV1, LiveRunProjectionV1,
     NotStartedReceiptV1, ReceiptRepositoryV1, Scheduler, SchedulerStateV1, TerminalReceiptV1,
-    WorkerStartRequestV2, MAXIMUM_WORKER_BRIEF_BYTES, WORKER_BRIEF_BASIS_SCHEMA_V2,
-    WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    WorkerBriefV2, WorkerStartRequestV2, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
+    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
+    WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 
 const INTERNAL_EVENT_SCHEMA: &str = "nightshift.foreman-journal-event/v1";
@@ -383,6 +384,8 @@ impl ForemanStore {
             expected_receipt_schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.to_owned(),
         };
         request.seal()?;
+        let brief = worker_brief_bytes(&transaction, &packet, &profile, run_id, work_item_id)?;
+        WorkerBriefV2::from_slice_for_start(&brief, &request)?;
         for lock in &execution.resource_lock_keys {
             transaction.execute(
                 "INSERT INTO resource_claims
@@ -1388,6 +1391,79 @@ fn worker_brief_bytes(
         .iter()
         .find(|item| item.id == work_item_id)
         .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?;
+    if item.dependencies.len() > MAXIMUM_PREDECESSOR_RECEIPTS {
+        return Err(ForemanError::InputTooLarge("predecessor receipt count"));
+    }
+    let packet_len: i64 = connection.query_row(
+        "SELECT length(packet_bytes) FROM runs WHERE run_id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    let mut retained_lengths = Vec::new();
+    let mut preflight_predecessors = BTreeMap::new();
+    for dependency in &item.dependencies {
+        let (receipt_kind, raw_len): (String, i64) = connection.query_row(
+            "SELECT receipt_kind, length(raw_bytes) FROM terminal_receipts \
+             WHERE run_id = ?1 AND work_item_id = ?2",
+            params![run_id, dependency],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        retained_lengths.push(raw_len);
+        preflight_predecessors.insert(
+            dependency.clone(),
+            serde_json::json!({
+                "receipt_kind": receipt_kind,
+                "retained_raw_digest": format!("sha256:{}", "0".repeat(64)),
+                "encoding": "hex",
+                "bytes_hex": "",
+            }),
+        );
+    }
+    let preflight_value = serde_json::json!({
+        "schema": WORKER_BRIEF_BASIS_SCHEMA_V2,
+        "packet_digest": packet.packet_digest,
+        "packet_source": {
+            "retained_raw_digest": format!("sha256:{}", "0".repeat(64)),
+            "encoding": "hex",
+            "bytes_hex": "",
+        },
+        "work_item": {
+            "contract": "nightshift.orientation-packet/v1#work-item",
+            "canonical_json": serde_jcs::to_string(item)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        },
+        "predecessor_receipts": preflight_predecessors,
+        "global_constraints": {
+            "contract": "nightshift.orientation-packet/v1#global-constraints",
+            "canonical_json": serde_jcs::to_string(&packet.global_constraints)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        },
+        "execution": {
+            "contract": "nightshift.foreman-execution-profile/v2#work-item",
+            "canonical_json": serde_jcs::to_string(&profile.work_items[work_item_id])
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        },
+    });
+    let baseline = serde_jcs::to_vec(&preflight_value)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?
+        .len();
+    let raw_total = retained_lengths
+        .into_iter()
+        .try_fold(packet_len, |total, length| {
+            total
+                .checked_add(length)
+                .ok_or(ForemanError::InputTooLarge("worker brief"))
+        })?;
+    let expanded = usize::try_from(raw_total)
+        .ok()
+        .and_then(|length| length.checked_mul(2))
+        .ok_or(ForemanError::InputTooLarge("worker brief"))?;
+    if baseline
+        .checked_add(expanded)
+        .is_none_or(|size| size > MAXIMUM_WORKER_BRIEF_BYTES)
+    {
+        return Err(ForemanError::InputTooLarge("worker brief"));
+    }
     let packet_raw: Vec<u8> = connection.query_row(
         "SELECT packet_bytes FROM runs WHERE run_id = ?1",
         [run_id],

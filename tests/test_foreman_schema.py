@@ -162,6 +162,13 @@ class ForemanSchemaTests(unittest.TestCase):
         unknown["semantic_summary"] = "not admitted"
         with self.assertRaises(ValidationError):
             validator.validate(unknown)
+        too_many = copy.deepcopy(document)
+        too_many["predecessor_receipts"] = {
+            f"p{index}": document["predecessor_receipts"]["root-a"]
+            for index in range(1025)
+        }
+        with self.assertRaises(ValidationError):
+            validator.validate(too_many)
         nested_unknown = copy.deepcopy(document)
         nested_unknown["work_item"]["interpreted_result"] = "not admitted"
         with self.assertRaises(ValidationError):

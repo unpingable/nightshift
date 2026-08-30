@@ -6,13 +6,13 @@ use std::{
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
-    AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, ContractError, ExecutionProfileV2,
-    ForemanAdmissionV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
-    ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
-    WorkItemExecutionV1, WorkerAdapterCapabilitiesV1, FOREMAN_ADMISSION_SCHEMA_V1,
-    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_WORKER_BRIEF_BYTES,
-    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
-    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
+    verify_adapter_contract, AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2,
+    ContractError, ExecutionProfileV2, ForemanAdmissionV1, ForemanError, ForemanStore,
+    HumanQuestionV1, NotStartedReceiptV1, ReceiptRepositoryV1, SchedulerStateV1,
+    TeardownDeclarationV1, TerminalReceiptV1, WorkItemExecutionV1, WorkerAdapterCapabilitiesV1,
+    WorkerBriefV2, FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+    MAXIMUM_WORKER_BRIEF_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
+    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshiftd::packet::{
@@ -372,7 +372,7 @@ fn admission_is_closed_bound_and_current() {
 
 #[test]
 fn wal_journal_locks_restart_and_classification_separation_qualify() {
-    let (directory, store, packet, _, _) = setup();
+    let (directory, store, packet, _, profile) = setup();
     assert_eq!(store.journal_mode().unwrap().to_ascii_lowercase(), "wal");
     let initial = store.projection("run-fixture").unwrap();
     let root_a_initial = initial
@@ -418,11 +418,63 @@ fn wal_journal_locks_restart_and_classification_separation_qualify() {
         excessive_output.seal(),
         Err(ContractError::InvalidField("worker start boundary"))
     ));
+    let registration = &profile.adapters["fixture-adapter"];
+    let capabilities = WorkerAdapterCapabilitiesV1 {
+        schema: WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1.into(),
+        adapter_id: registration.adapter_id.clone(),
+        adapter_protocol: registration.protocol.clone(),
+        adapter_version: registration.adapter_version.clone(),
+        adapter_executable_identity: registration.executable_identity.clone(),
+        provider_kind: "fixture-provider".into(),
+        commands: ["capabilities", "start", "resume", "status", "collect"]
+            .map(str::to_owned)
+            .to_vec(),
+        approval_policy: "SURFACE_ONLY_NO_RESPONSE".into(),
+        expected_start_request_schema: WORKER_START_REQUEST_SCHEMA_V2.into(),
+        event_schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+        terminal_receipt_schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.into(),
+        target_effects_authorized: false,
+    };
+    let capabilities_raw = serde_jcs::to_vec(&capabilities).unwrap();
+    let verified = verify_adapter_contract(&profile, "root-a", &capabilities_raw, &root_a).unwrap();
+    assert_eq!(verified.adapter_version, "fixture.adapter/v1");
+    assert!(verified.capabilities_raw_digest.starts_with("sha256:"));
+    let mut capabilities_digest = Sha256::new();
+    capabilities_digest.update(b"nightshift.worker-adapter-capabilities.raw/v1\0");
+    capabilities_digest.update(&capabilities_raw);
+    assert_eq!(
+        verified.capabilities_raw_digest,
+        format!("sha256:{:x}", capabilities_digest.finalize())
+    );
+    assert!(verify_adapter_contract(
+        &profile,
+        "root-a",
+        &serde_json::to_vec_pretty(&capabilities).unwrap(),
+        &root_a,
+    )
+    .is_err());
+    let mut substituted_capabilities = capabilities.clone();
+    substituted_capabilities.adapter_executable_identity = format!("sha256:{}", "f".repeat(64));
+    assert!(verify_adapter_contract(
+        &profile,
+        "root-a",
+        &serde_jcs::to_vec(&substituted_capabilities).unwrap(),
+        &root_a,
+    )
+    .is_err());
+    let mut substituted_start = root_a.clone();
+    substituted_start.adapter_version = "fixture.adapter/v2".into();
+    substituted_start.seal().unwrap();
+    assert!(
+        verify_adapter_contract(&profile, "root-a", &capabilities_raw, &substituted_start,)
+            .is_err()
+    );
     let binding = root_a.attempt_binding();
     binding.validate().unwrap();
     assert_eq!(binding.request_digest, root_a.request_digest);
     let brief = store.worker_brief("run-fixture", "root-a").unwrap();
     let brief_value: Value = serde_json::from_slice(&brief).unwrap();
+    WorkerBriefV2::from_slice_for_start(&brief, &root_a).unwrap();
     assert_eq!(brief_value["schema"], WORKER_BRIEF_BASIS_SCHEMA_V2);
     assert_eq!(brief_value["packet_digest"], packet.packet_digest);
     assert_eq!(
@@ -864,9 +916,32 @@ fn worker_brief_preserves_exact_packet_and_predecessor_receipt_bytes() {
         SchedulerStateV1::ReadyEntryEvaluation
     );
 
+    let dependent_request = store
+        .prepare_attempt("run-fixture", "dependent", instant(3))
+        .unwrap();
     let brief_raw = store.worker_brief("run-fixture", "dependent").unwrap();
     assert!(brief_raw.len() <= MAXIMUM_WORKER_BRIEF_BYTES);
     let brief: Value = serde_json::from_slice(&brief_raw).unwrap();
+    WorkerBriefV2::from_slice_for_start(&brief_raw, &dependent_request).unwrap();
+    let mut substituted_brief = brief.clone();
+    let mut substituted_packet: Value = serde_json::from_slice(&packet_raw).unwrap();
+    substituted_packet["work_items"][1]["track"] = Value::String("substituted-track".into());
+    let substituted_packet_raw = serde_json::to_vec_pretty(&substituted_packet).unwrap();
+    let mut retained_digest = Sha256::new();
+    retained_digest.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    retained_digest.update(&substituted_packet_raw);
+    substituted_brief["packet_source"]["retained_raw_digest"] =
+        Value::String(format!("sha256:{:x}", retained_digest.finalize()));
+    substituted_brief["packet_source"]["bytes_hex"] =
+        Value::String(hex::encode(&substituted_packet_raw));
+    let substituted_raw = serde_jcs::to_vec(&substituted_brief).unwrap();
+    let mut substituted_request = dependent_request.clone();
+    let mut brief_digest = Sha256::new();
+    brief_digest.update(b"nightshift.worker-brief.digest/v2\0");
+    brief_digest.update(&substituted_raw);
+    substituted_request.worker_brief_digest = format!("sha256:{:x}", brief_digest.finalize());
+    substituted_request.seal().unwrap();
+    assert!(WorkerBriefV2::from_slice_for_start(&substituted_raw, &substituted_request,).is_err());
     assert_eq!(brief["schema"], WORKER_BRIEF_BASIS_SCHEMA_V2);
     let recognized_item: Value =
         serde_json::from_str(brief["work_item"]["canonical_json"].as_str().unwrap()).unwrap();
@@ -919,6 +994,19 @@ fn worker_brief_total_bound_refuses_oversized_exact_predecessor_custody() {
     let raw = serde_jcs::to_vec(&receipt).unwrap();
     assert!(raw.len() < profile.maximum_receipt_bytes as usize);
     store.accept_terminal_receipt(&raw).unwrap();
+    assert!(matches!(
+        store.prepare_attempt("run-fixture", "dependent", instant(3)),
+        Err(ForemanError::InputTooLarge("worker brief"))
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .find(|item| item.work_item_id == "dependent")
+        .unwrap()
+        .active_attempt_id
+        .is_none());
     assert!(matches!(
         store.worker_brief("run-fixture", "dependent"),
         Err(ForemanError::InputTooLarge("worker brief"))

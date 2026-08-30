@@ -56,7 +56,7 @@
         "packet_digest": {"$ref": "#/$defs/digest"},
         "packet_source": {"$ref": "#/$defs/brief_source"},
         "work_item": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.orientation-packet/v1#work-item"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}},
-        "predecessor_receipts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/brief_predecessor"}},
+        "predecessor_receipts": {"type": "object", "maxProperties": 1024, "propertyNames": {"$ref": "#/$defs/id"}, "additionalProperties": {"$ref": "#/$defs/brief_predecessor"}},
         "global_constraints": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.orientation-packet/v1#global-constraints"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}},
         "execution": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.foreman-execution-profile/v2#work-item"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}}
       }

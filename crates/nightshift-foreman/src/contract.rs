@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
+use nightshiftd::packet::{GlobalConstraintsV1, NightshiftPacketV1, WorkItemV1};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -8,10 +9,11 @@ use thiserror::Error;
 
 use crate::{
     FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    MAXIMUM_ADAPTER_TIMEOUT_SECONDS, MAXIMUM_WORKER_OUTPUT_BYTES,
-    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
-    WORKER_ATTEMPT_BINDING_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
-    WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+    MAXIMUM_ADAPTER_TIMEOUT_SECONDS, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
+    MAXIMUM_WORKER_OUTPUT_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
+    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_ATTEMPT_BINDING_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2,
+    WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 
 const ADMISSION_DOMAIN: &[u8] = b"nightshift.foreman-admission.digest/v1\0";
@@ -20,6 +22,9 @@ const START_DOMAIN_V2: &[u8] = b"nightshift.worker-start-request.digest/v2\0";
 const EVENT_DOMAIN: &[u8] = b"nightshift.worker-adapter-event.digest/v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"nightshift.worker-terminal-receipt.digest/v1\0";
 const NOT_STARTED_DOMAIN: &[u8] = b"nightshift.work-item-not-started-receipt.digest/v1\0";
+const RETAINED_RAW_DOMAIN: &[u8] = b"nightshift.foreman-retained-raw.digest/v1\0";
+const CAPABILITIES_RAW_DOMAIN: &[u8] = b"nightshift.worker-adapter-capabilities.raw/v1\0";
+const WORKER_BRIEF_DOMAIN_V2: &[u8] = b"nightshift.worker-brief.digest/v2\0";
 
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
 pub enum ContractError {
@@ -244,6 +249,75 @@ impl WorkerAdapterCapabilitiesV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AdapterContractVerificationV1 {
+    pub schema: String,
+    pub capabilities_raw_digest: String,
+    pub profile_digest: String,
+    pub request_digest: String,
+    pub adapter_id: String,
+    pub adapter_protocol: String,
+    pub adapter_version: String,
+    pub adapter_executable_identity: String,
+    pub disposition: String,
+}
+
+pub fn verify_adapter_contract(
+    profile: &ExecutionProfileV2,
+    work_item_id: &str,
+    capabilities_raw: &[u8],
+    start: &WorkerStartRequestV2,
+) -> Result<AdapterContractVerificationV1, ContractError> {
+    profile.validate()?;
+    start.validate()?;
+    let capabilities = WorkerAdapterCapabilitiesV1::from_slice(capabilities_raw)?;
+    capabilities.validate()?;
+    if serde_jcs::to_vec(&capabilities).map_err(json_error)? != capabilities_raw {
+        return Err(ContractError::InvalidField("capabilities canonical bytes"));
+    }
+    let execution = profile
+        .work_items
+        .get(work_item_id)
+        .ok_or(ContractError::InvalidField("capability work item"))?;
+    let registration =
+        profile
+            .adapters
+            .get(&execution.adapter_id)
+            .ok_or(ContractError::InvalidField(
+                "capability adapter registration",
+            ))?;
+    if registration.adapter_id != capabilities.adapter_id
+        || registration.protocol != capabilities.adapter_protocol
+        || registration.adapter_version != capabilities.adapter_version
+        || registration.executable_identity != capabilities.adapter_executable_identity
+        || start.packet_digest != profile.packet_digest
+        || start.work_item_id != work_item_id
+        || start.adapter_id != registration.adapter_id
+        || start.adapter_protocol != registration.protocol
+        || start.adapter_version != registration.adapter_version
+        || start.workspace_identity != execution.workspace_identity
+        || start.provider_model_class != execution.provider_model_class
+        || start.timeout_seconds != profile.adapter_timeout_seconds
+        || start.maximum_output_bytes != profile.maximum_event_bytes
+    {
+        return Err(ContractError::InvalidField(
+            "profile capability start binding",
+        ));
+    }
+    Ok(AdapterContractVerificationV1 {
+        schema: "nightshift.adapter-contract-verification/v1".to_owned(),
+        capabilities_raw_digest: domain_digest_bytes(CAPABILITIES_RAW_DOMAIN, capabilities_raw),
+        profile_digest: profile.profile_digest.clone(),
+        request_digest: start.request_digest.clone(),
+        adapter_id: registration.adapter_id.clone(),
+        adapter_protocol: registration.protocol.clone(),
+        adapter_version: registration.adapter_version.clone(),
+        adapter_executable_identity: registration.executable_identity.clone(),
+        disposition: "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED".to_owned(),
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerAttemptBindingV1 {
     pub schema: String,
     pub request_digest: String,
@@ -298,6 +372,177 @@ impl SchedulerStateV1 {
     pub fn is_explicit_terminal(&self) -> bool {
         matches!(self, Self::TerminalReceiptAccepted | Self::NotStarted)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedRawBytesV1 {
+    pub retained_raw_digest: String,
+    pub encoding: String,
+    pub bytes_hex: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedPredecessorReceiptV1 {
+    pub receipt_kind: String,
+    pub retained_raw_digest: String,
+    pub encoding: String,
+    pub bytes_hex: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecognizedContractJsonV1 {
+    pub contract: String,
+    pub canonical_json: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerBriefV2 {
+    pub schema: String,
+    pub packet_digest: String,
+    pub packet_source: RetainedRawBytesV1,
+    pub work_item: RecognizedContractJsonV1,
+    pub predecessor_receipts: BTreeMap<String, RetainedPredecessorReceiptV1>,
+    pub global_constraints: RecognizedContractJsonV1,
+    pub execution: RecognizedContractJsonV1,
+}
+
+impl WorkerBriefV2 {
+    pub fn from_slice_for_start(
+        bytes: &[u8],
+        start: &WorkerStartRequestV2,
+    ) -> Result<Self, ContractError> {
+        if bytes.len() > MAXIMUM_WORKER_BRIEF_BYTES {
+            return Err(ContractError::InvalidField("worker brief size"));
+        }
+        let brief: Self = parse(bytes)?;
+        if serde_jcs::to_vec(&brief).map_err(json_error)? != bytes {
+            return Err(ContractError::InvalidField("worker brief canonical bytes"));
+        }
+        schema(&brief.schema, WORKER_BRIEF_BASIS_SCHEMA_V2)?;
+        digest("packet_digest", &brief.packet_digest)?;
+        if brief.packet_digest != start.packet_digest
+            || domain_digest_bytes(WORKER_BRIEF_DOMAIN_V2, bytes) != start.worker_brief_digest
+        {
+            return Err(ContractError::DigestMismatch("worker brief binding"));
+        }
+        if brief.predecessor_receipts.len() > MAXIMUM_PREDECESSOR_RECEIPTS {
+            return Err(ContractError::InvalidField("predecessor receipt count"));
+        }
+        let packet_raw = decode_retained(
+            &brief.packet_source.retained_raw_digest,
+            &brief.packet_source.encoding,
+            &brief.packet_source.bytes_hex,
+        )?;
+        let packet = NightshiftPacketV1::from_slice(&packet_raw)
+            .map_err(|_| ContractError::InvalidField("retained packet"))?;
+        packet
+            .validate_integrity()
+            .map_err(|_| ContractError::InvalidField("retained packet integrity"))?;
+        if packet.packet_digest != brief.packet_digest {
+            return Err(ContractError::DigestMismatch("retained packet"));
+        }
+        let selected = packet
+            .work_items
+            .iter()
+            .find(|item| item.id == start.work_item_id)
+            .ok_or(ContractError::InvalidField("retained work item"))?;
+        let recognized_work: WorkItemV1 = recognized(
+            &brief.work_item,
+            "nightshift.orientation-packet/v1#work-item",
+        )?;
+        if &recognized_work != selected {
+            return Err(ContractError::InvalidField("recognized work item"));
+        }
+        let recognized_global: GlobalConstraintsV1 = recognized(
+            &brief.global_constraints,
+            "nightshift.orientation-packet/v1#global-constraints",
+        )?;
+        if recognized_global != packet.global_constraints {
+            return Err(ContractError::InvalidField("recognized global constraints"));
+        }
+        let execution: WorkItemExecutionV1 = recognized(
+            &brief.execution,
+            "nightshift.foreman-execution-profile/v2#work-item",
+        )?;
+        if execution.adapter_id != start.adapter_id
+            || execution.workspace_identity != start.workspace_identity
+            || execution.provider_model_class != start.provider_model_class
+        {
+            return Err(ContractError::InvalidField("recognized execution binding"));
+        }
+        let expected: BTreeSet<_> = selected.dependencies.iter().cloned().collect();
+        let observed: BTreeSet<_> = brief.predecessor_receipts.keys().cloned().collect();
+        if expected != observed {
+            return Err(ContractError::InvalidField("predecessor receipt set"));
+        }
+        for (dependency, retained) in &brief.predecessor_receipts {
+            let raw = decode_retained(
+                &retained.retained_raw_digest,
+                &retained.encoding,
+                &retained.bytes_hex,
+            )?;
+            match retained.receipt_kind.as_str() {
+                "terminal" => {
+                    let receipt = TerminalReceiptV1::from_slice(&raw)?;
+                    if receipt.packet_digest != brief.packet_digest
+                        || receipt.work_item_id != *dependency
+                    {
+                        return Err(ContractError::InvalidField("predecessor terminal binding"));
+                    }
+                }
+                "not_started" => {
+                    let receipt = NotStartedReceiptV1::from_slice(&raw)?;
+                    if receipt.packet_digest != brief.packet_digest
+                        || receipt.work_item_id != *dependency
+                    {
+                        return Err(ContractError::InvalidField(
+                            "predecessor not-started binding",
+                        ));
+                    }
+                }
+                _ => return Err(ContractError::InvalidField("predecessor receipt kind")),
+            }
+        }
+        Ok(brief)
+    }
+}
+
+fn decode_retained(
+    retained_raw_digest: &str,
+    encoding: &str,
+    bytes_hex: &str,
+) -> Result<Vec<u8>, ContractError> {
+    digest("retained_raw_digest", retained_raw_digest)?;
+    if encoding != "hex"
+        || bytes_hex.len() > MAXIMUM_WORKER_BRIEF_BYTES.saturating_mul(2)
+        || bytes_hex.len() % 2 != 0
+    {
+        return Err(ContractError::InvalidField("retained raw encoding"));
+    }
+    let raw =
+        hex::decode(bytes_hex).map_err(|_| ContractError::InvalidField("retained raw hex"))?;
+    if domain_digest_bytes(RETAINED_RAW_DOMAIN, &raw) != retained_raw_digest {
+        return Err(ContractError::DigestMismatch("retained raw"));
+    }
+    Ok(raw)
+}
+
+fn recognized<T: DeserializeOwned + Serialize>(
+    wrapper: &RecognizedContractJsonV1,
+    expected_contract: &str,
+) -> Result<T, ContractError> {
+    if wrapper.contract != expected_contract {
+        return Err(ContractError::InvalidField("recognized contract"));
+    }
+    let value: T = serde_json::from_str(&wrapper.canonical_json).map_err(json_error)?;
+    if serde_jcs::to_string(&value).map_err(json_error)? != wrapper.canonical_json {
+        return Err(ContractError::InvalidField("recognized canonical JSON"));
+    }
+    Ok(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -651,6 +896,17 @@ impl NotStartedReceiptV1 {
         }
         Ok(())
     }
+}
+
+fn json_error(error: impl std::fmt::Display) -> ContractError {
+    ContractError::Json(error.to_string())
+}
+
+fn domain_digest_bytes(domain: &[u8], bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(bytes);
+    format!("sha256:{:x}", digest.finalize())
 }
 
 fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ContractError> {
