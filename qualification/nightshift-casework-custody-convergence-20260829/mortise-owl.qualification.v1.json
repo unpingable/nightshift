@@ -1,0 +1,55 @@
+{
+  "schema": "nightshift.casework-custody-convergence-qualification/v1",
+  "campaign": {
+    "codename": "MORTISE-OWL",
+    "canonical_slug": "nightshift-casework-qualified-head-custody-convergence-v1",
+    "track": "nightshift-repository-custody"
+  },
+  "qualified_subject_commit": "c13da63d434f5450a976cd8ac6d2c5a4301d3751",
+  "integration_commit": "397ee9fe7f405ae3c0b44b3942fa003c47861c17",
+  "predecessor_result_heads": {
+    "INDEX-WREN": "83ad130468c940848d3d0fb89ed9f48925baabd8",
+    "MAP-CABINET": "ad36932be2d4aceeff71b848bad534aae1c3c938"
+  },
+  "successor_base_policy": "exact_result_ancestry",
+  "classification": "NIGHTSHIFT-CASEWORK-QUALIFIED-HEAD-CUSTODY-CONVERGENCE-V1-QUALIFIED",
+  "authority_effect": "NONE",
+  "aggregate_result_created": false,
+  "qualification": {
+    "format": "PASSED",
+    "workspace_tests": {
+      "passed": 319,
+      "ignored_documented_environment_dependent": 13,
+      "failed": 0
+    },
+    "casework_tests_passed": 28,
+    "all_feature_warnings_denied_clippy": "PASSED",
+    "renderer_schema_and_base_admission_cases_passed": 8,
+    "structural_gates_and_negative_controls": "PASSED",
+    "frontend_test_files": 5,
+    "frontend_tests_passed": 18,
+    "production_frontend_build": "PASSED"
+  },
+  "browser": {
+    "installed_browser": "Google Chrome 143.0.7499.109",
+    "browser_downloaded": false,
+    "velvet_work_item_count": 14,
+    "velvet_human_question_count": 6,
+    "self_description_work_item_count": 2,
+    "self_description_human_question_count": 0,
+    "raw_source_bodies_byte_exact": true,
+    "post_status": 405,
+    "unlisted_asset_status": 404,
+    "aggregate_result_present": false,
+    "mutation_control_present": false,
+    "keyboard_fragment_activation": "PASSED"
+  },
+  "canonical_nightshiftd_production_binary_count": 2,
+  "predecessor_history_rewritten": false,
+  "default_branch_mutated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "browser_process_remaining": false,
+  "temporary_profile_remaining": false,
+  "teardown_obligation_remaining": false
+}
