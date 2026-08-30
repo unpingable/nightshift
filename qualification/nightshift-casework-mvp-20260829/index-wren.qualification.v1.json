@@ -50,6 +50,20 @@
       "reason": "Campaign closeout commit 83ad130468c940848d3d0fb89ed9f48925baabd8 resolved at the established remote before enclosing run closeout."
     }
   ],
+  "publication_custody_history": [
+    {
+      "at": "qualified_implementation",
+      "commit": "f50e5c4ee64ae16d29fa5b39dedf166ad9dca4f9",
+      "classification": "LOCAL-COMMITTED-NOT-PUSHED",
+      "remote_push_performed": false
+    },
+    {
+      "at": "campaign_closeout",
+      "commit": "83ad130468c940848d3d0fb89ed9f48925baabd8",
+      "classification": "REMOTE-VERIFIED-EXACT",
+      "remote_push_performed": true
+    }
+  ],
   "qualification_commands": [
     "cargo fmt --all -- --check",
     "cargo test --locked --workspace --all-targets",

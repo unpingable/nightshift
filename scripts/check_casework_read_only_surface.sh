@@ -69,6 +69,9 @@ for required in     'Content-Security-Policy'     'Cross-Origin-Resource-Policy:
         fail "required restrictive response header is missing: $required"
     fi
 done
+# The final MAP-CABINET tree adds the manifest-closed static UI loader. Count
+# its no-follow opens separately from the exact run-input loader so the
+# predecessor single-loader check remains true without ignoring new code.
 if ! rg -q 'const PACKET_FILE: &str = "packet.v1.json"' crates/nightshift-casework/src/loader.rs || ! rg -q 'const RECEIPTS_FILE: &str = "run-receipts.v1.json"' crates/nightshift-casework/src/loader.rs || [ "$(rg -c '\bopenat\(' crates/nightshift-casework/src/loader.rs || true)" -ne 1 ] || ! rg -q 'OFlags::NOFOLLOW' crates/nightshift-casework/src/loader.rs || ! rg -q 'metadata\.is_file\(\)' crates/nightshift-casework/src/loader.rs; then
     fail "exact run filenames and directory-relative no-follow reads are not structurally pinned"
 fi

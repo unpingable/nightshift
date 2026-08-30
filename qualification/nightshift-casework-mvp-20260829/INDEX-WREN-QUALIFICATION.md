@@ -21,7 +21,8 @@ use outside this campaign's sealed packet and records.
 | Filesystem custody | `QUALIFIED` | Directory-handle-relative no-follow opens and already-open descriptor reads pass pathname and run-directory replacement cases. |
 | Read-only structural boundary | `QUALIFIED` | Canonical and casework gates pass, including deterministic alternate-bind, filesystem-mutation, canonical-store, CORS, subprocess, client-dependency, and generic-listener injections. |
 | VELVET fixture | `QUALIFIED` | Exact source bytes project 14 work items, six questions, independent custody sections, historical currentness, and no aggregate result. |
-| Publication custody | `REMOTE-VERIFIED-EXACT` | The campaign closeout commit was pushed to the established Nightshift remote and independently resolved at the exact SHA. |
+| Publication custody at implementation qualification | `LOCAL-COMMITTED-NOT-PUSHED` | The qualified implementation checkpoint was initially retained locally under the foreman then-current instruction. |
+| Publication custody at campaign closeout | `REMOTE-VERIFIED-EXACT` | The later campaign closeout commit was pushed to the established Nightshift remote and independently resolved at the exact SHA. |
 
 These classifications remain independent. This record creates no aggregate
 campaign verdict.
@@ -50,4 +51,6 @@ changed. The only packet addition is integrity-only validation used to classify
 historical evidence separately from currentness. No casework listener remains.
 The campaign branch was published and verified at
 `83ad130468c940848d3d0fb89ed9f48925baabd8` before the enclosing run-closeout
-receipt was authored on the dependent MAP-CABINET branch.
+receipt was authored on the dependent MAP-CABINET branch. The earlier local-only
+statement and later remote-verified statement describe different custody instants;
+neither is discarded by the convergence merge.
