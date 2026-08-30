@@ -919,7 +919,10 @@ fn interoperable_json(value: &Value) -> Result<(), ContractError> {
             } else if let Some(value) = number.as_u64() {
                 value <= MAX_SAFE_INTEGER as u64
             } else {
-                number.as_f64().is_some_and(f64::is_finite)
+                number.as_f64().is_some_and(|value| {
+                    value.is_finite()
+                        && (value.fract() != 0.0 || value.abs() <= MAX_SAFE_INTEGER as f64)
+                })
             };
             if admitted {
                 Ok(())

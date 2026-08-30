@@ -176,6 +176,11 @@ class ForemanSchemaTests(unittest.TestCase):
         unicode_key["extensions"] = {"nested": {"\U0001f600": "not admitted as an object key"}}
         with self.assertRaises(ValidationError):
             validator.validate(unicode_key)
+        for unsafe_number in (9007199254740992, -9007199254740992, 1e20):
+            numeric = copy.deepcopy(document)
+            numeric["extensions"] = {"nested": {"unsafe_number": unsafe_number}}
+            with self.assertRaises(ValidationError):
+                validator.validate(numeric)
 
     def test_v2_worker_brief_is_closed_and_carries_exact_sources(self):
         document = {

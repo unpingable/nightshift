@@ -809,6 +809,23 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
     assert!(item.accepted_terminal_outcome.is_none());
 
     assert!(store.accept_terminal_receipt(b"{}").is_err());
+    for number in [
+        serde_json::json!(1e-7),
+        serde_json::json!(1e-6),
+        serde_json::json!(1.25),
+        serde_json::json!(-0.0),
+        serde_json::json!(9_007_199_254_740_991_i64),
+        serde_json::json!(-9_007_199_254_740_991_i64),
+    ] {
+        let mut admitted = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+        admitted.extensions.insert("number".into(), number);
+        admitted.seal().unwrap();
+        let canonical = serde_jcs::to_vec(&admitted).unwrap();
+        let parsed = TerminalReceiptV1::from_slice(&canonical).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(serde_jcs::to_vec(&parsed).unwrap(), canonical);
+    }
+
     let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
     receipt.thread_identity = Some("thread:fixture".into());
     receipt.turn_identity = Some("turn:fixture".into());
@@ -942,7 +959,7 @@ fn rfc8785_cross_language_vector_covers_numeric_unicode_and_escape_edges() {
 
     let admitted = serde_json::json!({
         "numbers": [
-            1e-7, 1e-6, 1e20, 1e21, -0.0,
+            1e-7, 1e-6, 1.25, -0.0,
             9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64
         ],
         "unicode_values": ["€", "\u{0080}", "😀", "דּ"],
@@ -955,7 +972,7 @@ fn rfc8785_cross_language_vector_covers_numeric_unicode_and_escape_edges() {
 }
 
 #[test]
-fn worker_receipts_refuse_json_integers_outside_the_cross_language_safe_domain() {
+fn worker_receipts_enforce_a_serialize_parse_closed_numeric_domain() {
     let (_directory, store, packet, _, _) = setup();
     let request = store
         .prepare_attempt("run-fixture", "root-a", instant(1))
@@ -967,6 +984,16 @@ fn worker_receipts_refuse_json_integers_outside_the_cross_language_safe_domain()
     );
     assert!(matches!(
         receipt.seal(),
+        Err(ContractError::InvalidField("RFC8785 number"))
+    ));
+
+    let mut integral_float = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    integral_float.extensions.insert(
+        "nested".into(),
+        serde_json::json!({"unsafe_integral_float": 1e20}),
+    );
+    assert!(matches!(
+        integral_float.seal(),
         Err(ContractError::InvalidField("RFC8785 number"))
     ));
 
