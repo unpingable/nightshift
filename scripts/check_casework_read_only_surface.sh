@@ -69,8 +69,11 @@ for required in     'Content-Security-Policy'     'Cross-Origin-Resource-Policy:
         fail "required restrictive response header is missing: $required"
     fi
 done
-if ! rg -q 'const PACKET_FILE: &str = "packet.v1.json"' crates/nightshift-casework/src/loader.rs || ! rg -q 'const RECEIPTS_FILE: &str = "run-receipts.v1.json"' crates/nightshift-casework/src/loader.rs || [ "$(rg -c '\bopenat\(' "$source_snapshot" || true)" -ne 1 ] || ! rg -q 'OFlags::NOFOLLOW' crates/nightshift-casework/src/loader.rs || ! rg -q 'metadata\.is_file\(\)' crates/nightshift-casework/src/loader.rs; then
+if ! rg -q 'const PACKET_FILE: &str = "packet.v1.json"' crates/nightshift-casework/src/loader.rs || ! rg -q 'const RECEIPTS_FILE: &str = "run-receipts.v1.json"' crates/nightshift-casework/src/loader.rs || [ "$(rg -c '\bopenat\(' crates/nightshift-casework/src/loader.rs || true)" -ne 1 ] || ! rg -q 'OFlags::NOFOLLOW' crates/nightshift-casework/src/loader.rs || ! rg -q 'metadata\.is_file\(\)' crates/nightshift-casework/src/loader.rs; then
     fail "exact run filenames and directory-relative no-follow reads are not structurally pinned"
+fi
+if [ "$(rg -c '\bopenat\(' crates/nightshift-casework/src/static_ui.rs || true)" -ne 3 ] || ! rg -q 'OFlags::NOFOLLOW' crates/nightshift-casework/src/static_ui.rs || ! rg -q 'Requests never select a filesystem pathname' crates/nightshift-casework/src/static_ui.rs; then
+    fail "compiled UI is not pinned to startup-only directory-relative no-follow reads"
 fi
 
 if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
