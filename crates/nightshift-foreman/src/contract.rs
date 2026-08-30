@@ -488,7 +488,9 @@ impl WorkerBriefV2 {
             match retained.receipt_kind.as_str() {
                 "terminal" => {
                     let receipt = TerminalReceiptV1::from_slice(&raw)?;
+                    receipt.validate()?;
                     if receipt.packet_digest != brief.packet_digest
+                        || receipt.run_id != start.run_id
                         || receipt.work_item_id != *dependency
                     {
                         return Err(ContractError::InvalidField("predecessor terminal binding"));
@@ -496,7 +498,9 @@ impl WorkerBriefV2 {
                 }
                 "not_started" => {
                     let receipt = NotStartedReceiptV1::from_slice(&raw)?;
+                    receipt.validate()?;
                     if receipt.packet_digest != brief.packet_digest
+                        || receipt.run_id != start.run_id
                         || receipt.work_item_id != *dependency
                     {
                         return Err(ContractError::InvalidField(

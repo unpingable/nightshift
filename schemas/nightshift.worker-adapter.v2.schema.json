@@ -4,6 +4,7 @@
   "title": "Nightshift worker adapter V2 records",
   "oneOf": [
     {"$ref": "#/$defs/brief"},
+    {"$ref": "#/$defs/adapter_contract_verification"},
     {"$ref": "#/$defs/capabilities"},
     {"$ref": "#/$defs/attempt_binding"},
     {"$ref": "#/$defs/start_request"},
@@ -59,6 +60,21 @@
         "predecessor_receipts": {"type": "object", "maxProperties": 1024, "propertyNames": {"$ref": "#/$defs/id"}, "additionalProperties": {"$ref": "#/$defs/brief_predecessor"}},
         "global_constraints": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.orientation-packet/v1#global-constraints"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}},
         "execution": {"type": "object", "additionalProperties": false, "required": ["contract", "canonical_json"], "properties": {"contract": {"const": "nightshift.foreman-execution-profile/v2#work-item"}, "canonical_json": {"type": "string", "minLength": 2, "maxLength": 8388608}}}
+      }
+    },
+    "adapter_contract_verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "capabilities_raw_digest", "profile_digest", "request_digest", "adapter_id", "adapter_protocol", "adapter_version", "adapter_executable_identity", "disposition"],
+      "properties": {
+        "schema": {"const": "nightshift.adapter-contract-verification/v1"},
+        "capabilities_raw_digest": {"$ref": "#/$defs/digest"},
+        "profile_digest": {"$ref": "#/$defs/digest"},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "adapter_id": {"$ref": "#/$defs/id"},
+        "adapter_protocol": {"$ref": "#/$defs/id"},
+        "adapter_version": {"$ref": "#/$defs/id"},
+        "adapter_executable_identity": {"$ref": "#/$defs/digest"},
+        "disposition": {"const": "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED"}
       }
     },
     "capabilities": {

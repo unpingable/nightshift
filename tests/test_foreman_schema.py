@@ -119,6 +119,18 @@ class ForemanSchemaTests(unittest.TestCase):
             schema("nightshift.worker-adapter.v2.schema.json")
         )
         validator.validate(document)
+        verification = {
+            "schema": "nightshift.adapter-contract-verification/v1",
+            "capabilities_raw_digest": DIGEST,
+            "profile_digest": DIGEST,
+            "request_digest": DIGEST,
+            "adapter_id": "fixture-adapter",
+            "adapter_protocol": "fixture.adapter/v1",
+            "adapter_version": "fixture.adapter/v1",
+            "adapter_executable_identity": DIGEST,
+            "disposition": "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED",
+        }
+        validator.validate(verification)
         unknown = copy.deepcopy(document)
         excessive_timeout = copy.deepcopy(document)
         excessive_timeout["timeout_seconds"] = 86401
@@ -158,6 +170,18 @@ class ForemanSchemaTests(unittest.TestCase):
             schema("nightshift.worker-adapter.v2.schema.json")
         )
         validator.validate(document)
+        verification = {
+            "schema": "nightshift.adapter-contract-verification/v1",
+            "capabilities_raw_digest": DIGEST,
+            "profile_digest": DIGEST,
+            "request_digest": DIGEST,
+            "adapter_id": "fixture-adapter",
+            "adapter_protocol": "fixture.adapter/v1",
+            "adapter_version": "fixture.adapter/v1",
+            "adapter_executable_identity": DIGEST,
+            "disposition": "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED",
+        }
+        validator.validate(verification)
         unknown = copy.deepcopy(document)
         unknown["semantic_summary"] = "not admitted"
         with self.assertRaises(ValidationError):

@@ -10,9 +10,10 @@ use nightshift_foreman::{
     ContractError, ExecutionProfileV2, ForemanAdmissionV1, ForemanError, ForemanStore,
     HumanQuestionV1, NotStartedReceiptV1, ReceiptRepositoryV1, SchedulerStateV1,
     TeardownDeclarationV1, TerminalReceiptV1, WorkItemExecutionV1, WorkerAdapterCapabilitiesV1,
-    WorkerBriefV2, FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    MAXIMUM_WORKER_BRIEF_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
+    WorkerBriefV2, WorkerStartRequestV2, FOREMAN_ADMISSION_SCHEMA_V1,
+    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_WORKER_BRIEF_BYTES,
+    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
+    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshiftd::packet::{
@@ -26,6 +27,29 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
+
+fn bind_predecessor_fixture(
+    mut brief: Value,
+    dependency: &str,
+    receipt_raw: &[u8],
+    request: &WorkerStartRequestV2,
+) -> (Vec<u8>, WorkerStartRequestV2) {
+    let mut retained = Sha256::new();
+    retained.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    retained.update(receipt_raw);
+    brief["predecessor_receipts"][dependency]["retained_raw_digest"] =
+        Value::String(format!("sha256:{:x}", retained.finalize()));
+    brief["predecessor_receipts"][dependency]["bytes_hex"] =
+        Value::String(hex::encode(receipt_raw));
+    let raw = serde_jcs::to_vec(&brief).unwrap();
+    let mut rebound = request.clone();
+    let mut digest = Sha256::new();
+    digest.update(b"nightshift.worker-brief.digest/v2\0");
+    digest.update(&raw);
+    rebound.worker_brief_digest = format!("sha256:{:x}", digest.finalize());
+    rebound.seal().unwrap();
+    (raw, rebound)
+}
 
 fn instant(second: u32) -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 29, 16, 0, second).unwrap()
@@ -868,6 +892,20 @@ fn worker_brief_v2_digest_has_an_independent_fixed_vector() {
         format!("sha256:{:x}", v2.finalize()),
         "sha256:ddd2a21b47c3abf533d27d85a53eb3ac93805d5d938f612929ea410a6ec705e7"
     );
+    let mut retained = Sha256::new();
+    retained.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    retained.update(b"{}");
+    assert_eq!(
+        format!("sha256:{:x}", retained.finalize()),
+        "sha256:defbb1499ef874d99cdf029e5c1dc04dc253d0fc1e0f88f966278cf3934302fe"
+    );
+    let mut capabilities = Sha256::new();
+    capabilities.update(b"nightshift.worker-adapter-capabilities.raw/v1\0");
+    capabilities.update(b"{}");
+    assert_eq!(
+        format!("sha256:{:x}", capabilities.finalize()),
+        "sha256:4dbc0996b158b29f3e54274c8fd1ccb774422f75fb38b3fd1a1aae0662ff5c4c"
+    );
     let mut v1 = Sha256::new();
     v1.update(b"nightshift.worker-brief.digest/v1\0");
     v1.update(b"{}");
@@ -922,6 +960,25 @@ fn worker_brief_preserves_exact_packet_and_predecessor_receipt_bytes() {
     let brief_raw = store.worker_brief("run-fixture", "dependent").unwrap();
     assert!(brief_raw.len() <= MAXIMUM_WORKER_BRIEF_BYTES);
     let brief: Value = serde_json::from_slice(&brief_raw).unwrap();
+    let mut bad_digest_receipt: Value = serde_json::from_slice(&receipt_raw).unwrap();
+    bad_digest_receipt["receipt_digest"] = Value::String(format!("sha256:{}", "0".repeat(64)));
+    let (bad_digest_brief, bad_digest_request) = bind_predecessor_fixture(
+        brief.clone(),
+        "root-a",
+        &serde_jcs::to_vec(&bad_digest_receipt).unwrap(),
+        &dependent_request,
+    );
+    assert!(WorkerBriefV2::from_slice_for_start(&bad_digest_brief, &bad_digest_request,).is_err());
+    let mut wrong_run_receipt = receipt.clone();
+    wrong_run_receipt.run_id = "run-substituted".into();
+    wrong_run_receipt.seal().unwrap();
+    let (wrong_run_brief, wrong_run_request) = bind_predecessor_fixture(
+        brief.clone(),
+        "root-a",
+        &serde_jcs::to_vec(&wrong_run_receipt).unwrap(),
+        &dependent_request,
+    );
+    assert!(WorkerBriefV2::from_slice_for_start(&wrong_run_brief, &wrong_run_request,).is_err());
     WorkerBriefV2::from_slice_for_start(&brief_raw, &dependent_request).unwrap();
     let mut substituted_brief = brief.clone();
     let mut substituted_packet: Value = serde_json::from_slice(&packet_raw).unwrap();

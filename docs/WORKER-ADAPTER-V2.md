@@ -14,6 +14,12 @@ For ergonomics, the brief carries recursively closed recognized-contract wrapper
 
 The store obtains packet and predecessor BLOB lengths first and computes the exact canonical JSON expansion size using closed metadata before loading or hexadecimal expansion of predecessor BLOBs. Oversized input fails closed.
 
+## Exact byte digest laws
+
+Retained packet and receipt source bytes use the preimage: ASCII `nightshift.foreman-retained-raw.digest/v1`, one NUL byte, then the exact source byte sequence without normalization. For exact bytes `{}`, the fixed result is `sha256:defbb1499ef874d99cdf029e5c1dc04dc253d0fc1e0f88f966278cf3934302fe`.
+
+Capability custody uses the preimage: ASCII `nightshift.worker-adapter-capabilities.raw/v1`, one NUL byte, then the exact canonical capability bytes. For exact bytes `{}`, the fixed result is `sha256:4dbc0996b158b29f3e54274c8fd1ccb774422f75fb38b3fd1a1aae0662ff5c4c`. Content-equivalent bytes in a different serialization have a different custody digest and are not admitted by the joint verifier.
+
 ## Adapter admission and resource bounds
 
 Start requests are independently bounded at 86,400 seconds and 16 MiB output, matching execution-profile ceilings. A separate adapter-contract verifier consumes exact canonical capability bytes and binds their raw digest plus adapter ID, protocol, version, executable identity, profile digest, work-item execution entry, and start-request digest. A standalone capability shape does not establish admission.
