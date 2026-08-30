@@ -1,0 +1,54 @@
+{
+  "schema": "nightshift.foreman-identity-correction-qualification/v1",
+  "campaign": {
+    "codename": "BOLT-LOOM",
+    "canonical_slug": "nightshift-durable-foreman-identity-binding-correction-v1",
+    "track": "nightshift-orchestration-runtime"
+  },
+  "predecessor_result_head": "30373353d4472720bf62f60d378056658d068e88",
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "contract_freeze_commit": "f044843031be238d81327baa891a467a684d44a8",
+  "qualified_subject_commit": "60547014f6c7474d15e196412f430250a851749f",
+  "successor_base_policy": "exact_result_ancestry",
+  "classification": "NIGHTSHIFT-DURABLE-FOREMAN-IDENTITY-BINDING-CORRECTION-V1-QUALIFIED",
+  "predecessor_acceptance_superseded": true,
+  "predecessor_history_rewritten": false,
+  "authority_effect": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+  "target_effects_authorized": false,
+  "aggregate_result_created": false,
+  "qualification": {
+    "format": "PASSED",
+    "workspace_tests": {
+      "passed": 325,
+      "ignored_documented_environment_dependent": 13,
+      "failed": 0
+    },
+    "foreman_integration_tests_passed": 6,
+    "all_feature_warnings_denied_clippy": "PASSED",
+    "renderer_and_schema_cases_passed": 11,
+    "structural_gates_and_negative_controls": "PASSED",
+    "casework_final_receipt_compatibility": "PASSED"
+  },
+  "qualified_properties": {
+    "execution_profile_schema": "nightshift.foreman-execution-profile/v2",
+    "adapter_version_profile_bound": true,
+    "adapter_event_identity_write_once": true,
+    "terminal_receipt_matches_frozen_identity": true,
+    "closeout_not_before_terminal_evidence": true,
+    "historical_v1_silent_migration": false,
+    "historical_v1_current_loader_admission": false,
+    "automatic_second_attempt": false,
+    "approval_response_surface": false,
+    "subprocess_surface": false,
+    "aggregate_result_surface": false
+  },
+  "canonical_nightshiftd_production_binary_count": 2,
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "provider_session_created": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false,
+  "human_questions": []
+}
