@@ -5,7 +5,7 @@ Canonical slug: provider-capacity-observation-and-scheduling-policy-v1
 Track: provider-capacity-observation
 Packet: sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc
 Branch: campaign/fuel-needle-provider-capacity-observation-and-scheduling-policy-v1-20260829
-Qualified subject commit: 7578ad504071e95b8cb3bd5e0e7cb1935bc790c6
+Qualified subject commit: 7578ad51eddfc61bc607ca531307e3d70a59b519
 Starting seed: 20e56f983923d5fdb198b0fa4a43d86707c5c49b
 Authorized integration base: 888dd1e140200394cfadb81dc0c9377887585b05
 
@@ -50,7 +50,7 @@ exact response line. The process is killed and reaped on every result path.
 ## Deterministic qualification
 
 Commands run against exact qualified subject
-7578ad504071e95b8cb3bd5e0e7cb1935bc790c6:
+7578ad51eddfc61bc607ca531307e3d70a59b519:
 
 - cargo fmt --all -- --check
 - cargo test --locked --workspace --all-targets
