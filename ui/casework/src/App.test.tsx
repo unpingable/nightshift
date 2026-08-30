@@ -30,7 +30,7 @@ describe("Nightshift Casework golden journeys", () => {
     expect(screen.getByRole("link", { name: "GLASSHOPPER" })).toBeVisible();
     expect(screen.queryByRole("link", { name: "RIVER-CLERK" })).not.toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText("Exact state"), "");
+    await user.selectOptions(screen.getByLabelText("Exact state"), "all-states");
     await user.selectOptions(screen.getByLabelText("Track"), "bedrock-prerequisite");
     expect(screen.getByText("Showing 3 of 14 exact work items")).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Track"), "");

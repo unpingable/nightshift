@@ -9,6 +9,33 @@ function Link({ href, children, className }: { href: string; children: React.Rea
   return <a href={href} className={className}>{children}</a>;
 }
 
+const ALL_STATES_OPTION = "all-states";
+const STATE_OPTION_PREFIX = "state:";
+
+function stateOptionValue(index: number): string {
+  return STATE_OPTION_PREFIX + index;
+}
+
+function stateFromOptionValue(value: string, states: string[]): string | null {
+  if (value === ALL_STATES_OPTION) return null;
+  if (!value.startsWith(STATE_OPTION_PREFIX)) return null;
+  const indexText = value.slice(STATE_OPTION_PREFIX.length);
+  if (!/^(0|[1-9]\d*)$/.test(indexText)) return null;
+  return states[Number(indexText)] ?? null;
+}
+
+function selectedStateOptionValue(state: string | null, states: string[]): string {
+  if (state === null) return ALL_STATES_OPTION;
+  const index = states.indexOf(state);
+  return index === -1 ? ALL_STATES_OPTION : stateOptionValue(index);
+}
+
+function stateOptionLabel(state: string): string {
+  if (state === "") return '"" (empty string)';
+  if (/\s/.test(state)) return JSON.stringify(state) + " (whitespace preserved)";
+  return state;
+}
+
 function useRoute(): Route {
   const [route, setRoute] = useState(() => parseRoute(window.location.pathname));
   useEffect(() => {
@@ -17,6 +44,7 @@ function useRoute(): Route {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const anchor = (event.target as Element).closest("a");
       if (!anchor || anchor.origin !== window.location.origin || anchor.target) return;
+      if (anchor.hash && anchor.pathname === window.location.pathname && anchor.search === window.location.search) return;
       event.preventDefault();
       window.history.pushState(null, "", anchor.href);
       onPop();
@@ -67,7 +95,7 @@ function RunIndexView() {
   const state = useRemote(getRunIndex, []);
   if (!state.data) return <ScreenState loading={state.loading} error={state.error} />;
   return (
-    <main id="main" className="page">
+    <main id="main" tabIndex={-1} className="page">
       <header className="page-heading">
         <p className="eyebrow">Read-only evidence projection</p>
         <h1>Run case index</h1>
@@ -128,7 +156,7 @@ function RunHeader({ run }: { run: CaseworkRun }) {
 
 function RunCaseView({ digest }: { digest: string }) {
   const state = useRemote(() => getRun(digest), [digest]);
-  const [stateFilter, setStateFilter] = useState("");
+  const [stateFilter, setStateFilter] = useState<string | null>(null);
   const [trackFilter, setTrackFilter] = useState("");
   const [questionFilter, setQuestionFilter] = useState("all");
   const run = state.data;
@@ -140,14 +168,14 @@ function RunCaseView({ digest }: { digest: string }) {
     return run.work_items.filter((item) => {
       const questionMatches = questionFilter === "all"
         || (questionFilter === "with" ? questionItems.has(item.id) : !questionItems.has(item.id));
-      return (!stateFilter || recognized(item.outcome.state) === stateFilter)
+      return (stateFilter === null || recognized(item.outcome.state) === stateFilter)
         && (!trackFilter || item.track === trackFilter)
         && questionMatches;
     });
   }, [run, stateFilter, trackFilter, questionFilter, questionItems]);
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   return (
-    <main id="main" className="page wide">
+    <main id="main" tabIndex={-1} className="page wide">
       <RunHeader run={run} />
       <section className="summary-strip" aria-label="Run facts">
         <div><span>Work items</span><strong>{run.summary.work_item_count}</strong></div>
@@ -158,7 +186,7 @@ function RunCaseView({ digest }: { digest: string }) {
       </section>
       <Section title="Work-item ledger">
         <form className="filters" aria-label="Work-item filters" onSubmit={(event) => event.preventDefault()}>
-          <label>Exact state<select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}><option value="">All exact states</option>{states.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label>Exact state<select value={selectedStateOptionValue(stateFilter, states)} onChange={(event) => setStateFilter(stateFromOptionValue(event.target.value, states))}><option value={ALL_STATES_OPTION}>All exact states</option>{states.map((value, index) => <option key={stateOptionValue(index)} value={stateOptionValue(index)}>{stateOptionLabel(value)}</option>)}</select></label>
           <label>Track<select value={trackFilter} onChange={(event) => setTrackFilter(event.target.value)}><option value="">All tracks</option>{tracks.map((value) => <option key={value}>{value}</option>)}</select></label>
           <label>Human question<select value={questionFilter} onChange={(event) => setQuestionFilter(event.target.value)}><option value="all">All work items</option><option value="with">Has human question</option><option value="without">No human question</option></select></label>
         </form>
@@ -173,7 +201,7 @@ function RunCaseView({ digest }: { digest: string }) {
 }
 
 function QuestionList({ run }: { run: CaseworkRun }) {
-  return <Section title={`Human questions · ${run.human_questions.length}`} className="questions" >
+  return <Section title={"Human questions · " + run.human_questions.length} className="questions" id="human-questions" tabIndex={-1}>
     <p>These are exact receipt fields. This surface records no disposition.</p>
     <ol>{run.human_questions.map((question) => <li key={question.navigation_id}><article><h3><Link href={questionPath(run.run_id, question.navigation_id)}>{recognized(question.exact_question) ?? UNRECOGNIZED_RECEIPT_VALUE}</Link></h3>{recognized(question.exact_question) === null && <p><UnrecognizedValue runId={run.run_id} /></p>}<p><span className="field-label">Linked work item</span> {question.linked_work_item ? <Link href={workItemPath(run.run_id, question.linked_work_item)}><Exact>{question.linked_work_item}</Exact></Link> : <CompatibleExact value={question.work_item} runId={run.run_id} />}</p></article></li>)}</ol>
   </Section>;
@@ -192,7 +220,7 @@ function WorkItemView({ digest, id }: { digest: string; id: string }) {
   const item = run?.work_items.find((entry) => entry.id === id);
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   if (!item) return <ScreenState loading={false} error={`Work item ${id} is not present in this exact run.`} />;
-  return <main id="main" className="page wide"><RunHeader run={run} />
+  return <main id="main" tabIndex={-1} className="page wide"><RunHeader run={run} />
     <header className="record-heading"><div><p className="eyebrow">Work item · <Exact>{item.id}</Exact></p><h1>{item.campaign.codename}</h1><p>{item.campaign.canonical_slug}</p></div><div className="classification-block"><span>Exact state</span><CompatibleExact value={item.outcome.state} runId={run.run_id} /><span>Exact classification</span><CompatibleExact value={item.outcome.result_classification} runId={run.run_id} /></div></header>
     <div className="paired-columns">
       <section className="case-column intent"><header><p className="eyebrow">Sealed packet</p><h2>Bounded intent</h2></header>
@@ -227,13 +255,13 @@ function QuestionView({ digest, id }: { digest: string; id: string }) {
   const state = useRemote(() => getRun(digest), [digest]); const run = state.data; const question = run?.human_questions.find((entry) => entry.navigation_id === id);
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   if (!question) return <ScreenState loading={false} error="Question identifier is not present in this exact run." />;
-  return <main id="main" className="page"><RunHeader run={run} /><QuestionRecord run={run} question={question} /></main>;
+  return <main id="main" tabIndex={-1} className="page"><RunHeader run={run} /><QuestionRecord run={run} question={question} /></main>;
 }
 
 function CustodyView({ digest }: { digest: string }) {
   const state = useRemote(() => getRun(digest), [digest]); const run = state.data;
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
-  return <main id="main" className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source sections</p><h1>Repository custody</h1><p>Starting packet custody and final receipt custody remain separate. Text is displayed without inferred disposition.</p></div></header>
+  return <main id="main" tabIndex={-1} className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source sections</p><h1>Repository custody</h1><p>Starting packet custody and final receipt custody remain separate. Text is displayed without inferred disposition.</p></div></header>
     <div className="paired-columns custody-columns"><Section title="Starting packet custody"><div className="record-stack">{run.packet.repository_custody.map((row) => <article className="custody-row" key={row.derived_id}><h3>{row.repository}</h3><DefinitionGrid><Field label="Path"><Exact wrap>{row.path}</Exact></Field><Field label="Branch"><Exact wrap>{row.branch}</Exact></Field><Field label="Commit"><Exact wrap>{row.commit}</Exact></Field><Field label="Remote"><Exact wrap>{row.remote ?? "null"}</Exact></Field><Field label="Remote commit"><Exact wrap>{row.remote_commit ?? "null"}</Exact></Field><Field label="Worktree clean"><Exact>{String(row.worktree_clean)}</Exact></Field><Field label="Discrepancy"><Exact wrap>{row.discrepancy ?? "null"}</Exact></Field></DefinitionGrid></article>)}</div></Section>
       <Section title="Final receipt custody"><div className="record-stack">{run.final_repository_custody.map((row) => <article className="custody-row" key={row.navigation_id}><h3><CompatibleExact value={row.repository} runId={run.run_id} /></h3><DefinitionGrid><Field label="Branch head"><CompatibleExact value={row.branch_head} runId={run.run_id} /></Field><Field label="Push custody"><CompatibleExact value={row.push_custody} runId={run.run_id} /></Field><Field label="Dirty"><CompatibleExact value={row.dirty} runId={run.run_id} /></Field><Field label="Live runtime"><CompatibleExact value={row.live_runtime} runId={run.run_id} /></Field><Field label="Secrets"><CompatibleExact value={row.secrets} runId={run.run_id} /></Field><Field label="Teardown"><CompatibleExact value={row.teardown} runId={run.run_id} /></Field></DefinitionGrid></article>)}</div></Section>
     </div></main>;
@@ -242,7 +270,7 @@ function CustodyView({ digest }: { digest: string }) {
 function RawView({ digest }: { digest: string }) {
   const runState = useRemote(() => getRun(digest), [digest]); const packetState = useRemote(() => getRaw(digest, "packet"), [digest]); const receiptsState = useRemote(() => getRaw(digest, "receipts"), [digest]); const run = runState.data;
   if (!run) return <ScreenState loading={runState.loading} error={runState.error} />;
-  return <main id="main" className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source-byte inspection</p><h1>Raw artifacts</h1><p>Read-only source bytes from the explicitly loaded run directory.</p></div></header>
+  return <main id="main" tabIndex={-1} className="page wide"><RunHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source-byte inspection</p><h1>Raw artifacts</h1><p>Read-only source bytes from the explicitly loaded run directory.</p></div></header>
     <div className="raw-grid"><Section title="Packet bytes"><DefinitionGrid><Field label="SHA-256"><Exact wrap>{run.packet.source_bytes_digest}</Exact></Field><Field label="Validation disposition"><Exact wrap>{run.packet.integrity}</Exact></Field></DefinitionGrid>{packetState.data !== undefined ? <pre tabIndex={0} aria-label="Exact packet bytes">{packetState.data}</pre> : <ScreenState loading={packetState.loading} error={packetState.error} />}</Section>
       <Section title="Receipt bytes"><DefinitionGrid><Field label="SHA-256"><Exact wrap>{run.receipts.source_bytes_digest}</Exact></Field><Field label="Validation disposition"><Exact wrap>{run.receipts.validation}</Exact></Field></DefinitionGrid>{receiptsState.data !== undefined ? <pre tabIndex={0} aria-label="Exact receipt bytes">{receiptsState.data}</pre> : <ScreenState loading={receiptsState.loading} error={receiptsState.error} />}</Section></div>
   </main>;
@@ -256,7 +284,7 @@ function RoutedView({ route }: { route: Route }) {
     case "question": return <QuestionView digest={route.digest} id={route.id} />;
     case "custody": return <CustodyView digest={route.digest} />;
     case "raw": return <RawView digest={route.digest} />;
-    default: return <main id="main" className="page"><h1>Case route not found</h1><p><Link href="/">Return to run index</Link></p></main>;
+    default: return <main id="main" tabIndex={-1} className="page"><h1>Case route not found</h1><p><Link href="/">Return to run index</Link></p></main>;
   }
 }
 

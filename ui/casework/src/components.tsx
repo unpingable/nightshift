@@ -22,9 +22,9 @@ export function StringList({ values, empty = "None recorded" }: { values: string
   );
 }
 
-export function Section({ title, children, className = "" }: { title: string; children: ReactNode; className?: string }) {
+export function Section({ title, children, className = "", id, tabIndex }: { title: string; children: ReactNode; className?: string; id?: string; tabIndex?: number }) {
   return (
-    <section className={`case-section ${className}`.trim()}>
+    <section className={["case-section", className].filter(Boolean).join(" ")} id={id} tabIndex={tabIndex}>
       <h2>{title}</h2>
       {children}
     </section>

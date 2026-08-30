@@ -58,7 +58,11 @@ labels, and native links/selects. A skip link and visible focus treatment cover
 keyboard navigation. Exact states and classifications use text rather than
 color as their identity. Dense two-column records collapse to one column below
 tablet width, and wide ledgers retain horizontal scrolling rather than dropping
-fields. Reduced-motion preferences disable smooth scrolling.
+fields. Informative empty-state and footer text uses `#84919c`; WCAG 2.x
+relative-luminance calculation gives a minimum 5.0577:1 contrast against
+the lowest applicable contrast case (`#17212a`, the raised/hover surface),
+and 5.5399:1 or higher against its ordinary surfaces. Reduced-motion
+preferences disable smooth scrolling.
 
 No remote font, image, analytics, telemetry, CDN, or runtime asset is loaded.
 

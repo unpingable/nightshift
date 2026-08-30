@@ -48,6 +48,9 @@ if ! rg -q 'Skip to casework' "$app_source" \
     || ! rg -q ':focus-visible' "$ui_root/src/styles.css"; then
     fail "keyboard skip or visible-focus treatment is missing"
 fi
+if ! rg -q -- '--faint: #84919c;' "$ui_root/src/styles.css"; then
+    fail "informative faint text is not pinned to the qualified contrast color"
+fi
 
 if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
     sandbox=$(mktemp -d)
