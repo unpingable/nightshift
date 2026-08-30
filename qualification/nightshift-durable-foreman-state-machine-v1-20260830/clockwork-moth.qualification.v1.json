@@ -1,0 +1,69 @@
+{
+  "schema": "nightshift.foreman-core-qualification/v1",
+  "campaign": {
+    "codename": "CLOCKWORK-MOTH",
+    "canonical_slug": "nightshift-durable-foreman-state-machine-v1",
+    "track": "nightshift-orchestration-runtime"
+  },
+  "authorized_integration_base": "888dd1e140200394cfadb81dc0c9377887585b05",
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "remote_packet_checkpoint": "dc3ef4f0ff0eda007fd5b46adab0fa347208d006",
+  "contract_freeze_commit": "6ff870892f9c534fdce1b41d671fc99b70fed6f5",
+  "qualified_subject_commit": "c4b313f29eba3e5b11b121ad69079022df8ed4dd",
+  "successor_base_policy": "exact_result_ancestry",
+  "classification": "NIGHTSHIFT-DURABLE-FOREMAN-STATE-MACHINE-V1-QUALIFIED",
+  "authority_effect": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+  "target_effects_authorized": false,
+  "aggregate_result_created": false,
+  "qualification": {
+    "format": "PASSED",
+    "workspace_tests": {
+      "passed": 325,
+      "ignored_documented_environment_dependent": 13,
+      "failed": 0
+    },
+    "foreman_integration_tests_passed": 6,
+    "all_feature_warnings_denied_clippy": "PASSED",
+    "renderer_and_schema_cases_passed": 11,
+    "structural_gates_and_negative_controls": "PASSED",
+    "casework_final_receipt_compatibility": "PASSED"
+  },
+  "qualified_properties": {
+    "sqlite_wal": true,
+    "source_and_event_records_append_only": true,
+    "deterministic_restart_replay": true,
+    "atomic_opaque_resource_locks": true,
+    "dependency_opens_entry_evaluation_only": true,
+    "classification_interpreted_by_scheduler": false,
+    "automatic_second_attempt": false,
+    "same_attempt_resume": true,
+    "terminal_attempt_resume": false,
+    "lane_local_human_questions": true,
+    "raw_unknown_extensions_semantically_promoted": false,
+    "partial_final_snapshot": false,
+    "exact_final_snapshot_reproducible": true,
+    "approval_response_surface": false,
+    "subprocess_surface": false,
+    "aggregate_result_surface": false
+  },
+  "scope_precedence": {
+    "old_casework_deferral_treated_as_campaign_local": true,
+    "current_direct_operator_instruction_applied": true,
+    "constitutional_boundaries_preserved": true
+  },
+  "limitations": [
+    "provider-capacity observation and scheduling policy belong to FUEL-NEEDLE",
+    "the real external Switchyard Codex adapter and provider-session qualification belong to TUNNEL-FINCH",
+    "the live browser projection belongs to LEDGER-FOX",
+    "integrated real-provider dogfood belongs to MIDNIGHT-RAIL"
+  ],
+  "canonical_nightshiftd_production_binary_count": 2,
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "provider_session_created": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false,
+  "human_questions": []
+}
