@@ -26,6 +26,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+nightshiftd = { path = "../nightshiftd" }
 
 [dev-dependencies]
 tempfile.workspace = true
