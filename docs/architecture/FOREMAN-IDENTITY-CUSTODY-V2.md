@@ -36,5 +36,11 @@ response, provider process, retry, aggregate result, or canonical
 `nightshiftd` surface.
 
 Successors must use the exact remote-verified BOLT-LOOM result head and
-execution profile V2. Exact head `3037335...` remains historical evidence, not
+execution profile V2. The corrected V2 loader intentionally does not admit or
+project a historical `nightshift.foreman-execution-profile/v1` database.
+Historical V1 fixture state, if any, must be inspected with the exact immutable
+`30373353d4472720bf62f60d378056658d068e88` subject; BOLT-LOOM provides no
+silent migration. CLOCKWORK-MOTH created no activated service or retained
+operator run, so no live or durable run requires migration. Exact head
+`30373353d4472720bf62f60d378056658d068e88` remains historical evidence, not
 an accepted integration base.

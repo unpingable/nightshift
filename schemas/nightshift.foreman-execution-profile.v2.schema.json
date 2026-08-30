@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:nightshift:foreman-execution-profile:v2",
-  "title": "Nightshift foreman execution profile V1",
+  "title": "Nightshift foreman execution profile V2",
   "type": "object",
   "additionalProperties": false,
   "required": [

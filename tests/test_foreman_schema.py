@@ -20,9 +20,49 @@ class ForemanSchemaTests(unittest.TestCase):
         for name in [
             "nightshift.foreman-admission.v1.schema.json",
             "nightshift.foreman-execution-profile.v1.schema.json",
+            "nightshift.foreman-execution-profile.v2.schema.json",
             "nightshift.worker-adapter.v1.schema.json",
         ]:
             Draft202012Validator.check_schema(schema(name))
+
+        profile = {
+            "schema": "nightshift.foreman-execution-profile/v2",
+            "profile_digest": DIGEST,
+            "packet_digest": DIGEST,
+            "admission_digest": DIGEST,
+            "adapters": {
+                "fixture-adapter": {
+                    "adapter_id": "fixture-adapter",
+                    "protocol": "fixture.adapter/v1",
+                    "adapter_version": "fixture.adapter/v1",
+                    "executable_identity": DIGEST,
+                    "bounded_arguments": [],
+                }
+            },
+            "work_items": {
+                "fixture-work": {
+                    "adapter_id": "fixture-adapter",
+                    "workspace_identity": "workspace:fixture",
+                    "resource_lock_keys": ["repository:fixture"],
+                    "provider_model_class": "bounded",
+                }
+            },
+            "budget_policy_ref": "budget:fixture",
+            "log_custody_root": "/tmp/fixture/log",
+            "receipt_custody_root": "/tmp/fixture/receipts",
+            "maximum_event_bytes": 65536,
+            "maximum_receipt_bytes": 131072,
+            "adapter_timeout_seconds": 60,
+            "closeout_policy": "ALL_EXPLICIT_TERMINAL_OR_NOT_STARTED",
+        }
+        validator = Draft202012Validator(
+            schema("nightshift.foreman-execution-profile.v2.schema.json")
+        )
+        validator.validate(profile)
+        missing_version = copy.deepcopy(profile)
+        del missing_version["adapters"]["fixture-adapter"]["adapter_version"]
+        with self.assertRaises(ValidationError):
+            validator.validate(missing_version)
 
     def test_admission_is_closed_and_authority_effect_is_fixed(self):
         document = {
