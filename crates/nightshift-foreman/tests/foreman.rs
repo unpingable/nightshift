@@ -814,6 +814,13 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
     receipt.turn_identity = Some("turn:fixture".into());
     receipt.queue_identity = Some("queue:fixture".into());
     receipt.seal().unwrap();
+    let mut wrong_attempt_receipt = receipt.clone();
+    wrong_attempt_receipt.attempt_id = "attempt-substitution".into();
+    wrong_attempt_receipt.seal().unwrap();
+    assert!(matches!(
+        store.accept_terminal_receipt(&serde_jcs::to_vec(&wrong_attempt_receipt).unwrap()),
+        Err(ForemanError::IdentityMismatch("attempt_id"))
+    ));
     for field in [
         "adapter_version",
         "provider_identity",
