@@ -58,4 +58,6 @@ Every NQ input is validated, not only the selected input. The accepted graph mir
 
 The pinned qualify_one refusal vocabulary is branch-closed: reopening failures cannot be relabeled as post-reopening profile/time/custody refusals, and post-reopening refusals cannot use reopening-failure codes. Every refusal retains the exact raw input digest. Non-refused reopened inputs retain one canonical complete profile claim-ID domain across support and cannot-testify, and each acquisition-failure reason is the exact outcome-derived NQ string. Contradiction fixtures use separately signed Monitor observations with distinct exact payload custody rather than content mutation inside one reopened input.
 
+Unopened refusal details are also owner-closed. Fixed NQ details must match exactly. Parser-derived JSON and timestamp details use a bounded grammar limited to the pinned owner messages, exact field names, canonical line/column coordinates within the one-MiB input ceiling, and the pinned parser error vocabulary. A code/detail substitution or invented diagnostic is refused.
+
 No aggregate result exists.

@@ -48,7 +48,7 @@ const NQ_REOPENED_REFUSAL_CODES: [&str; 5] = [
     "producer_identity_mismatch",
     "payload_custody_missing",
 ];
-const NQ_UNOPENED_REFUSAL_CODES: [&str; 40] = [
+const NQ_UNOPENED_REFUSAL_CODES: [&str; 41] = [
     "record_oversized",
     "record_malformed",
     "field_malformed",
@@ -65,6 +65,7 @@ const NQ_UNOPENED_REFUSAL_CODES: [&str; 40] = [
     "unsupported_subject_basis_contract",
     "subject_basis_kind_mismatch",
     "invalid_collection",
+    "noncanonical_collection",
     "locator_kind_unknown",
     "timestamp_invalid",
     "timestamp_noncanonical",
@@ -1237,6 +1238,9 @@ fn validate_nq_findings(input: &NqInputV1, evaluated_at: DateTime<Utc>) -> Resul
         if expected_detail.is_some_and(|detail| refusal.detail != detail) {
             return Err("NQ reopened refusal detail differs from qualify_one".into());
         }
+        if !is_reopened {
+            validate_nq_unopened_refusal_detail(&refusal.code, &refusal.detail)?;
+        }
     }
     let evaluation_inverted = evaluated_at < input.receiver_custody_at;
     let evaluation_refusal = input
@@ -1295,6 +1299,304 @@ fn nq_input_is_reopened(input: &NqInputV1) -> bool {
         && input.producer_principal_id.is_some()
         && input.producer_class.is_some()
         && input.acquisition_outcome.is_some()
+}
+
+fn validate_nq_unopened_refusal_detail(code: &str, detail: &str) -> Result<(), String> {
+    let exact = |values: &[&str]| values.contains(&detail);
+    let field_form = |fields: &[&str], suffixes: &[&str]| {
+        fields.iter().any(|field| {
+            suffixes
+                .iter()
+                .any(|suffix| detail == format!("{field}{suffix}"))
+        })
+    };
+    let valid = match code {
+        "record_oversized" => exact(&["signed Monitor record exceeds one MiB"]),
+        "record_malformed" | "body_malformed" | "payload_malformed" => {
+            nq_serde_json_error_detail(detail)
+        }
+        "field_missing" => ["body", "producer", "subject"]
+            .iter()
+            .any(|field| detail == format!("missing exact field {field}")),
+        "field_malformed" => ["body", "producer", "subject"]
+            .iter()
+            .any(|field| detail == format!("field {field} object is unterminated")),
+        "closed_schema_violation" => exact(&["JSON object keys differ from closed contract"]),
+        "field_type" => {
+            field_form(
+                &[
+                    "producer",
+                    "subject",
+                    "acquisition",
+                    "lineage",
+                    "coverage",
+                    "stable_basis",
+                    "payload",
+                ],
+                &[" is not an object"],
+            ) || field_form(
+                &[
+                    "schema",
+                    "kind",
+                    "namespace",
+                    "basis_contract",
+                    "basis_type",
+                    "machine_identity",
+                    "service_identity",
+                    "instance_identity",
+                    "deployment_identity",
+                    "release_identity",
+                    "repository_identity",
+                    "revision_identity",
+                    "scheduler_identity",
+                    "job_identity",
+                    "design_identity",
+                    "toolchain_identity",
+                    "pdk_identity",
+                    "entitlement_identity",
+                    "worker_identity",
+                    "artifact_set_identity",
+                    "run_identity",
+                    "stage_occurrence_identity",
+                    "attempt_id",
+                    "started_at",
+                    "ended_at",
+                    "outcome",
+                    "diagnostic_code",
+                    "epoch",
+                    "payload_schema",
+                    "media_type",
+                    "digest_domain",
+                    "digest",
+                    "principal_id",
+                    "collector_id",
+                    "key_algorithm",
+                    "public_key_hex",
+                    "public_key_digest",
+                    "producer_class",
+                    "signer_key_identity_digest",
+                    "signature_domain",
+                    "signature_hex",
+                ],
+                &[" is not a string"],
+            ) || field_form(
+                &[
+                    "locators",
+                    "attachments",
+                    "expected_dimensions",
+                    "observed_dimensions",
+                    "omitted_dimensions",
+                ],
+                &[" is not an array"],
+            ) || field_form(
+                &[
+                    "expected_dimensions",
+                    "observed_dimensions",
+                    "omitted_dimensions",
+                ],
+                &[" contains a non-string"],
+            ) || exact(&["raw basis digest is not a string"])
+                || ["body", "producer", "subject"]
+                    .iter()
+                    .any(|field| detail == format!("field {field} is not an object"))
+        }
+        "object_expected" => exact(&["JSON value is not an object"]),
+        "schema_unknown" => exact(&["Monitor operational schema is unsupported"]),
+        "authority_present" => exact(&["Monitor testimony cannot grant authority"]),
+        "invalid_text" => field_form(
+            &[
+                "subject namespace",
+                "locator value",
+                "acquisition attempt",
+                "acquisition diagnostic",
+                "observation epoch",
+                "payload schema",
+                "content media type",
+                "producer principal",
+                "collector identity",
+                "producer class",
+                "expected coverage",
+                "observed coverage",
+                "omitted coverage",
+                "locator observation time",
+                "acquisition start",
+                "acquisition end",
+                "producer observation time",
+            ],
+            &[" is invalid"],
+        ),
+        "invalid_token" => field_form(
+            &[
+                "subject namespace",
+                "acquisition attempt",
+                "acquisition diagnostic",
+                "observation epoch",
+                "payload schema",
+                "content media type",
+                "producer principal",
+                "collector identity",
+                "producer class",
+                "expected coverage",
+                "observed coverage",
+                "omitted coverage",
+            ],
+            &[" contains whitespace"],
+        ),
+        "subject_kind_unknown" => exact(&["Monitor subject kind is outside the closed contract"]),
+        "unsupported_subject_basis_contract" => {
+            exact(&["subject stable-basis contract is not the family-owned v1 contract"])
+        }
+        "subject_basis_kind_mismatch" => exact(&["subject kind and stable-basis contract differ"]),
+        "invalid_collection" => exact(&[
+            "locators is oversized",
+            "attachments is oversized",
+            "expected coverage is empty or oversized",
+            "observed coverage is empty or oversized",
+            "omitted coverage is empty or oversized",
+        ]),
+        "noncanonical_collection" => exact(&[
+            "expected coverage must be sorted and unique",
+            "observed coverage must be sorted and unique",
+            "omitted coverage must be sorted and unique",
+        ]),
+        "locator_kind_unknown" => exact(&["locator kind is unsupported"]),
+        "timestamp_noncanonical" => field_form(
+            &[
+                "locator observation time",
+                "acquisition start",
+                "acquisition end",
+                "producer observation time",
+            ],
+            &[" is not canonical UTC RFC3339"],
+        ),
+        "timestamp_invalid" => nq_timestamp_error_detail(detail),
+        "digest_invalid" => field_form(
+            &[
+                "raw acquisition basis",
+                "predecessor observation",
+                "stable subject basis",
+                "content digest",
+            ],
+            &[
+                " lacks sha256 prefix",
+                " is not a canonical nonzero sha256 digest",
+            ],
+        ),
+        "timestamp_inversion" => exact(&["acquisition end precedes start"]),
+        "acquisition_outcome_unknown" => {
+            exact(&["Monitor acquisition outcome is outside the closed contract"])
+        }
+        "lineage_invalid" => exact(&[
+            "observation sequence is not unsigned",
+            "sequence and predecessor observation are inconsistent",
+        ]),
+        "coverage_invalid" => exact(&["coverage is inconsistent with its exact denominator"]),
+        "coverage_incomplete" => {
+            exact(&["every expected dimension must be observed or explicitly omitted"])
+        }
+        "content_length_invalid" => exact(&["content byte length is absent or zero"]),
+        "observation_time_missing" => exact(&["produced observation lacks producer time"]),
+        "observation_time_inversion" => {
+            exact(&["producer observation time falls outside acquisition"])
+        }
+        "failure_as_world_claim" => exact(&[
+            "failed acquisition carries world testimony or observed coverage",
+            "failed acquisition carries payload testimony",
+        ]),
+        "key_algorithm_unknown" => exact(&["producer key algorithm is unsupported"]),
+        "public_key_malformed" => exact(&[
+            "producer public key is not exact lowercase hex",
+            "public key length is invalid",
+            "Cannot decompress Edwards point",
+        ]),
+        "producer_key_mismatch" => exact(&["producer public key identity is invalid"]),
+        "signer_identity_mismatch" => exact(&["signature does not bind exact producer principal"]),
+        "signature_domain_mismatch" => exact(&["signature domain is unsupported"]),
+        "signature_malformed" => exact(&[
+            "signature is not exact lowercase hex",
+            "signature length is invalid",
+        ]),
+        "signature_invalid" => exact(&["strict Ed25519 verification failed"]),
+        "payload_digest_law_unknown" => exact(&[
+            "content digest domain is unsupported",
+            "payload digest domain is unsupported",
+        ]),
+        "payload_missing" => exact(&[
+            "produced observation lacks payload custody",
+            "exact payload bytes were not supplied",
+        ]),
+        "payload_substitution" => exact(&["payload bytes do not match exact Monitor custody"]),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("NQ unopened refusal detail differs from pinned reopen law".into())
+    }
+}
+
+fn nq_serde_json_error_detail(detail: &str) -> bool {
+    let Some((message, position)) = detail.rsplit_once(" at line ") else {
+        return false;
+    };
+    let Some((line, column)) = position.split_once(" column ") else {
+        return false;
+    };
+    let coordinate = |value: &str, allow_zero: bool| {
+        let Ok(number) = value.parse::<usize>() else {
+            return false;
+        };
+        (allow_zero || number > 0) && number <= MAX_RAW_BYTES && value == number.to_string()
+    };
+    if !coordinate(line, false) || !coordinate(column, true) {
+        return false;
+    }
+    [
+        "EOF while parsing a list",
+        "EOF while parsing an object",
+        "EOF while parsing a string",
+        "EOF while parsing a value",
+        "control character (\\u0000-\\u001F) found while parsing a string",
+        "expected `,` or `]`",
+        "expected `,` or `}`",
+        "expected `:`",
+        "expected `\"`",
+        "expected ident",
+        "expected value",
+        "invalid escape",
+        "invalid number",
+        "number out of range",
+        "invalid unicode code point",
+        "key must be a string",
+        "lone leading surrogate in hex escape",
+        "recursion limit exceeded",
+        "trailing comma",
+        "trailing characters",
+        "unexpected end of hex escape",
+    ]
+    .contains(&message)
+}
+
+fn nq_timestamp_error_detail(detail: &str) -> bool {
+    const FIELDS: [&str; 4] = [
+        "locator observation time",
+        "acquisition start",
+        "acquisition end",
+        "producer observation time",
+    ];
+    const ERRORS: [&str; 6] = [
+        "input contains invalid characters",
+        "input is out of range",
+        "premature end of input",
+        "input is not enough for unique date and time",
+        "no possible date and time matching input",
+        "bad or unsupported format",
+    ];
+    FIELDS.iter().any(|field| {
+        ERRORS
+            .iter()
+            .any(|error| detail == format!("{field}: {error}"))
+    })
 }
 
 fn claim_value_is(input: &NqInputV1, claim_id: &str, value_digest: &str) -> bool {
@@ -2421,10 +2723,36 @@ mod tests {
             input.refusals = vec![RefusalV1 {
                 code: "record_malformed".into(),
                 exact_basis_digest: input.raw_record_digest.clone(),
-                detail: "exact Monitor bytes could not be reopened".into(),
+                detail: "expected value at line 1 column 1".into(),
             }];
         }
         validate_nq(&unopened).unwrap();
+
+        let mut fixed_detail = unopened.clone();
+        fixed_detail.inputs[0].refusals[0].code = "record_oversized".into();
+        fixed_detail.inputs[0].refusals[0].detail = "signed Monitor record exceeds one MiB".into();
+        validate_nq(&fixed_detail).unwrap();
+
+        let mut wrong_fixed_detail = fixed_detail.clone();
+        wrong_fixed_detail.inputs[0].refusals[0].detail =
+            "expected value at line 1 column 1".into();
+        assert!(validate_nq(&wrong_fixed_detail)
+            .unwrap_err()
+            .contains("detail differs"));
+
+        let mut invented_dynamic_detail = unopened.clone();
+        invented_dynamic_detail.inputs[0].refusals[0].detail =
+            "invented parser result at line 1 column 1".into();
+        assert!(validate_nq(&invented_dynamic_detail)
+            .unwrap_err()
+            .contains("detail differs"));
+
+        let mut noncanonical_dynamic_detail = unopened.clone();
+        noncanonical_dynamic_detail.inputs[0].refusals[0].detail =
+            "expected value at line 01 column 1".into();
+        assert!(validate_nq(&noncanonical_dynamic_detail)
+            .unwrap_err()
+            .contains("detail differs"));
 
         let mut wrong_unopened_branch = unopened.clone();
         wrong_unopened_branch.inputs[0].refusals[0].code = "subject_identity_mismatch".into();
@@ -2440,7 +2768,7 @@ mod tests {
         wrong_reopened_branch.inputs[0].refusals = vec![RefusalV1 {
             code: "record_malformed".into(),
             exact_basis_digest: exact_basis,
-            detail: "exact Monitor bytes could not be reopened".into(),
+            detail: "expected value at line 1 column 1".into(),
         }];
         assert!(validate_nq(&wrong_reopened_branch)
             .unwrap_err()

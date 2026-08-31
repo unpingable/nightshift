@@ -22,6 +22,7 @@ The checkpoint directly exercises:
 - closed typed stable-basis identity and exact producer key binding;
 - produced testimony, no-response/failure, refusal, cannot-testify, and contradiction paths;
 - reopened versus unopened refusal-code and exact-basis correlation;
+- exact fixed and bounded parser-derived unopened refusal details with substitution refusal;
 - cross-input complete claim-domain equality and exact outcome-derived failure reasons;
 - owner-possible contradiction inputs with separate signed Monitor and payload identities;
 - independent acquisition, producer, receiver, NQ, admission, and evaluation time ordering;
@@ -67,6 +68,8 @@ Checkpoint 17d0743909eff79d2b95cfdd40477712e23a8a37 remains immutable but is not
 Checkpoint bf64f4d6ef4d9291f0c4ca6d471698364bbc45da also remains immutable and is not an accepted predecessor. Its successor makes the runtime and executable schemas share an explicit printable-ASCII metadata subset without widening FIELD, and mirrors the exact NQ qualify_one closure across every input: unopened refusal, reopened refusal, produced support/cannot-testify, acquisition-failure cannot-testify, and exact contradiction derivation remain mutually constrained.
 
 Checkpoint 0af305c920d55c868dbd6fc5acefb3f0a2e05461 likewise remains immutable and is not an accepted predecessor. Its successor closes the pinned refusal vocabulary by reopened/unopened branch, retains exact basis correlation, requires one complete claim domain across non-refused inputs, binds failure reasons to the exact Monitor outcome, and replaces the content-mutated contradiction fixture with two separately signed payload-bound observations.
+
+Checkpoint d7c4d2c93e11421b0f2e4e62481a22be16d88783 remains immutable and is not an accepted predecessor. Its successor closes each unopened refusal code to the pinned fixed detail or a bounded exact parser-derived detail grammar, and directly refuses fixed/dynamic code-detail substitutions, invented parser messages, and noncanonical parser coordinates.
 
 ## Custody and scope
 

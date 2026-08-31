@@ -11,7 +11,7 @@ Track: Nightshift operational evidence spine
 | Exact raw/semantic custody | ExactArtifactCustodyV1, admit_operational_lineage |
 | Typed subject/producer and exact-body Ed25519 reopening | SubjectKindV1, SubjectBasisV1, extract_object_field, validate_monitor |
 | Exact FIELD result pins | FIELD_CLOCK_MONITOR_RESULT_HEAD, FIELD_CLOCK_NQ_RESULT_HEAD |
-| Exact NQ qualify_one closure and claim preservation | validate_nq, validate_nq_findings, nq_input_is_reopened, expected_nq_contradictions, claim_value_is, bind_input, findings, validate_against |
+| Exact NQ qualify_one closure and claim preservation | validate_nq, validate_nq_findings, validate_nq_unopened_refusal_detail, nq_serde_json_error_detail, nq_timestamp_error_detail, nq_input_is_reopened, expected_nq_contradictions, claim_value_is, bind_input, findings, validate_against |
 | Independent time axes and max-age horizon | OperationalObservationLineageV1::validate, evaluate_reobservation |
 | Replay/fork/successor law | admit_history |
 | Failure/no-response never current | validate_monitor, evaluate_reobservation |
