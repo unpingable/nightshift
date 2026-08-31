@@ -3989,6 +3989,9 @@ fn holding_snapshot(name: &str) -> Value {
         "approval" => include_bytes!(
             "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"
         ),
+        "completed" => include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
+        ),
         value => panic!("unknown holding snapshot {value}"),
     };
     serde_json::from_slice(bytes).unwrap()
@@ -4032,6 +4035,7 @@ fn holding_disposition(
         "ADMISSION_INDETERMINATE" => ProviderMechanismStateV1::AdmissionIndeterminate,
         "POST_ADMISSION_INTERRUPTED" => ProviderMechanismStateV1::PostAdmissionInterrupted,
         "WAITING_APPROVAL" => ProviderMechanismStateV1::WaitingApproval,
+        "PROVIDER_COMPLETED" => ProviderMechanismStateV1::ProviderCompleted,
         value => panic!("unexpected fixture mechanism {value}"),
     };
     let request_occurrence = snapshot["records"]
@@ -4883,6 +4887,16 @@ fn holding_failed_wake_rolls_back_lock_reacquisition_and_restart_recovers() {
         None,
     );
     let wake_at = parked.provider_retry_after.unwrap();
+    let fault = Connection::open(&path).unwrap();
+    fault
+        .execute_batch(
+            "CREATE TRIGGER fixture_refuse_dispatch_after_wake
+             BEFORE INSERT ON events
+             WHEN NEW.event_id = 'provider-dispatch-dispatch-rolled-back'
+             BEGIN SELECT RAISE(ABORT, 'fixture crash after wake before dispatch append'); END;",
+        )
+        .unwrap();
+    drop(fault);
     assert!(store
         .wake_provider_dispatch(
             "run-holding-store",
@@ -4891,12 +4905,17 @@ fn holding_failed_wake_rolls_back_lock_reacquisition_and_restart_recovers() {
             "wake-rolled-back",
             "dispatch-rolled-back",
             "adapter-process-rolled-back",
-            "invalid session identity",
+            "session-rolled-back",
             1,
             wake_at,
         )
         .is_err());
     drop(store);
+    let fault = Connection::open(&path).unwrap();
+    fault
+        .execute_batch("DROP TRIGGER fixture_refuse_dispatch_after_wake;")
+        .unwrap();
+    drop(fault);
     let restarted = ForemanStore::open(&path).unwrap();
     let opened = restarted
         .wake_provider_dispatch(
@@ -5144,6 +5163,15 @@ fn holding_metadata_preflight_refuses_cumulative_history_before_raw_materializat
                 [format!("provider-wake-bound-{ordinal}")],
             )
             .unwrap();
+        connection
+            .execute(
+                "INSERT INTO execution_availability_event_anchors
+                 (run_id, event_id, sequence)
+                 SELECT run_id, event_id, sequence
+                 FROM events WHERE event_id = ?1",
+                [format!("provider-wake-bound-{ordinal}")],
+            )
+            .unwrap();
     }
     let retained: u64 = connection
         .query_row(
@@ -5233,7 +5261,8 @@ fn holding_reseal_internal_event_row(
     connection
         .execute_batch(
             "DROP TRIGGER events_no_update;
-             DROP TRIGGER execution_availability_metadata_no_update;",
+             DROP TRIGGER execution_availability_metadata_no_update;
+             DROP TRIGGER execution_availability_anchors_no_update;",
         )
         .unwrap();
     let (sequence, raw): (u64, Vec<u8>) = connection
@@ -5259,6 +5288,13 @@ fn holding_reseal_internal_event_row(
             "UPDATE execution_availability_event_metadata
              SET event_id = ?1, raw_byte_length = ?2 WHERE sequence = ?3",
             rusqlite::params![event_id, raw.len(), sequence],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE execution_availability_event_anchors
+             SET event_id = ?1 WHERE sequence = ?2",
+            rusqlite::params![event_id, sequence],
         )
         .unwrap();
 }
@@ -5361,6 +5397,9 @@ fn holding_resource_history_substitution_and_missing_atomic_dispatch_refuse_on_r
             .execute_batch(
                 "DROP TRIGGER events_no_delete;
                  DROP TRIGGER execution_availability_metadata_no_delete;
+                 DROP TRIGGER execution_availability_anchors_no_delete;
+                 DELETE FROM execution_availability_event_anchors
+                 WHERE event_id = 'provider-dispatch-dispatch-missing-after-wake';
                  DELETE FROM execution_availability_event_metadata
                  WHERE event_id = 'provider-dispatch-dispatch-missing-after-wake';
                  DELETE FROM events
@@ -5371,7 +5410,7 @@ fn holding_resource_history_substitution_and_missing_atomic_dispatch_refuse_on_r
         assert!(matches!(
             read_only_run_snapshot(&path, "run-holding-store"),
             Err(ForemanError::ReadOnlyStore(message))
-                if message.contains("provider wake lacks atomic next dispatch")
+                if message.contains("resource reacquisition or wake lacks atomic successor")
         ));
     }
 }
@@ -5545,4 +5584,616 @@ fn holding_dispatch_occurrence_bound_stops_repeated_refusal_without_hammering() 
     assert_eq!(history.dispatches.len(), 2);
     assert_eq!(history.wake_occurrence_ids, vec!["wake-bounded-2"]);
     drop(directory);
+}
+
+#[test]
+fn holding_resource_event_ids_are_domain_derived_in_query_and_mutating_paths() {
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        holding_reseal_internal_event_row(&connection, "provider_resources_released", |event| {
+            event["event_id"] = Value::String("provider-resources-released-substituted".to_owned());
+        });
+        let before: u64 = connection
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("provider resource release binding mismatch")
+        ));
+        let store = ForemanStore::open(&path).unwrap();
+        assert!(store
+            .record_terminal_refusal(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "resource event identity substitution",
+                holding_time("2026-08-31T12:01:03Z"),
+            )
+            .is_err());
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let after: u64 = connection
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let parked = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        store
+            .wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "wake-resource-event-id",
+                "dispatch-resource-event-id",
+                "adapter-process-resource-event-id",
+                "session-resource-event-id",
+                1,
+                parked.provider_retry_after.unwrap(),
+            )
+            .unwrap();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        holding_reseal_internal_event_row(&connection, "provider_resources_reacquired", |event| {
+            event["event_id"] =
+                Value::String("provider-resources-reacquired-substituted".to_owned());
+        });
+        let before: u64 = connection
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("provider resource reacquisition binding mismatch")
+        ));
+        let store = ForemanStore::open(&path).unwrap();
+        assert!(store
+            .record_dispatch_requested(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                holding_time("2026-08-31T12:01:04Z"),
+            )
+            .is_err());
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let after: u64 = connection
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+    }
+}
+
+fn holding_worker_started_event(
+    packet: &NightshiftPacketV1,
+    attempt: &WorkerStartRequestV2,
+    event_id: &str,
+) -> AdapterEventV1 {
+    let mut event = AdapterEventV1 {
+        schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.to_owned(),
+        event_digest: holding_placeholder(),
+        event_id: event_id.to_owned(),
+        packet_digest: packet.packet_digest.clone(),
+        run_id: attempt.run_id.clone(),
+        work_item_id: attempt.work_item_id.clone(),
+        attempt_id: attempt.attempt_id.clone(),
+        adapter_id: attempt.adapter_id.clone(),
+        adapter_version: attempt.adapter_version.clone(),
+        occurred_at: holding_time("2026-08-31T12:01:03Z"),
+        kind: AdapterEventKindV1::WorkerStarted,
+        provider_identity: None,
+        model_identity: None,
+        session_identity: None,
+        thread_identity: None,
+        turn_identity: None,
+        queue_identity: None,
+        message: None,
+        human_question: None,
+        extensions: BTreeMap::new(),
+    };
+    event.seal().unwrap();
+    event
+}
+
+fn holding_terminal_receipt(
+    packet: &NightshiftPacketV1,
+    attempt: &WorkerStartRequestV2,
+    execution: Option<&ProviderExecutionIdentityV1>,
+) -> TerminalReceiptV1 {
+    let mut receipt = terminal(packet, attempt, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    receipt.adapter_id = attempt.adapter_id.clone();
+    receipt.adapter_version = attempt.adapter_version.clone();
+    receipt.provider_identity = execution
+        .map(|value| value.provider_id.clone())
+        .unwrap_or_else(|| "openai".to_owned());
+    receipt.model_identity = execution
+        .map(|value| value.model_id.clone())
+        .unwrap_or_else(|| "gpt-5.6-sol".to_owned());
+    receipt.session_identity = execution.map(|value| value.app_server_session_identity.clone());
+    receipt.thread_identity = execution.map(|value| value.thread_id.clone());
+    receipt.turn_identity = execution.map(|value| value.turn_id.clone());
+    receipt.queue_identity = None;
+    receipt.started_at = holding_time("2026-08-31T12:01:00Z");
+    receipt.ended_at = holding_time("2026-08-31T12:01:10Z");
+    receipt.seal().unwrap();
+    receipt
+}
+
+#[test]
+fn holding_parked_and_indeterminate_refuse_legacy_event_and_terminal_mutators_atomically() {
+    for (ordinal, snapshot_name) in ["parked", "indeterminate"].into_iter().enumerate() {
+        let (_directory, path, store, packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            snapshot_name,
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        let before = fs::read(&path).unwrap();
+        assert!(store
+            .record_dispatch_requested(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                holding_time("2026-08-31T12:01:03Z"),
+            )
+            .is_err());
+        assert!(store
+            .record_resume_requested(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                holding_time("2026-08-31T12:01:03Z"),
+            )
+            .is_err());
+        assert!(store
+            .record_terminal_refusal(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "closed HOLDING mechanism state",
+                holding_time("2026-08-31T12:01:03Z"),
+            )
+            .is_err());
+        let event = holding_worker_started_event(
+            &packet,
+            &attempt,
+            &format!("holding-closed-worker-started-{ordinal}"),
+        );
+        assert!(store
+            .accept_adapter_event(&holding_canonical(&event))
+            .is_err());
+        let receipt = holding_terminal_receipt(&packet, &attempt, None);
+        assert!(store
+            .accept_terminal_receipt(&holding_canonical(&receipt))
+            .is_err());
+        drop(store);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let connection = Connection::open(&path).unwrap();
+        let receipts: u64 = connection
+            .query_row("SELECT count(*) FROM terminal_receipts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(receipts, 0);
+    }
+}
+
+#[test]
+fn holding_exact_completion_recovers_after_capacity_and_refuses_model_substitution() {
+    let (_directory, path, store, packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, first) = holding_open_initial(&store);
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &first,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    let second = store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-recovery-complete",
+            "dispatch-recovery-complete",
+            "adapter-process-recovery-complete",
+            "session-recovery-complete",
+            1,
+            parked.provider_retry_after.unwrap(),
+        )
+        .unwrap();
+    let completed = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &second,
+        "completed",
+        holding_time("2026-08-31T12:01:08Z"),
+        None,
+    );
+    assert_eq!(
+        completed.mechanism_state,
+        ProviderMechanismStateV1::ProviderCompleted
+    );
+    let execution = completed.provider_execution.as_ref().unwrap();
+    let mut worker_started =
+        holding_worker_started_event(&packet, &attempt, "worker-after-created");
+    worker_started.provider_identity = Some(execution.provider_id.clone());
+    worker_started.model_identity = Some(execution.model_id.clone());
+    worker_started.session_identity = Some(execution.app_server_session_identity.clone());
+    worker_started.thread_identity = Some(execution.thread_id.clone());
+    worker_started.turn_identity = Some(execution.turn_id.clone());
+    worker_started.seal().unwrap();
+    store
+        .accept_adapter_event(&holding_canonical(&worker_started))
+        .unwrap();
+    let receipt = holding_terminal_receipt(&packet, &attempt, Some(execution));
+    let mut substituted = receipt.clone();
+    substituted.model_identity = "gpt-5.6-substituted".to_owned();
+    substituted.seal().unwrap();
+    assert!(matches!(
+        store.accept_terminal_receipt(&holding_canonical(&substituted)),
+        Err(ForemanError::IdentityMismatch("model_identity"))
+    ));
+    store
+        .accept_terminal_receipt(&holding_canonical(&receipt))
+        .unwrap();
+    drop(store);
+    let snapshot = read_only_run_snapshot(&path, "run-holding-store").unwrap();
+    assert_eq!(snapshot.terminal_receipts.len(), 1);
+    assert_eq!(
+        snapshot.execution_availability.unwrap().dispositions.last(),
+        Some(&completed)
+    );
+}
+
+#[test]
+fn holding_metadata_anchor_and_table_presence_preflight_before_provider_blob_materialization() {
+    {
+        let (_directory, path, store, _packet, _admission, profile, _policy, _requirement) =
+            holding_setup();
+        let (_attempt, _opened) = holding_open_initial(&store);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_update;
+                 DROP TRIGGER execution_availability_metadata_no_delete;
+                 DELETE FROM execution_availability_event_metadata
+                 WHERE event_kind = 'provider_dispatch';",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE events SET kind = 'internal', raw_bytes = zeroblob(?1)
+                 WHERE event_id = 'provider-dispatch-dispatch-store-1'",
+                [profile.maximum_event_bytes + 1],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("metadata/event row set mismatch")
+        ));
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, profile, _policy, _requirement) =
+            holding_setup();
+        let (_attempt, _opened) = holding_open_initial(&store);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE execution_availability_event_metadata;
+                 DROP TRIGGER events_no_update;",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE events SET kind = 'internal', raw_bytes = zeroblob(?1)
+                 WHERE event_id = 'provider-dispatch-dispatch-store-1'",
+                [profile.maximum_event_bytes + 1],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("missing metadata-first custody tables")
+        ));
+    }
+
+    let (_directory, store, _packet, admission, _profile) = setup();
+    assert!(store.projection(&admission.run_id).is_ok());
+}
+
+#[test]
+fn holding_history_refuses_missing_initial_release_and_partial_reacquisition_groups() {
+    {
+        let (_directory, path, store, _packet, _admission, _profile, _policy, _requirement) =
+            holding_setup();
+        let (_attempt, _opened) = holding_open_initial(&store);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_delete;
+                 DROP TRIGGER execution_availability_metadata_no_delete;
+                 DROP TRIGGER execution_availability_anchors_no_delete;
+                 DELETE FROM execution_availability_event_anchors
+                 WHERE event_id = 'provider-dispatch-dispatch-store-1';
+                 DELETE FROM execution_availability_event_metadata
+                 WHERE event_id = 'provider-dispatch-dispatch-store-1';
+                 DELETE FROM events
+                 WHERE event_id = 'provider-dispatch-dispatch-store-1';",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("attempt lacks adjacent initial dispatch")
+        ));
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let parked = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        drop(store);
+        let release_event_id = format!("provider-resources-released-{}", parked.disposition_digest);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_delete;
+                 DROP TRIGGER execution_availability_metadata_no_delete;
+                 DROP TRIGGER execution_availability_anchors_no_delete;",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM execution_availability_event_anchors WHERE event_id = ?1",
+                [&release_event_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM execution_availability_event_metadata WHERE event_id = ?1",
+                [&release_event_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM events WHERE event_id = ?1",
+                [&release_event_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO resource_claims
+                 (run_id, resource_lock_key, work_item_id, attempt_id)
+                 VALUES ('run-holding-store', 'provider-slot-a', 'work-a', ?1)",
+                [&attempt.attempt_id],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("mandatory resource release")
+        ));
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let parked = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        store
+            .wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "wake-partial-group",
+                "dispatch-partial-group",
+                "adapter-process-partial-group",
+                "session-partial-group",
+                1,
+                parked.provider_retry_after.unwrap(),
+            )
+            .unwrap();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_delete;
+                 DROP TRIGGER execution_availability_metadata_no_delete;
+                 DROP TRIGGER execution_availability_anchors_no_delete;
+                 DELETE FROM execution_availability_event_anchors
+                 WHERE event_id IN ('provider-wake-wake-partial-group',
+                                    'provider-dispatch-dispatch-partial-group');
+                 DELETE FROM execution_availability_event_metadata
+                 WHERE event_id IN ('provider-wake-wake-partial-group',
+                                    'provider-dispatch-dispatch-partial-group');
+                 DELETE FROM events
+                 WHERE event_id IN ('provider-wake-wake-partial-group',
+                                    'provider-dispatch-dispatch-partial-group');",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("reacquisition or wake lacks atomic successor")
+        ));
+    }
+}
+
+#[test]
+fn holding_release_wake_reacquires_worker_slot_atomically_across_concurrent_writers() {
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup_with_policy(1, ParkedResourceLockPolicyV1::ReleaseAndReacquire, true);
+        let (attempt, opened) = holding_open_initial(&store);
+        let parked = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        store
+            .prepare_provider_attempt(
+                "run-holding-store",
+                "work-b",
+                "dispatch-worker-slot-b",
+                "adapter-process-worker-slot-b",
+                "session-worker-slot-b",
+                0,
+                holding_time("2026-08-31T12:01:03Z"),
+            )
+            .unwrap();
+        assert!(matches!(
+            store.wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "wake-worker-slot-a",
+                "dispatch-worker-slot-a",
+                "adapter-process-worker-slot-a",
+                "session-worker-slot-a",
+                1,
+                parked.provider_retry_after.unwrap(),
+            ),
+            Err(ForemanError::ResourceUnavailable(message))
+                if message.contains("maximum concurrent workers")
+        ));
+        drop(store);
+        let history = read_only_run_snapshot(&path, "run-holding-store")
+            .unwrap()
+            .execution_availability
+            .unwrap();
+        assert_eq!(history.dispatches.len(), 2);
+        assert!(history.wake_occurrence_ids.is_empty());
+    }
+
+    let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup_with_policy(1, ParkedResourceLockPolicyV1::ReleaseAndReacquire, true);
+    let (attempt, opened) = holding_open_initial(&store);
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    drop(store);
+    let barrier = Arc::new(Barrier::new(2));
+    let wake_path = path.clone();
+    let wake_barrier = Arc::clone(&barrier);
+    let attempt_id = attempt.attempt_id.clone();
+    let wake_at = parked.provider_retry_after.unwrap();
+    let wake = std::thread::spawn(move || {
+        let store = ForemanStore::open(wake_path).unwrap();
+        wake_barrier.wait();
+        store.wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt_id,
+            "wake-concurrent-slot-a",
+            "dispatch-concurrent-slot-a",
+            "adapter-process-concurrent-slot-a",
+            "session-concurrent-slot-a",
+            1,
+            wake_at,
+        )
+    });
+    let prepare_path = path.clone();
+    let prepare = std::thread::spawn(move || {
+        let store = ForemanStore::open(prepare_path).unwrap();
+        barrier.wait();
+        store.prepare_provider_attempt(
+            "run-holding-store",
+            "work-b",
+            "dispatch-concurrent-slot-b",
+            "adapter-process-concurrent-slot-b",
+            "session-concurrent-slot-b",
+            0,
+            holding_time("2026-08-31T12:01:03Z"),
+        )
+    });
+    let results = [
+        wake.join().unwrap().is_ok(),
+        prepare.join().unwrap().is_ok(),
+    ];
+    assert_eq!(results.into_iter().filter(|value| *value).count(), 1);
+    let connection = Connection::open(&path).unwrap();
+    let claims: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM resource_claims WHERE run_id = 'run-holding-store'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claims, 1);
 }

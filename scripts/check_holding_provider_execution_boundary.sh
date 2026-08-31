@@ -10,7 +10,12 @@ check_mechanism() {
   local candidate="$tree/store.rs"
   rg -q 'MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES: u64 = 16 \* 1024 \* 1024' "$candidate" || return 1
   rg -q 'validate_execution_availability_history_size' "$candidate" || return 1
+  rg -q 'execution_availability_event_anchors' "$candidate" || return 1
+  rg -q 'run_mechanism_requirements' "$candidate" || return 1
+  rg -q 'provider-resources-released-\{disposition_digest\}' "$candidate" || return 1
+  rg -q 'provider-resources-reacquired-\{wake_occurrence_id\}' "$candidate" || return 1
   rg -q 'prepare_provider_attempt' "$candidate" || return 1
+  rg -q 'matches!\(self, Self::NotAdmittedModelAtCapacity\)' "$tree/execution_availability.rs" || return 1
   rg -q 'availability-required run refuses legacy V2 start path' "$candidate" || return 1
   rg -q 'TransactionBehavior::Immediate' "$candidate" || return 1
   if rg -n 'std::process::Command|TcpListener|UdpSocket|thread::sleep|send_approval|respond_approval|approval_response_authorized:\s*true|automatic_semantic_retry:\s*true' "$tree" >/dev/null; then

@@ -1273,6 +1273,40 @@ fn client_request_response_pairing_is_exact() {
 }
 
 #[test]
+fn only_exact_model_capacity_disposition_permits_automatic_park() {
+    let cases = [
+        (
+            ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity,
+            true,
+        ),
+        (
+            ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable,
+            false,
+        ),
+        (
+            ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited,
+            false,
+        ),
+        (
+            ProviderAdmissionDispositionKindV1::AuthenticationRefused,
+            false,
+        ),
+        (
+            ProviderAdmissionDispositionKindV1::QuotaExhaustedFuelOwned,
+            false,
+        ),
+        (
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+            false,
+        ),
+        (ProviderAdmissionDispositionKindV1::ExecutionAdmitted, false),
+    ];
+    for (disposition, expected) in cases {
+        assert_eq!(disposition.permits_automatic_park(), expected);
+    }
+}
+
+#[test]
 fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
     let policy = policy();
     let requirement = requirement(&policy);

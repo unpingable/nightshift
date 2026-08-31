@@ -107,12 +107,17 @@ turn, and first response ID. Later response IDs remain ordered steps inside the
 same admitted execution; they do not create new work attempts or dispatches.
 
 Only an exact, acquisition-complete, `willRetry=false`,
-`PRE_RESPONSE` terminal error may establish non-admission. Initially the
-Codex mapping recognizes only typed `serverOverloaded` as
-`MODEL_AT_CAPACITY`. Coarse `usageLimitExceeded`, internal-server,
-connection, stream, protocol, and unknown errors remain independently recorded
-and cannot establish a retryable availability meaning. Authentication refusal
-stops. Transport or protocol uncertainty is admission-indeterminate.
+`PRE_RESPONSE` terminal error may establish non-admission. For the accepted
+Codex/Switchyard owner pair, only its literal
+`NOT_ADMITTED_MODEL_AT_CAPACITY` disposition, derived by that owner from the
+exact typed pre-created `serverOverloaded` record, permits automatic parking.
+No other refusal vocabulary is promoted into that meaning. Quota exhaustion
+remains FUEL-owned; `usageLimitExceeded`/rate-limited, provider-unavailable/
+server-overload ambiguity, authentication-refused, transport, protocol, and
+unknown records retain their distinct raw/observation categories. Under the
+current owner they stop or remain admission-indeterminate and cannot redispatch,
+fall back, or auto-park. A future provider-neutral safe refusal would require
+its own exact qualified owner contract.
 
 The pinned Codex and Switchyard subjects qualified these meanings with a
 deterministic mock provider only. They do not qualify a real provider lifecycle,
@@ -221,12 +226,15 @@ and server-request discrepancy pair—to return the exact raw-only refusal befor
 binding inspection, semantic raw-frame replay, or any scheduling meaning.
 The mechanism store enforces a distinct cumulative 16 MiB journal-history
 ceiling for execution-availability rows. Each availability append also creates
-an immutable metadata row binding run, sequence, event identity, closed event
-kind, and byte length. Query-only and mutating reopen compare the complete
-metadata and event row sets, then query count and `length(raw_bytes)`, refuse
+an immutable metadata row binding run, sequence, event identity, closed event kind, and byte length; an independent
+immutable anchor binds the same run, sequence, and event identity, and a
+run-level marker records that HOLDING history is required. Query-only and
+mutating reopen compare the complete metadata, anchor, and event row sets, then
+query count and `length(raw_bytes)`, refuse
 empty or per-event-oversized rows, and checked-add the cumulative length before
-selecting or materializing any raw BLOB. Relabeling a provider event as a legacy
-internal row therefore cannot bypass preflight. The same preflight runs during
+selecting or materializing any raw BLOB. Relabeling a provider event as a legacy internal row, deleting one custody
+row, or dropping a required custody table therefore cannot bypass preflight.
+The same preflight runs during
 query-only reopen and every mutating transition under the immediate transaction.
 Legacy non-availability rows remain readable under their predecessor law.
 The pure contract graph requires the exact ordered prior history for the same
@@ -266,7 +274,7 @@ Availability observation states are:
 - `PROTOCOL_ERROR`; and
 - `UNKNOWN`.
 
-Dispatch dispositions are:
+Dispatch dispositions use the closed provider-neutral vocabulary:
 
 - `NOT_ADMITTED_MODEL_AT_CAPACITY`;
 - `NOT_ADMITTED_PROVIDER_UNAVAILABLE`;
@@ -275,6 +283,14 @@ Dispatch dispositions are:
 - `QUOTA_EXHAUSTED_FUEL_OWNED`;
 - `ADMISSION_INDETERMINATE`; and
 - `EXECUTION_ADMITTED`.
+
+The vocabulary preserves distinct evidence categories; it does not make every
+category actionable. With the accepted Codex/Switchyard V1 owner, only
+`NOT_ADMITTED_MODEL_AT_CAPACITY` permits automatic parking. The unavailable,
+rate/usage-limit, authentication, quota, transport, protocol, coarse, and
+unknown paths retain independent testimony but do not authorize automatic
+parking or redispatch under this campaign. `QUOTA_EXHAUSTED_FUEL_OWNED` is not
+constructed from execution-availability evidence.
 
 `WAITING_APPROVAL` is a post-admission worker mechanism state, not an
 availability disposition. It never answers an approval or permits redispatch.
@@ -328,7 +344,7 @@ The durable journal order is:
 AttemptCreated
 DispatchOccurrenceOpened
   -> ProviderAdmissionDisposition(EXECUTION_ADMITTED)
-  -> ProviderAdmissionDisposition(NOT_ADMITTED_*)
+  -> ProviderAdmissionDisposition(NOT_ADMITTED_MODEL_AT_CAPACITY)
        immediately followed by DeferredProviderDispatch
   -> ProviderAdmissionDisposition(ADMISSION_INDETERMINATE)
 ```
@@ -342,8 +358,9 @@ released.
 `wake_at` is derived from exact refusal-received time and either an exact
 provider retry-after or the policy backoff. A wake invocation supplies no
 availability evidence and grants no authority. One immediate transaction
-checks eligibility, reacquires required locks, and creates at most one fresh
-dispatch. Duplicate wake invocations converge.
+checks eligibility, atomically reacquires both the maximum-concurrent-worker slot and required locks, records the resource
+reacquisition and wake, and creates at most one fresh dispatch. Duplicate wake
+invocations converge.
 
 A stale availability observation cannot start a dispatch. A wake never
 refreshes evidence. Restart replays exact journal state and cannot advance

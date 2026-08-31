@@ -936,12 +936,7 @@ pub enum ProviderAdmissionDispositionKindV1 {
 
 impl ProviderAdmissionDispositionKindV1 {
     pub fn permits_automatic_park(self) -> bool {
-        matches!(
-            self,
-            Self::NotAdmittedModelAtCapacity
-                | Self::NotAdmittedProviderUnavailable
-                | Self::NotAdmittedRateLimited
-        )
+        matches!(self, Self::NotAdmittedModelAtCapacity)
     }
 }
 
