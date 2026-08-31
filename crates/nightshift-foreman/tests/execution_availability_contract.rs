@@ -1362,11 +1362,20 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
         corpus["owner_head"],
         json!("2ba25db66d8b29dd215bd87e05f4ea794024b3b7")
     );
+    for branch in [
+        "closed_response_completed_shape",
+        "notification_approval_watermark",
+        "waiting_approval_then_notification_watermark",
+        "refusal_then_discrepancy_indeterminate",
+    ] {
+        assert!(corpus["branch_inventory"][branch].as_u64().unwrap() > 0);
+    }
     let snapshots = corpus["snapshots"].as_array().unwrap();
     assert!(snapshots.len() >= 100);
     let mut saw_gap = false;
     let mut saw_duplicate = false;
     let mut saw_reorder = false;
+    let mut saw_refusal_then_discrepancy = false;
     for snapshot in snapshots {
         let ordered_discrepancies: Vec<i64> = snapshot["records"]
             .as_array()
@@ -1385,21 +1394,49 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
         saw_duplicate |= ordered_discrepancies.contains(&0) && consumed == 1;
         saw_reorder |= ordered_discrepancies == [1, 0] && consumed == 2;
         let raw = canonical(snapshot);
-        disposition_from_exact_snapshot(
+        let disposition = disposition_from_exact_snapshot(
             &requirement,
             &dispatch,
             &raw,
             time("2026-08-31T12:01:02Z"),
-        )
-        .validate()
-        .unwrap_or_else(|error| {
+        );
+        disposition.validate().unwrap_or_else(|error| {
             panic!(
                 "owner terminal transition {} failed Nightshift replay: {error}",
                 snapshot["snapshot_digest"].as_str().unwrap()
             )
         });
+        let has_refusal = snapshot["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["kind"] == "PROVIDER_ADMISSION_REFUSED");
+        let has_discrepancy = snapshot["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["kind"] == "ADMISSION_DISCREPANCY");
+        if has_refusal && has_discrepancy {
+            saw_refusal_then_discrepancy = true;
+            assert_eq!(snapshot["admission_disposition"], "ADMISSION_INDETERMINATE");
+            assert_eq!(snapshot["acquisition_cut"]["clean"], false);
+
+            let mut substituted = snapshot.clone();
+            substituted["acquisition_cut"]["clean"] = json!(true);
+            let last = substituted["records"].as_array().unwrap().len() - 1;
+            substituted["records"][last]["normalized"] = substituted["acquisition_cut"].clone();
+            substituted = reseal_mapper_snapshot(substituted);
+            let substituted_raw = canonical(&substituted);
+            let mut invalid = disposition.clone();
+            invalid.mapper_snapshot_digest =
+                substituted["snapshot_digest"].as_str().unwrap().to_owned();
+            invalid.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&substituted_raw).unwrap();
+            invalid.disposition_digest = placeholder();
+            invalid.seal().unwrap_err();
+        }
     }
     assert!(saw_gap && saw_duplicate && saw_reorder);
+    assert!(saw_refusal_then_discrepancy);
 }
 
 #[test]
@@ -1435,6 +1472,26 @@ fn exact_loss_unknown_and_legacy_rawless_owner_variants_reopen() {
     disposition_from_exact_snapshot(&requirement, &dispatch, &canonical(&unknown), received)
         .validate()
         .unwrap();
+
+    let valid_unknown =
+        disposition_from_exact_snapshot(&requirement, &dispatch, &canonical(&unknown), received);
+    for (lane, method) in [
+        ("CLIENT_REQUEST", "client-request/thread/read"),
+        ("CLIENT_RESPONSE", "client-response/thread/read"),
+    ] {
+        let mut impossible = unknown.clone();
+        impossible["records"][1]["acquisition_kind"] = json!(lane);
+        impossible["records"][1]["method"] = json!(method);
+        impossible["records"][1]["normalized"]["detail"] =
+            json!("exact App Server wire bytes are required");
+        impossible = reseal_mapper_snapshot(impossible);
+        let impossible_raw = canonical(&impossible);
+        let mut invalid = valid_unknown.clone();
+        invalid.mapper_snapshot_digest = impossible["snapshot_digest"].as_str().unwrap().to_owned();
+        invalid.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&impossible_raw).unwrap();
+        invalid.disposition_digest = placeholder();
+        invalid.seal().unwrap_err();
+    }
 
     let mut rawless_ordered = unknown.clone();
     rawless_ordered["records"][1]["acquisition_kind"] = json!("NOTIFICATION");

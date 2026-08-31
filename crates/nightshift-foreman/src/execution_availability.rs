@@ -2181,7 +2181,7 @@ fn validate_switchyard_snapshot_complete(
             "client request cut outstanding binding",
         ));
     }
-    let semantic_closed = refusal.is_some()
+    let semantic_closed = (refusal.is_some() && !saw_discrepancy)
         || (execution.is_some()
             && open_response.is_none()
             && saw_turn_completed
@@ -2465,7 +2465,8 @@ fn validate_switchyard_raw_replay(
                                 | "client request lacks exact bounded request method"
                                 | "client response lacks exact bounded request method"
                         );
-                    let raw_custody = method != "adapter/acquisition"
+                    let raw_custody = matches!(lane, Some("NOTIFICATION" | "SERVER_REQUEST"))
+                        && method != "adapter/acquisition"
                         && (matches!(
                             detail,
                             "exact App Server wire bytes are required"
@@ -2999,10 +3000,12 @@ fn validate_switchyard_raw_replay(
                 "App Server activity followed completed turn"
             } else if saw_approval
                 && (lane == Some("SERVER_REQUEST")
-                    || matches!(
-                        method,
-                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-                    )
+                    || (lane.is_none()
+                        && matches!(
+                            method,
+                            "item/commandExecution/requestApproval"
+                                | "item/fileChange/requestApproval"
+                        ))
                     || method.starts_with("providerAdmission/")
                     || method.starts_with("providerRequest/")
                     || method.starts_with("rawResponse/"))
@@ -3011,10 +3014,11 @@ fn validate_switchyard_raw_replay(
             } else if method == "error" {
                 "coarse or unclassified App Server error cannot establish admission"
             } else if lane == Some("SERVER_REQUEST")
-                || matches!(
-                    method,
-                    "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-                )
+                || (lane.is_none()
+                    && matches!(
+                        method,
+                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                    ))
                 || (lane.is_none()
                     && normalized.get("detail").and_then(Value::as_str)
                         == Some("unknown App Server server request"))
@@ -3299,6 +3303,14 @@ fn validate_switchyard_raw_replay(
                 })
             {
                 "provider refusal time precedes request start"
+            } else if method == "rawResponse/completed"
+                && object.is_none_or(|value| {
+                    let fields = ["threadId", "turnId", "responseId", "usage"];
+                    value.len() != fields.len()
+                        || fields.iter().any(|field| !value.contains_key(*field))
+                })
+            {
+                "closed response-completed fields do not match"
             } else if method == "rawResponse/completed" && current_execution.is_none() {
                 "response completion lacks an exact response-created boundary"
             } else if method == "rawResponse/completed" && (!thread_matches || !turn_matches) {

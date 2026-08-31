@@ -45,7 +45,11 @@ def main() -> int:
     fixture_dir = Path(__file__).resolve().parent / "fixtures"
     if args.refresh_owner_test_corpus:
         import pytest  # noqa: PLC0415
-        from switchyard.appserver import AcquisitionCut  # noqa: PLC0415
+        from switchyard.appserver import (  # noqa: PLC0415
+            AcquisitionCut,
+            AcquisitionEnvelope,
+            ServerMessage,
+        )
 
         captured: dict[str, dict] = {}
         original_snapshot = ProviderAdmissionMapper.snapshot
@@ -130,16 +134,213 @@ def main() -> int:
         ProviderAdmissionMapper.snapshot = capture_snapshot
         try:
             result = pytest.main([str(root / "tests/test_provider_admission.py"), "-q"])
+            if result == 0:
+                base_binding = json.loads(
+                    (fixture_dir / "switchyard-provider-completed.snapshot.v1.json")
+                    .read_text(encoding="utf-8")
+                )["binding"]
+
+                def owner_message(method: str, params: dict) -> ServerMessage:
+                    value = {"method": method, "params": params}
+                    raw = json.dumps(
+                        value, separators=(",", ":"), ensure_ascii=False
+                    ).encode("utf-8") + b"\n"
+                    return ServerMessage(value, raw_bytes=raw)
+
+                def request(ordinal: int = 0, occurrence: str = "request-0") -> dict:
+                    return {
+                        "threadId": "thread-holding-1",
+                        "turnId": "turn-holding-1",
+                        "requestOccurrenceId": occurrence,
+                        "samplingOrdinal": ordinal,
+                        "requestOrder": ordinal,
+                        "provider": "openai",
+                        "model": "gpt-5.6-sol",
+                        "startedAtMs": 1788163200000 + 1000 * ordinal,
+                    }
+
+                def response() -> dict:
+                    value = request()
+                    value.pop("startedAtMs")
+                    value.update(
+                        {"responseId": "response-0", "observedAtMs": 1788163200100}
+                    )
+                    return value
+
+                def completion() -> dict:
+                    return {
+                        "threadId": "thread-holding-1",
+                        "turnId": "turn-holding-1",
+                        "responseId": "response-0",
+                        "usage": None,
+                    }
+
+                def refusal() -> dict:
+                    value = request()
+                    value.pop("startedAtMs")
+                    value.update(
+                        {
+                            "responseCreated": False,
+                            "willRetry": False,
+                            "refusalKind": "modelAtCapacity",
+                            "codexErrorInfo": "serverOverloaded",
+                            "retryAfterMs": 5000,
+                            "diagnostic": "bounded mock capacity refusal",
+                            "observedAtMs": 1788163200100,
+                        }
+                    )
+                    return value
+
+                approval_method = "item/commandExecution/requestApproval"
+                approval = {
+                    "threadId": "thread-holding-1",
+                    "turnId": "turn-holding-1",
+                }
+
+                # Exact closed response shape is checked before execution identity.
+                closed_shape = ProviderAdmissionMapper(copy.deepcopy(base_binding))
+                closed_shape.consume_envelope(
+                    AcquisitionEnvelope(
+                        0,
+                        "NOTIFICATION",
+                        message=owner_message("rawResponse/completed", {}),
+                    )
+                )
+
+                # Approval-named notifications are ordinary provider watermarks.
+                watermark = ProviderAdmissionMapper(copy.deepcopy(base_binding))
+                watermark.consume_envelope(
+                    AcquisitionEnvelope(
+                        0,
+                        "NOTIFICATION",
+                        message=owner_message(approval_method, approval),
+                    )
+                )
+
+                # The same method after an exact approval remains lane-sensitive.
+                waiting = ProviderAdmissionMapper(copy.deepcopy(base_binding))
+                for ordinal, kind, method, params in (
+                    (0, "NOTIFICATION", "providerRequest/started", request()),
+                    (1, "NOTIFICATION", "rawResponse/started", response()),
+                    (2, "NOTIFICATION", "rawResponse/completed", completion()),
+                    (3, "SERVER_REQUEST", approval_method, approval),
+                    (4, "NOTIFICATION", approval_method, approval),
+                ):
+                    waiting.consume_envelope(
+                        AcquisitionEnvelope(
+                            ordinal,
+                            kind,
+                            message=owner_message(method, params),
+                        )
+                    )
+
+                # A later discrepancy invalidates a previously retained refusal.
+                provider_discrepancy = ProviderAdmissionMapper(
+                    copy.deepcopy(base_binding)
+                )
+                for ordinal, method, params in (
+                    (0, "providerRequest/started", request()),
+                    (1, "providerAdmission/refused", refusal()),
+                    (2, "providerRequest/started", request()),
+                ):
+                    provider_discrepancy.consume_envelope(
+                        AcquisitionEnvelope(
+                            ordinal,
+                            "NOTIFICATION",
+                            message=owner_message(method, params),
+                        )
+                    )
+
+                client_discrepancy = ProviderAdmissionMapper(copy.deepcopy(base_binding))
+                client_discrepancy.consume_envelope(
+                    AcquisitionEnvelope(
+                        0,
+                        "NOTIFICATION",
+                        message=owner_message("providerRequest/started", request()),
+                    )
+                )
+                client_discrepancy.consume_envelope(
+                    AcquisitionEnvelope(
+                        1,
+                        "NOTIFICATION",
+                        message=owner_message("providerAdmission/refused", refusal()),
+                    )
+                )
+                client_wire = {
+                    "id": 7,
+                    "method": "thread/read",
+                    "params": {"threadId": "thread-substituted"},
+                }
+                client_discrepancy.consume_envelope(
+                    AcquisitionEnvelope(
+                        2,
+                        "CLIENT_REQUEST",
+                        message=ServerMessage(
+                            client_wire,
+                            raw_bytes=json.dumps(
+                                client_wire, separators=(",", ":")
+                            ).encode("utf-8")
+                            + b"\n",
+                        ),
+                        request_method="thread/read",
+                    )
+                )
         finally:
             ProviderAdmissionMapper.snapshot = original_snapshot
             for name, operation in original_operations.items():
                 setattr(ProviderAdmissionMapper, name, operation)
         if result != 0:
             raise SystemExit(f"exact owner branch suite failed: {result}")
+        snapshots = [captured[digest] for digest in sorted(captured)]
+        inventory = {
+            "closed_response_completed_shape": sum(
+                any(
+                    record["normalized"].get("detail")
+                    == "closed response-completed fields do not match"
+                    for record in snapshot["records"]
+                )
+                for snapshot in snapshots
+            ),
+            "notification_approval_watermark": sum(
+                any(
+                    record["acquisition_kind"] == "NOTIFICATION"
+                    and record["method"] == "item/commandExecution/requestApproval"
+                    and record["kind"] == "ACQUISITION_WATERMARK"
+                    for record in snapshot["records"]
+                )
+                for snapshot in snapshots
+            ),
+            "waiting_approval_then_notification_watermark": sum(
+                any(record["kind"] == "WAITING_APPROVAL" for record in snapshot["records"])
+                and any(
+                    record["acquisition_kind"] == "NOTIFICATION"
+                    and record["method"] == "item/commandExecution/requestApproval"
+                    and record["kind"] == "ACQUISITION_WATERMARK"
+                    for record in snapshot["records"]
+                )
+                for snapshot in snapshots
+            ),
+            "refusal_then_discrepancy_indeterminate": sum(
+                any(
+                    record["kind"] == "PROVIDER_ADMISSION_REFUSED"
+                    for record in snapshot["records"]
+                )
+                and any(
+                    record["kind"] == "ADMISSION_DISCREPANCY"
+                    for record in snapshot["records"]
+                )
+                and snapshot["admission_disposition"] == "ADMISSION_INDETERMINATE"
+                and snapshot["acquisition_cut"]["clean"] is False
+                for snapshot in snapshots
+            ),
+        }
+        if any(count == 0 for count in inventory.values()):
+            raise SystemExit(f"owner branch inventory incomplete: {inventory}")
         corpus = {
             "owner_head": OWNER_HEAD,
             "source_test": "tests/test_provider_admission.py",
-            "snapshots": [captured[digest] for digest in sorted(captured)],
+            "branch_inventory": inventory,
+            "snapshots": snapshots,
         }
         output = fixture_dir / "switchyard-owner-terminal-corpus.v1.json"
         output.write_text(
