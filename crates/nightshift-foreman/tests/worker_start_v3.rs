@@ -1,6 +1,13 @@
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Utc};
 use nightshift_foreman::{
-    WorkerStartRequestV2, WorkerStartRequestV3, WORKER_START_REQUEST_SCHEMA_V2,
-    WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    AdapterRegistrationV2, ExecutionProfileV2, ForemanExecutionAvailabilityRequirementV1,
+    ProviderAdmissionOwnerPinsV1, ProviderDispatchOccurrenceV1, ProviderModelSelectionV1,
+    WorkItemExecutionV1, WorkerStartRequestV2, WorkerStartRequestV3,
+    FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+    PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
+    WORKER_START_REQUEST_SCHEMA_V3, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -39,17 +46,126 @@ fn canonical<T: serde::Serialize>(value: &T) -> Vec<u8> {
     serde_jcs::to_vec(value).unwrap()
 }
 
+fn time(value: &str) -> DateTime<Utc> {
+    value.parse().unwrap()
+}
+
+fn profile() -> ExecutionProfileV2 {
+    let mut profile = ExecutionProfileV2 {
+        schema: FOREMAN_EXECUTION_PROFILE_SCHEMA_V2.to_owned(),
+        profile_digest: digest('0'),
+        packet_digest: digest('1'),
+        admission_digest: digest('8'),
+        adapters: BTreeMap::from([(
+            "switchyard-codex".to_owned(),
+            AdapterRegistrationV2 {
+                adapter_id: "switchyard-codex".to_owned(),
+                protocol: "switchyard.codex-app-server/v2".to_owned(),
+                adapter_version: "2.0.0".to_owned(),
+                executable_identity: digest('9'),
+                bounded_arguments: vec![],
+            },
+        )]),
+        work_items: BTreeMap::from([(
+            "WORK-A".to_owned(),
+            WorkItemExecutionV1 {
+                adapter_id: "switchyard-codex".to_owned(),
+                workspace_identity: "workspace-holding".to_owned(),
+                resource_lock_keys: vec!["provider-slot".to_owned()],
+                provider_model_class: "large".to_owned(),
+            },
+        )]),
+        budget_policy_ref: "fuel-policy".to_owned(),
+        log_custody_root: "/tmp/nightshift-holding/log".to_owned(),
+        receipt_custody_root: "/tmp/nightshift-holding/receipt".to_owned(),
+        maximum_event_bytes: 1024 * 1024,
+        maximum_receipt_bytes: 1024 * 1024,
+        adapter_timeout_seconds: 600,
+        closeout_policy: "ALL_EXPLICIT_TERMINAL_OR_NOT_STARTED".to_owned(),
+    };
+    profile.seal().unwrap();
+    profile
+}
+
+fn requirement(profile: &ExecutionProfileV2) -> ForemanExecutionAvailabilityRequirementV1 {
+    let mut requirement = ForemanExecutionAvailabilityRequirementV1 {
+        schema: FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1.to_owned(),
+        requirement_digest: digest('0'),
+        packet_digest: profile.packet_digest.clone(),
+        admission_digest: profile.admission_digest.clone(),
+        profile_digest: profile.profile_digest.clone(),
+        run_id: "run-holding".to_owned(),
+        adapter_id: "switchyard-codex".to_owned(),
+        adapter_protocol: "switchyard.codex-app-server/v2".to_owned(),
+        adapter_version: "2.0.0".to_owned(),
+        adapter_executable_identity: digest('9'),
+        owner_pins: ProviderAdmissionOwnerPinsV1::accepted(),
+        policy_id: "holding-policy".to_owned(),
+        policy_digest: digest('a'),
+        work_item_model_selections: BTreeMap::from([(
+            "WORK-A".to_owned(),
+            vec![ProviderModelSelectionV1 {
+                provider_id: "openai".to_owned(),
+                model_id: "gpt-5.6-sol".to_owned(),
+                model_class: "large".to_owned(),
+            }],
+        )]),
+        admitted_at: time("2026-08-31T12:00:00Z"),
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    requirement.seal().unwrap();
+    requirement
+}
+
 fn v3() -> WorkerStartRequestV3 {
-    WorkerStartRequestV3::from_v2(
+    let profile = profile();
+    let requirement = requirement(&profile);
+    WorkerStartRequestV3::from_v2_for_dispatch(
         &canonical(&v2()),
-        digest('3'),
+        &profile,
+        &requirement,
         "dispatch-holding-1",
-        "openai",
-        "gpt-5.6-sol",
-        "large",
         0,
     )
     .unwrap()
+}
+
+fn dispatch(
+    request: &WorkerStartRequestV3,
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+) -> ProviderDispatchOccurrenceV1 {
+    let mut dispatch = ProviderDispatchOccurrenceV1 {
+        schema: PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1.to_owned(),
+        dispatch_digest: digest('0'),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: requirement.policy_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: request.run_id.clone(),
+        work_item_id: request.work_item_id.clone(),
+        work_attempt_id: request.work_attempt_id.clone(),
+        dispatch_occurrence_id: request.dispatch_occurrence_id.clone(),
+        dispatch_ordinal: 1,
+        selected_model_ordinal: request.selected_model_ordinal,
+        selection: ProviderModelSelectionV1 {
+            provider_id: request.provider_id.clone(),
+            model_id: request.model_id.clone(),
+            model_class: request.model_class.clone(),
+        },
+        adapter_id: request.adapter_id.clone(),
+        adapter_version: request.adapter_version.clone(),
+        adapter_protocol: request.adapter_protocol.clone(),
+        adapter_process_occurrence_id: "adapter-process-holding-1".to_owned(),
+        app_server_session_identity: "app-server-session-holding-1".to_owned(),
+        worker_start_request_schema: WORKER_START_REQUEST_SCHEMA_V3.to_owned(),
+        worker_start_request_digest: request.request_digest.clone(),
+        worker_brief_digest: request.worker_brief_digest.clone(),
+        opened_at: time("2026-08-31T12:00:01Z"),
+        internal_provider_retry_count: 0,
+        provider_execution_id: None,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    dispatch.seal().unwrap();
+    dispatch
 }
 
 #[test]
@@ -65,10 +181,90 @@ fn v3_retains_exact_v2_and_has_stable_independent_digest() {
     );
     let bytes = canonical(&request);
     assert_eq!(WorkerStartRequestV3::from_slice(&bytes).unwrap(), request);
+    let profile = profile();
+    let requirement = requirement(&profile);
+    request
+        .validate_dispatch_graph(&profile, &requirement, &dispatch(&request, &requirement))
+        .unwrap();
     assert_eq!(
         request.request_digest,
-        "sha256:3dbc6fb1190f2d8edc494750456b505db42c7460a2ab09a0232e7fb840afd57d"
+        "sha256:91378debdc75baea723c3a8d6b0bddac4833373bd26d86c83f4ec7d642895829"
     );
+}
+
+#[test]
+fn v3_graph_refuses_profile_selection_dispatch_and_identity_substitutions() {
+    let profile = profile();
+    let requirement = requirement(&profile);
+    let request = WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&v2()),
+        &profile,
+        &requirement,
+        "dispatch-holding-1",
+        0,
+    )
+    .unwrap();
+    let exact_dispatch = dispatch(&request, &requirement);
+    request
+        .validate_dispatch_graph(&profile, &requirement, &exact_dispatch)
+        .unwrap();
+
+    let mut changed_profile = profile.clone();
+    changed_profile.maximum_event_bytes += 1;
+    changed_profile.seal().unwrap();
+    let mut changed_requirement = requirement.clone();
+    changed_requirement.profile_digest = changed_profile.profile_digest.clone();
+    changed_requirement.seal().unwrap();
+    assert!(request
+        .validate_dispatch_graph(&changed_profile, &changed_requirement, &exact_dispatch)
+        .is_err());
+
+    for mutate in [
+        |value: &mut ProviderDispatchOccurrenceV1| {
+            value.selection.provider_id = "provider-other".to_owned()
+        },
+        |value: &mut ProviderDispatchOccurrenceV1| {
+            value.selection.model_id = "model-other".to_owned()
+        },
+        |value: &mut ProviderDispatchOccurrenceV1| value.selected_model_ordinal = 1,
+        |value: &mut ProviderDispatchOccurrenceV1| {
+            value.dispatch_occurrence_id = "dispatch-other".to_owned()
+        },
+    ] {
+        let mut changed = exact_dispatch.clone();
+        mutate(&mut changed);
+        changed.seal().unwrap();
+        assert!(request
+            .validate_dispatch_graph(&profile, &requirement, &changed)
+            .is_err());
+    }
+
+    let mut changed_request = request.clone();
+    changed_request.provider_id = "provider-other".to_owned();
+    changed_request.seal().unwrap();
+    let mut changed_dispatch = exact_dispatch.clone();
+    changed_dispatch.selection.provider_id = changed_request.provider_id.clone();
+    changed_dispatch.worker_start_request_digest = changed_request.request_digest.clone();
+    changed_dispatch.seal().unwrap();
+    assert!(changed_request
+        .validate_dispatch_graph(&profile, &requirement, &changed_dispatch)
+        .is_err());
+
+    let mut early = exact_dispatch.clone();
+    early.opened_at = time("2026-08-31T11:59:59Z");
+    early.seal().unwrap();
+    assert!(request
+        .validate_dispatch_graph(&profile, &requirement, &early)
+        .is_err());
+
+    assert!(WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&v2()),
+        &profile,
+        &requirement,
+        "attempt-holding-1",
+        0,
+    )
+    .is_err());
 }
 
 #[test]

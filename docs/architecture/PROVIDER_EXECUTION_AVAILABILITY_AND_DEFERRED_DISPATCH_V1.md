@@ -161,6 +161,14 @@ profile, selected provider/model/class and model ordinal, and accepted
 Codex/Switchyard owner/schema/fixture pins. V2 remains unchanged and readable.
 V3 has no provider execution identity at start, internal provider retry,
 semantic retry, approval-response authority, or target-effect authority.
+Construction is acyclic and executable: Nightshift first derives and seals V3
+from the exact V2 predecessor, sealed execution profile, sealed availability
+requirement, selected requirement ordinal, and fresh dispatch occurrence ID.
+It then seals the dispatch occurrence over the V3 digest. The decision-bearing
+graph validator reopens both and requires exact profile/admission/requirement,
+run/work/attempt/packet/adapter/brief, provider/model/class/ordinal, occurrence,
+and opening-time equality. The work-attempt and dispatch-occurrence identities
+must be distinct. Standalone structural V3 validation is not dispatch admission.
 
 Every record uses RFC 8785 serialization and a distinct versioned digest
 domain. Exact raw evidence uses hex encoding, an

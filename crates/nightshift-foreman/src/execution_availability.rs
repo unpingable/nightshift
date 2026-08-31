@@ -13,7 +13,7 @@ use serde::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::contract::{ContractError, WorkerStartRequestV2};
+use crate::contract::{ContractError, ExecutionProfileV2, WorkerStartRequestV2};
 
 pub const EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1: &str =
     "nightshift.provider-execution-availability-observation/v1";
@@ -511,15 +511,15 @@ pub struct WorkerStartRequestV3 {
 }
 
 impl WorkerStartRequestV3 {
-    pub fn from_v2(
+    pub fn from_v2_for_dispatch(
         predecessor_bytes: &[u8],
-        profile_digest: impl Into<String>,
+        profile: &ExecutionProfileV2,
+        requirement: &ForemanExecutionAvailabilityRequirementV1,
         dispatch_occurrence_id: impl Into<String>,
-        provider_id: impl Into<String>,
-        model_id: impl Into<String>,
-        model_class: impl Into<String>,
         selected_model_ordinal: u16,
     ) -> Result<Self, ContractError> {
+        profile.validate()?;
+        requirement.validate()?;
         if predecessor_bytes.is_empty() || predecessor_bytes.len() > 64 * 1024 {
             return Err(ContractError::InvalidField("V2 predecessor bytes"));
         }
@@ -530,6 +530,13 @@ impl WorkerStartRequestV3 {
                 "canonical V2 predecessor bytes",
             ));
         }
+        let selections = requirement
+            .work_item_model_selections
+            .get(&predecessor.work_item_id)
+            .ok_or(ContractError::InvalidField("V3 work-item selection"))?;
+        let selection = selections
+            .get(usize::from(selected_model_ordinal))
+            .ok_or(ContractError::InvalidField("V3 selected model ordinal"))?;
         let mut request = Self {
             schema: WORKER_START_REQUEST_SCHEMA_V3.to_owned(),
             request_digest: format!("sha256:{}", "0".repeat(64)),
@@ -539,7 +546,7 @@ impl WorkerStartRequestV3 {
             predecessor_encoding: "hex".to_owned(),
             predecessor_bytes_hex: hex::encode(predecessor_bytes),
             packet_digest: predecessor.packet_digest.clone(),
-            profile_digest: profile_digest.into(),
+            profile_digest: profile.profile_digest.clone(),
             run_id: predecessor.run_id.clone(),
             work_item_id: predecessor.work_item_id.clone(),
             attempt_id: predecessor.attempt_id.clone(),
@@ -556,9 +563,9 @@ impl WorkerStartRequestV3 {
             recursive_worker_swarms_forbidden: predecessor.recursive_worker_swarms_forbidden,
             approval_policy: predecessor.approval_policy.clone(),
             expected_receipt_schema: predecessor.expected_receipt_schema.clone(),
-            provider_id: provider_id.into(),
-            model_id: model_id.into(),
-            model_class: model_class.into(),
+            provider_id: selection.provider_id.clone(),
+            model_id: selection.model_id.clone(),
+            model_class: selection.model_class.clone(),
             selected_model_ordinal,
             provider_admission_adapter_protocol: "switchyard.codex-app-server/v2".to_owned(),
             provider_admission_binding_schema: "switchyard.codex-provider-admission-binding/v1"
@@ -580,7 +587,97 @@ impl WorkerStartRequestV3 {
             authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
         };
         request.seal()?;
+        request.validate_pre_dispatch_graph(profile, requirement)?;
         Ok(request)
+    }
+
+    fn validate_pre_dispatch_graph(
+        &self,
+        profile: &ExecutionProfileV2,
+        requirement: &ForemanExecutionAvailabilityRequirementV1,
+    ) -> Result<(), ContractError> {
+        self.validate()?;
+        profile.validate()?;
+        requirement.validate()?;
+        let predecessor = self.predecessor_v2()?;
+        let execution = profile
+            .work_items
+            .get(&self.work_item_id)
+            .ok_or(ContractError::InvalidField("V3 profile work item"))?;
+        let adapter = profile
+            .adapters
+            .get(&execution.adapter_id)
+            .ok_or(ContractError::InvalidField("V3 profile adapter"))?;
+        let selection = requirement
+            .work_item_model_selections
+            .get(&self.work_item_id)
+            .and_then(|selections| selections.get(usize::from(self.selected_model_ordinal)))
+            .ok_or(ContractError::InvalidField("V3 selected model ordinal"))?;
+        if self.work_attempt_id == self.dispatch_occurrence_id
+            || self.profile_digest != profile.profile_digest
+            || self.packet_digest != profile.packet_digest
+            || self.packet_digest != requirement.packet_digest
+            || profile.admission_digest != requirement.admission_digest
+            || profile.profile_digest != requirement.profile_digest
+            || self.run_id != requirement.run_id
+            || self.adapter_id != requirement.adapter_id
+            || self.adapter_version != requirement.adapter_version
+            || self.adapter_protocol != requirement.adapter_protocol
+            || self.adapter_id != execution.adapter_id
+            || self.adapter_id != adapter.adapter_id
+            || self.adapter_version != adapter.adapter_version
+            || self.adapter_protocol != adapter.protocol
+            || requirement.adapter_executable_identity != adapter.executable_identity
+            || self.workspace_identity != execution.workspace_identity
+            || self.provider_model_class != execution.provider_model_class
+            || self.timeout_seconds != profile.adapter_timeout_seconds
+            || self.maximum_output_bytes != profile.maximum_event_bytes
+            || self.provider_id != selection.provider_id
+            || self.model_id != selection.model_id
+            || self.model_class != selection.model_class
+            || predecessor.request_digest != self.predecessor_request_digest
+            || predecessor.worker_brief_digest != self.worker_brief_digest
+        {
+            return Err(ContractError::InvalidField(
+                "worker start V3 pre-dispatch graph",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_dispatch_graph(
+        &self,
+        profile: &ExecutionProfileV2,
+        requirement: &ForemanExecutionAvailabilityRequirementV1,
+        dispatch: &ProviderDispatchOccurrenceV1,
+    ) -> Result<(), ContractError> {
+        self.validate_pre_dispatch_graph(profile, requirement)?;
+        dispatch.validate()?;
+        if dispatch.requirement_digest != requirement.requirement_digest
+            || dispatch.policy_digest != requirement.policy_digest
+            || dispatch.packet_digest != requirement.packet_digest
+            || dispatch.run_id != requirement.run_id
+            || dispatch.work_item_id != self.work_item_id
+            || dispatch.work_attempt_id != self.work_attempt_id
+            || dispatch.dispatch_occurrence_id != self.dispatch_occurrence_id
+            || dispatch.selected_model_ordinal != self.selected_model_ordinal
+            || dispatch.selection.provider_id != self.provider_id
+            || dispatch.selection.model_id != self.model_id
+            || dispatch.selection.model_class != self.model_class
+            || dispatch.adapter_id != self.adapter_id
+            || dispatch.adapter_version != self.adapter_version
+            || dispatch.adapter_protocol != self.adapter_protocol
+            || dispatch.worker_start_request_schema != self.schema
+            || dispatch.worker_start_request_digest != self.request_digest
+            || dispatch.worker_brief_digest != self.worker_brief_digest
+            || dispatch.opened_at < requirement.admitted_at
+            || dispatch.provider_execution_id.is_some()
+        {
+            return Err(ContractError::InvalidField(
+                "worker start V3 dispatch graph",
+            ));
+        }
+        Ok(())
     }
 
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
