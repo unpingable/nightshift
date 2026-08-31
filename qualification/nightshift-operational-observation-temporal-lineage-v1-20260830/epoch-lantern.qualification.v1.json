@@ -1,0 +1,61 @@
+{
+  "schema": "nightshift.operational-observation-temporal-lineage-qualification/v1",
+  "campaign": {
+    "codename": "EPOCH-LANTERN",
+    "canonical_slug": "nightshift-operational-observation-temporal-lineage-v1",
+    "track": "nightshift-temporal-lineage"
+  },
+  "predecessor_result_head": "87e39aeaac07c74819a7e20a24cc905ad8929d63",
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "field_monitor_result_pin": "b2d52fe34f146774cbf5601819982c267c7fb082",
+  "field_nq_result_pin": "39b9f84f2f70955dd12e5cbfe798c740f9e52854",
+  "qualified_subject_commit": "7d467fa8613318f5e5886c082740c4e030a20c2c",
+  "successor_base_policy": "exact_result_ancestry",
+  "classification": "NIGHTSHIFT-OPERATIONAL-OBSERVATION-TEMPORAL-LINEAGE-V1-QUALIFIED",
+  "aggregate_result_created": false,
+  "target_effects_authorized": false,
+  "qualification": {
+    "format": "PASSED",
+    "workspace_tests": {
+      "passed": 343,
+      "ignored_documented_environment_dependent": 13,
+      "failed": 0
+    },
+    "focused_operational_lineage_tests_passed": 13,
+    "executable_schema_tests_passed": 4,
+    "all_target_all_feature_warnings_denied_clippy": "PASSED",
+    "operational_lineage_gate_and_negative_control": "PASSED",
+    "canonical_no_actuation_gate_and_negative_control": "PASSED"
+  },
+  "qualified_properties": {
+    "exact_monitor_and_nq_raw_byte_custody": true,
+    "typed_subject_and_producer_identity_binding": true,
+    "nq_claim_subset_and_refusal_preservation": true,
+    "independent_time_axes": true,
+    "profile_owned_currentness": true,
+    "failure_or_no_response_becomes_current": false,
+    "replay_converges": true,
+    "fork_or_missing_predecessor_admitted": false,
+    "unknown_or_control_fields_admitted": false,
+    "producer_class_precedence": false,
+    "aggregate_classification_surface": false,
+    "target_effect_authority": false
+  },
+  "rejected_checkpoint_commits": [
+    "17d0743909eff79d2b95cfdd40477712e23a8a37",
+    "bf64f4d6ef4d9291f0c4ca6d471698364bbc45da",
+    "0af305c920d55c868dbd6fc5acefb3f0a2e05461",
+    "d7c4d2c93e11421b0f2e4e62481a22be16d88783",
+    "f1641379689f8edfc80f63e23c0bf81b0050abcc",
+    "9afbc15c58a172830303d5b2046ad2e0888bd99a"
+  ],
+  "canonical_nightshiftd_production_binary_count": 2,
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "provider_session_created": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false,
+  "human_questions": []
+}

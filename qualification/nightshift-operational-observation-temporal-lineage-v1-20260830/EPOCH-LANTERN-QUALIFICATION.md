@@ -13,6 +13,10 @@ Exact FIELD pins:
 
 Sealed V2 packet: sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc.
 
+Accepted qualified subject: `7d467fa8613318f5e5886c082740c4e030a20c2c`.
+
+Successor-base policy: exact remote-verified EPOCH-LANTERN result-head ancestry.
+
 ## Qualification dimensions
 
 The checkpoint directly exercises:
@@ -77,6 +81,12 @@ Checkpoint 9afbc15c58a172830303d5b2046ad2e0888bd99a remains immutable and is not
 
 ## Custody and scope
 
-No FIELD artifact is changed. No listener, subprocess, service, browser, provider session, credential, secret, or external office is used. This campaign does not activate a runtime path or alter a default branch.
+No FIELD artifact is changed. No campaign process, listener, service, browser profile, provider session, credential, secret, or external-office runtime remains. This campaign does not activate a runtime path or alter a default branch.
 
-The exact checkpoint SHA is the commit containing this receipt; independent acceptance and closeout remain pending. No aggregate result is stated.
+Independent review accepted exact qualified subject `7d467fa8613318f5e5886c082740c4e030a20c2c`. The closeout commit containing this receipt is the campaign result head; publication and exact remote verification occur only after it is committed.
+
+## Independent classification
+
+`NIGHTSHIFT-OPERATIONAL-OBSERVATION-TEMPORAL-LINEAGE-V1-QUALIFIED`
+
+This classification belongs only to EPOCH-LANTERN. It creates no aggregate result and grants no observation, target-effect, approval, execution, production, service, or default-branch authority. Human questions: none.
