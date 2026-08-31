@@ -1656,7 +1656,9 @@ fn validate_switchyard_snapshot_complete(
     }
 
     let mut next_acquisition_ordinal = 0_i64;
-    let mut pending_request: Option<(String, i64, i64)> = None;
+    let mut pending_request: Option<(String, i64, i64, i64)> = None;
+    let mut completed_request_occurrences = BTreeSet::new();
+    let mut last_boundary_ms: Option<i64> = None;
     let mut client_requests: BTreeMap<i64, (String, String)> = BTreeMap::new();
     let mut execution: Option<ProviderExecutionIdentityV1> = None;
     let mut open_response: Option<String> = None;
@@ -1715,8 +1717,32 @@ fn validate_switchyard_snapshot_complete(
         if cut_value.is_some() {
             return Err(ContractError::InvalidField("evidence after terminal cut"));
         }
+        if (saw_discrepancy || (saw_turn_completed && execution.is_some()))
+            && kind != "ADMISSION_DISCREPANCY"
+        {
+            return Err(ContractError::InvalidField(
+                "owner mechanism transition bypass",
+            ));
+        }
 
-        validate_switchyard_raw_replay(record, &snapshot["binding"], execution.as_ref())?;
+        validate_switchyard_raw_replay(
+            record,
+            &snapshot["binding"],
+            &SwitchyardReplayState {
+                current_execution: execution.as_ref(),
+                pending_request: pending_request.as_ref(),
+                open_response: open_response.as_deref(),
+                saw_turn_completed,
+                saw_approval,
+                saw_discrepancy,
+                refusal_closed: refusal.is_some(),
+                last_boundary_ms,
+                completed_request_count: completed_request_occurrences.len(),
+                completed_request_occurrences: &completed_request_occurrences,
+                completed_responses: &completed_responses,
+                client_requests: &client_requests,
+            },
+        )?;
 
         if let Some(ordinal) = acquisition_ordinal.as_i64() {
             if ordinal != next_acquisition_ordinal {
@@ -1754,7 +1780,9 @@ fn validate_switchyard_snapshot_complete(
                         "mapper raw lane representation",
                     ));
                 }
-            } else if lane != "LOSS" {
+            } else if !matches!(lane, "LOSS" | "UNKNOWN")
+                && !(kind == "ADMISSION_DISCREPANCY" && method == "adapter/acquisition")
+            {
                 return Err(ContractError::InvalidField("mapper raw evidence absence"));
             }
             validate_kind_lane(kind, method, lane)?;
@@ -1780,15 +1808,28 @@ fn validate_switchyard_snapshot_complete(
                     .and_then(Value::as_bool)
                     != Some(false)
                     || pending_request.is_some()
+                    || open_response.is_some()
                     || saw_approval
                 {
                     return Err(ContractError::InvalidField("provider request transition"));
                 }
-                pending_request = Some((
-                    string(normalized, "request_occurrence_id")?.to_owned(),
-                    integer(normalized, "sampling_ordinal")?,
-                    integer(normalized, "request_order")?,
-                ));
+                let occurrence = string(normalized, "request_occurrence_id")?.to_owned();
+                let sampling_ordinal = integer(normalized, "sampling_ordinal")?;
+                let request_order = integer(normalized, "request_order")?;
+                let started_at_ms = integer(normalized, "started_at_ms")?;
+                let expected_order = completed_request_occurrences.len() as i64;
+                if sampling_ordinal != expected_order
+                    || request_order != expected_order
+                    || completed_request_occurrences.contains(&occurrence)
+                    || last_boundary_ms.is_some_and(|boundary| started_at_ms < boundary)
+                    || (sampling_ordinal > 0 && execution.is_none())
+                {
+                    return Err(ContractError::InvalidField(
+                        "provider request exact owner ordering",
+                    ));
+                }
+                pending_request =
+                    Some((occurrence, sampling_ordinal, request_order, started_at_ms));
             }
             "PROVIDER_EXECUTION_STEP" => {
                 exact_object_keys(
@@ -1804,9 +1845,10 @@ fn validate_switchyard_snapshot_complete(
                 let step = normalized
                     .get("provider_execution_step_identity")
                     .ok_or(ContractError::InvalidField("provider step identity"))?;
-                let (pending, sampling_ordinal, request_order) = pending_request.take().ok_or(
-                    ContractError::InvalidField("response without provider request"),
-                )?;
+                let (pending, sampling_ordinal, request_order, started_at_ms) =
+                    pending_request.take().ok_or(ContractError::InvalidField(
+                        "response without provider request",
+                    ))?;
                 if string(step, "request_occurrence_id")? != pending
                     || string(step, "provider")? != disposition.provider_id
                     || string(step, "model")? != disposition.model_id
@@ -1852,9 +1894,20 @@ fn validate_switchyard_snapshot_complete(
                     return Err(ContractError::InvalidField("provider execution continuity"));
                 }
                 let response_id = string(step, "response_id")?.to_owned();
+                let observed_at_ms = integer(normalized, "observed_at_ms")?;
                 if response_id != observed.first_response_id && execution.is_none() {
                     return Err(ContractError::InvalidField("first response identity"));
                 }
+                if observed_at_ms < started_at_ms
+                    || last_boundary_ms.is_some_and(|boundary| observed_at_ms < boundary)
+                    || completed_responses.contains(&response_id)
+                    || !completed_request_occurrences.insert(pending)
+                {
+                    return Err(ContractError::InvalidField(
+                        "provider response exact owner ordering",
+                    ));
+                }
+                last_boundary_ms = Some(observed_at_ms);
                 execution = Some(observed);
                 open_response = Some(response_id);
             }
@@ -1872,6 +1925,18 @@ fn validate_switchyard_snapshot_complete(
                 {
                     return Err(ContractError::InvalidField("refusal request binding"));
                 }
+                let observed_at_ms = integer(normalized, "observed_at_ms")?;
+                if pending
+                    .as_ref()
+                    .is_none_or(|value| observed_at_ms < value.3)
+                    || last_boundary_ms.is_some_and(|boundary| observed_at_ms < boundary)
+                    || !completed_request_occurrences.insert(occurrence.clone())
+                {
+                    return Err(ContractError::InvalidField(
+                        "provider refusal exact owner ordering",
+                    ));
+                }
+                last_boundary_ms = Some(observed_at_ms);
                 let retry_after = match normalized.get("retry_after_ms") {
                     Some(Value::Null) => None,
                     Some(value) => value.as_i64(),
@@ -2257,11 +2322,41 @@ fn validate_kind_lane(kind: &str, method: &str, lane: &str) -> Result<(), Contra
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct SwitchyardReplayState<'a> {
+    current_execution: Option<&'a ProviderExecutionIdentityV1>,
+    pending_request: Option<&'a (String, i64, i64, i64)>,
+    open_response: Option<&'a str>,
+    saw_turn_completed: bool,
+    saw_approval: bool,
+    saw_discrepancy: bool,
+    refusal_closed: bool,
+    last_boundary_ms: Option<i64>,
+    completed_request_count: usize,
+    completed_request_occurrences: &'a BTreeSet<String>,
+    completed_responses: &'a BTreeSet<String>,
+    client_requests: &'a BTreeMap<i64, (String, String)>,
+}
+
 fn validate_switchyard_raw_replay(
     record: &Value,
     binding: &Value,
-    current_execution: Option<&ProviderExecutionIdentityV1>,
+    state: &SwitchyardReplayState<'_>,
 ) -> Result<(), ContractError> {
+    let SwitchyardReplayState {
+        current_execution,
+        pending_request,
+        open_response,
+        saw_turn_completed,
+        saw_approval,
+        saw_discrepancy,
+        refusal_closed,
+        last_boundary_ms,
+        completed_request_count,
+        completed_request_occurrences,
+        completed_responses,
+        client_requests,
+    } = *state;
     let kind = string(record, "kind")?;
     let method = string(record, "method")?;
     let normalized = record
@@ -2270,13 +2365,8 @@ fn validate_switchyard_raw_replay(
     let raw = record
         .get("raw")
         .ok_or(ContractError::InvalidField("raw replay custody"))?;
-    if raw.is_null() {
-        if kind != "ADMISSION_DISCREPANCY"
-            || method != "adapter/acquisition"
-            || record.get("acquisition_kind").and_then(Value::as_str) != Some("LOSS")
-        {
-            return Err(ContractError::InvalidField("raw replay evidence absence"));
-        }
+    let lane = record.get("acquisition_kind").and_then(Value::as_str);
+    let validate_discrepancy = |expected_detail: Option<&str>| -> Result<(), ContractError> {
         let execution = current_execution.map(|execution| {
             serde_json::json!({
                 "provider":execution.provider_id,"model":execution.model_id,
@@ -2295,7 +2385,9 @@ fn validate_switchyard_raw_replay(
             "rawless acquisition loss normalized closure",
         )?;
         let expected_execution = execution.unwrap_or(Value::Null);
-        if string(normalized, "detail")?.is_empty()
+        let detail = string(normalized, "detail")?;
+        if detail.is_empty()
+            || expected_detail.is_some_and(|expected| detail != expected)
             || normalized.get("provider_execution_identity") != Some(&expected_execution)
             || normalized
                 .get("resume_same_attempt_only")
@@ -2303,15 +2395,204 @@ fn validate_switchyard_raw_replay(
                 != Some(current_execution.is_some())
         {
             return Err(ContractError::InvalidField(
-                "rawless acquisition loss replay",
+                "acquisition discrepancy replay",
             ));
         }
-        return Ok(());
+        Ok(())
+    };
+    if lane == Some("LOSS") {
+        if kind != "ADMISSION_DISCREPANCY" || method != "adapter/acquisition" {
+            return Err(ContractError::InvalidField("loss evidence kind"));
+        }
+        if !raw.is_null() {
+            validate_switchyard_raw(raw)?;
+            if string(raw, "representation")?
+                != "EXACT_ACQUIRED_FRAME_BYTES_INCLUDING_LINE_TERMINATOR"
+            {
+                return Err(ContractError::InvalidField("loss raw representation"));
+            }
+        }
+        return validate_discrepancy(None);
+    }
+    if raw.is_null() {
+        if kind == "ADMISSION_DISCREPANCY"
+            && lane == Some("UNKNOWN")
+            && method == "adapter/acquisition"
+        {
+            return validate_discrepancy(Some("unknown ordered acquisition envelope kind"));
+        }
+        if kind == "LOCAL_TURN_FACT"
+            && record
+                .get("acquisition_ordinal")
+                .is_some_and(Value::is_null)
+            && lane.is_none()
+            && matches!(
+                method,
+                "thread/start" | "turn/start" | "turn/started" | "worker_started"
+            )
+            && normalized == &serde_json::json!({"proves_provider_admission":false})
+        {
+            return Ok(());
+        }
+        if kind == "ADMISSION_DISCREPANCY" && method == "adapter/acquisition" {
+            match lane {
+                None => {}
+                Some("NOTIFICATION" | "SERVER_REQUEST" | "CLIENT_REQUEST" | "CLIENT_RESPONSE") => {
+                    if !matches!(
+                        string(normalized, "detail")?,
+                        "ordered acquisition ordinal gap, duplicate, or reorder"
+                            | "ordered message envelope shape mismatch"
+                            | "ordered provider message unexpectedly carries a request method"
+                            | "client request lacks exact bounded request method"
+                            | "client response lacks exact bounded request method"
+                    ) {
+                        return Err(ContractError::InvalidField(
+                            "rawless ordered discrepancy detail",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(ContractError::InvalidField(
+                        "rawless discrepancy acquisition kind",
+                    ));
+                }
+            }
+            return validate_discrepancy(None);
+        }
+        return Err(ContractError::InvalidField("raw replay evidence absence"));
     }
     let wire = decode_switchyard_raw(raw)?;
     let wire_object = wire
         .as_object()
         .ok_or(ContractError::InvalidField("raw replay object"))?;
+
+    if kind == "ADMISSION_DISCREPANCY" && matches!(lane, Some("CLIENT_REQUEST" | "CLIENT_RESPONSE"))
+    {
+        let request_method = method
+            .strip_prefix(if lane == Some("CLIENT_REQUEST") {
+                "client-request/"
+            } else {
+                "client-response/"
+            })
+            .ok_or(ContractError::InvalidField(
+                "client discrepancy retained method",
+            ))?;
+        let request_id = wire
+            .get("id")
+            .and_then(Value::as_i64)
+            .filter(|value| (0..=9_007_199_254_740_991).contains(value));
+        let detail = if lane == Some("CLIENT_REQUEST") {
+            if request_id.is_none_or(|value| value < 0) {
+                "invalid client request id"
+            } else {
+                let expected_fields = if wire_object.contains_key("params") {
+                    &["id", "method", "params"][..]
+                } else {
+                    &["id", "method"][..]
+                };
+                if wire_object.len() != expected_fields.len()
+                    || expected_fields
+                        .iter()
+                        .any(|field| !wire_object.contains_key(*field))
+                    || wire.get("method").and_then(Value::as_str) != Some(request_method)
+                {
+                    "client request method or closed shape substitution"
+                } else if wire
+                    .get("params")
+                    .is_some_and(|value| !value.is_null() && !value.is_object())
+                {
+                    "client request params are not an object"
+                } else if !matches!(
+                    request_method,
+                    "initialize"
+                        | "thread/start"
+                        | "turn/start"
+                        | "thread/read"
+                        | "thread/resume"
+                        | "fixture/provider-admission-positive"
+                        | "fixture/provider-order-approval-before-created"
+                        | "fixture/provider-order-loss-before-created"
+                        | "fixture/provider-order-duplicate-key"
+                        | "fixture/provider-order-nested-duplicate-key"
+                ) {
+                    "unknown client request method"
+                } else if matches!(
+                    request_method,
+                    "turn/start" | "thread/read" | "thread/resume"
+                ) && wire
+                    .get("params")
+                    .and_then(|value| value.get("threadId"))
+                    .and_then(Value::as_str)
+                    != Some(string(binding, "thread_id")?)
+                {
+                    "client request thread identity substitution"
+                } else if request_id.is_some_and(|value| client_requests.contains_key(&value)) {
+                    "duplicate client request identity"
+                } else {
+                    return Err(ContractError::InvalidField(
+                        "valid client request recorded as discrepancy",
+                    ));
+                }
+            }
+        } else if request_id.is_none_or(|value| value < 0) {
+            "invalid client response id"
+        } else if request_id.is_none_or(|value| {
+            client_requests
+                .get(&value)
+                .is_none_or(|expected| expected.0 != request_method)
+        }) {
+            "client response request identity or method substitution"
+        } else {
+            let has_result = wire_object.contains_key("result");
+            let has_error = wire_object.contains_key("error");
+            let expected_fields = if has_result {
+                ["id", "result"]
+            } else {
+                ["id", "error"]
+            };
+            if has_result == has_error
+                || wire_object.len() != 2
+                || expected_fields
+                    .iter()
+                    .any(|field| !wire_object.contains_key(*field))
+            {
+                "client response has non-closed result/error shape"
+            } else if has_error {
+                "client request returned an App Server error"
+            } else if !wire["result"].is_object() {
+                "client response result is not an object"
+            } else if matches!(
+                request_method,
+                "thread/start" | "thread/read" | "thread/resume"
+            ) && wire["result"]
+                .get("thread")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str)
+                != Some(string(binding, "thread_id")?)
+            {
+                if request_method == "thread/start" {
+                    "thread/start response thread identity substitution"
+                } else if request_method == "thread/read" {
+                    "thread/read response thread identity substitution"
+                } else {
+                    "thread/resume response thread identity substitution"
+                }
+            } else if request_method == "turn/start"
+                && wire["result"]
+                    .get("turn")
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    != Some(string(binding, "turn_id")?)
+            {
+                "turn/start response turn identity substitution"
+            } else {
+                return Err(ContractError::InvalidField(
+                    "valid client response recorded as discrepancy",
+                ));
+            }
+        };
+        return validate_discrepancy(Some(detail));
+    }
 
     if kind == "CLIENT_RESPONSE_RETAINED" {
         exact_object_keys(&wire, &["id", "result"], "client response raw closure")?;
@@ -2362,10 +2643,7 @@ fn validate_switchyard_raw_replay(
         return Ok(());
     }
 
-    let wire_method = wire_object
-        .get("method")
-        .and_then(Value::as_str)
-        .ok_or(ContractError::InvalidField("raw replay method"))?;
+    let wire_method = wire_object.get("method").and_then(Value::as_str);
     if kind == "CLIENT_REQUEST_ISSUED" {
         let request_method =
             method
@@ -2377,12 +2655,19 @@ fn validate_switchyard_raw_replay(
             request_method,
             "initialize" | "thread/start" | "turn/start" | "thread/read" | "thread/resume"
         );
-        let fixture_method = request_method.starts_with("fixture/")
-            && string(binding, "executable_kind")? == "DETERMINISTIC_FIXTURE";
+        let fixture_method = matches!(
+            request_method,
+            "fixture/provider-admission-positive"
+                | "fixture/provider-order-approval-before-created"
+                | "fixture/provider-order-loss-before-created"
+                | "fixture/provider-order-duplicate-key"
+                | "fixture/provider-order-nested-duplicate-key"
+        ) && string(binding, "executable_kind")? == "DETERMINISTIC_FIXTURE";
         if !owner_method && !fixture_method {
             return Err(ContractError::InvalidField("client request owner method"));
         }
-        if wire_method != request_method || string(normalized, "request_method")? != request_method
+        if wire_method != Some(request_method)
+            || string(normalized, "request_method")? != request_method
         {
             return Err(ContractError::InvalidField("client request method binding"));
         }
@@ -2421,13 +2706,14 @@ fn validate_switchyard_raw_replay(
         return Ok(());
     }
 
-    if wire_method != method {
+    if kind != "ADMISSION_DISCREPANCY" && wire_method != Some(method) {
         return Err(ContractError::InvalidField("raw method record binding"));
     }
+    let empty_params = Value::Object(serde_json::Map::new());
     let params = wire
         .get("params")
         .filter(|value| value.is_object())
-        .ok_or(ContractError::InvalidField("raw params object"))?;
+        .unwrap_or(&empty_params);
     let common_request = |params: &Value, fields: &[&str]| -> Result<(), ContractError> {
         exact_object_keys(params, fields, "provider raw params closure")?;
         for (field, expected) in [
@@ -2552,6 +2838,8 @@ fn validate_switchyard_raw_replay(
             });
             if params["refusalKind"] != "modelAtCapacity"
                 || params["codexErrorInfo"] != "serverOverloaded"
+                || params["responseCreated"] != false
+                || params["willRetry"] != false
                 || normalized != &expected
             {
                 return Err(ContractError::InvalidField("provider refusal raw replay"));
@@ -2591,14 +2879,24 @@ fn validate_switchyard_raw_replay(
             }
         }
         "LOCAL_TURN_FACT" => {
-            if method == "turn/completed"
-                && (string(params, "threadId")? != string(binding, "thread_id")?
-                    || params
+            let identities_match = if method == "thread/started" {
+                params
+                    .get("thread")
+                    .and_then(|thread| thread.get("id"))
+                    .and_then(Value::as_str)
+                    == Some(string(binding, "thread_id")?)
+            } else if matches!(method, "turn/started" | "turn/completed") {
+                params.get("threadId").and_then(Value::as_str)
+                    == Some(string(binding, "thread_id")?)
+                    && params
                         .get("turn")
                         .and_then(|turn| turn.get("id"))
                         .and_then(Value::as_str)
-                        != Some(string(binding, "turn_id")?))
-            {
+                        == Some(string(binding, "turn_id")?)
+            } else {
+                false
+            };
+            if !identities_match {
                 return Err(ContractError::InvalidField("local turn raw identity"));
             }
             if normalized != &serde_json::json!({"proves_provider_admission":false}) {
@@ -2611,12 +2909,289 @@ fn validate_switchyard_raw_replay(
             }
         }
         "ADMISSION_DISCREPANCY" => {
-            let detail = if method == "error" {
-                "coarse or unclassified App Server error cannot establish admission"
-            } else if record.get("acquisition_kind").and_then(Value::as_str)
-                == Some("SERVER_REQUEST")
+            let lane = record.get("acquisition_kind").and_then(Value::as_str);
+            let object = params.as_object();
+            let thread_matches = object
+                .and_then(|value| value.get("threadId"))
+                .and_then(Value::as_str)
+                == Some(string(binding, "thread_id")?);
+            let turn_matches = object
+                .and_then(|value| value.get("turnId"))
+                .and_then(Value::as_str)
+                == Some(string(binding, "turn_id")?);
+            let detail = if wire_method.is_none() {
+                if method != "unknown" {
+                    return Err(ContractError::InvalidField(
+                        "malformed method retained identity",
+                    ));
+                }
+                "App Server method is not a string"
+            } else if wire_method.is_some_and(|value| value.chars().count() > 512) {
+                if method != "unknown" {
+                    return Err(ContractError::InvalidField(
+                        "overbound method retained identity",
+                    ));
+                }
+                "App Server method exceeds identity bound"
+            } else if wire_method != Some(method) {
+                return Err(ContractError::InvalidField(
+                    "discrepancy raw method record binding",
+                ));
+            } else if saw_discrepancy {
+                if current_execution.is_some() {
+                    "provider evidence followed a post-admission interruption"
+                } else {
+                    "provider evidence followed an indeterminate dispatch"
+                }
+            } else if saw_turn_completed && current_execution.is_some() {
+                "App Server activity followed completed turn"
+            } else if saw_approval
+                && (lane == Some("SERVER_REQUEST")
+                    || method.starts_with("providerAdmission/")
+                    || method.starts_with("providerRequest/")
+                    || method.starts_with("rawResponse/"))
             {
-                "unknown App Server server request"
+                "provider activity followed unanswered approval"
+            } else if method == "error" {
+                "coarse or unclassified App Server error cannot establish admission"
+            } else if lane == Some("SERVER_REQUEST") {
+                if !matches!(
+                    method,
+                    "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                ) {
+                    "unknown App Server server request"
+                } else if !thread_matches || !turn_matches {
+                    "approval identity substitution"
+                } else if current_execution.is_none() {
+                    "approval request preceded provider admission"
+                } else if open_response.is_some() {
+                    "approval request preceded exact response completion"
+                } else {
+                    return Err(ContractError::InvalidField(
+                        "valid approval recorded as discrepancy",
+                    ));
+                }
+            } else if matches!(method, "thread/started" | "turn/started" | "turn/completed") {
+                if object.is_none() {
+                    "local fact params are not an object"
+                } else {
+                    let local_thread_matches = if method == "thread/started" {
+                        object
+                            .and_then(|value| value.get("thread"))
+                            .and_then(|thread| thread.get("id"))
+                            .and_then(Value::as_str)
+                            == Some(string(binding, "thread_id")?)
+                    } else {
+                        thread_matches
+                    };
+                    let local_turn_matches = method == "thread/started"
+                        || object
+                            .and_then(|value| value.get("turn"))
+                            .and_then(|turn| turn.get("id"))
+                            .and_then(Value::as_str)
+                            == Some(string(binding, "turn_id")?);
+                    if !local_thread_matches {
+                        "local fact thread identity substitution"
+                    } else if !local_turn_matches {
+                        "local fact turn identity substitution"
+                    } else if method == "turn/completed"
+                        && current_execution.is_none()
+                        && !(refusal_closed && pending_request.is_none() && open_response.is_none())
+                    {
+                        "turn completed without exact provider execution identity"
+                    } else if method == "turn/completed"
+                        && current_execution.is_some()
+                        && (pending_request.is_some() || open_response.is_some() || saw_approval)
+                    {
+                        "turn completed before exact response/approval sequence closed"
+                    } else {
+                        return Err(ContractError::InvalidField(
+                            "valid local fact recorded as discrepancy",
+                        ));
+                    }
+                }
+            } else if method == "providerRequest/started"
+                && object.is_none_or(|value| {
+                    let fields = [
+                        "threadId",
+                        "turnId",
+                        "requestOccurrenceId",
+                        "samplingOrdinal",
+                        "requestOrder",
+                        "provider",
+                        "model",
+                        "startedAtMs",
+                    ];
+                    value.len() != fields.len()
+                        || fields.iter().any(|field| !value.contains_key(*field))
+                })
+            {
+                "closed provider notification fields do not match"
+            } else if method == "providerRequest/started" && !thread_matches {
+                "provider notification threadId substitution"
+            } else if method == "providerRequest/started" && !turn_matches {
+                "provider notification turnId substitution"
+            } else if method == "providerRequest/started"
+                && string(params, "provider").ok() != Some(string(binding, "provider")?)
+            {
+                "provider notification provider substitution"
+            } else if method == "providerRequest/started"
+                && string(params, "model").ok() != Some(string(binding, "model")?)
+            {
+                "provider notification model substitution"
+            } else if method == "providerRequest/started" && integer(params, "startedAtMs").is_err()
+            {
+                "invalid startedAtMs"
+            } else if method == "providerRequest/started"
+                && last_boundary_ms.is_some_and(|boundary| {
+                    integer(params, "startedAtMs").is_ok_and(|value| value < boundary)
+                })
+            {
+                "provider request time precedes retained boundary"
+            } else if method == "providerRequest/started" && pending_request.is_some() {
+                "new provider request hides an unresolved request occurrence"
+            } else if method == "providerRequest/started" && open_response.is_some() {
+                "new provider request precedes exact response completion"
+            } else if method == "providerRequest/started" && refusal_closed {
+                "provider request follows closed dispatch disposition"
+            } else if method == "providerRequest/started"
+                && (integer(params, "samplingOrdinal").ok() != Some(completed_request_count as i64)
+                    || integer(params, "requestOrder").ok() != Some(completed_request_count as i64))
+            {
+                "provider request ordering or hidden retry discrepancy"
+            } else if method == "providerRequest/started"
+                && string(params, "requestOccurrenceId")
+                    .ok()
+                    .is_some_and(|id| completed_request_occurrences.contains(id))
+            {
+                "duplicate provider request occurrence identity"
+            } else if method == "rawResponse/started"
+                && object.is_none_or(|value| {
+                    let fields = [
+                        "threadId",
+                        "turnId",
+                        "requestOccurrenceId",
+                        "samplingOrdinal",
+                        "requestOrder",
+                        "provider",
+                        "model",
+                        "responseId",
+                        "observedAtMs",
+                    ];
+                    value.len() != fields.len()
+                        || fields.iter().any(|field| !value.contains_key(*field))
+                })
+            {
+                "closed provider notification fields do not match"
+            } else if method == "rawResponse/started" && !thread_matches {
+                "provider notification threadId substitution"
+            } else if method == "rawResponse/started" && !turn_matches {
+                "provider notification turnId substitution"
+            } else if method == "rawResponse/started"
+                && string(params, "provider").ok() != Some(string(binding, "provider")?)
+            {
+                "provider notification provider substitution"
+            } else if method == "rawResponse/started"
+                && string(params, "model").ok() != Some(string(binding, "model")?)
+            {
+                "provider notification model substitution"
+            } else if method == "rawResponse/started"
+                && pending_request.is_none_or(|pending| {
+                    string(params, "requestOccurrenceId").ok() != Some(pending.0.as_str())
+                        || integer(params, "samplingOrdinal").ok() != Some(pending.1)
+                        || integer(params, "requestOrder").ok() != Some(pending.2)
+                })
+            {
+                "provider boundary has no exact pending request"
+            } else if method == "rawResponse/started"
+                && pending_request.is_some_and(|pending| {
+                    integer(params, "observedAtMs").is_err()
+                        || integer(params, "observedAtMs")
+                            .is_ok_and(|observed| observed < pending.3)
+                })
+            {
+                "response-created time precedes request start"
+            } else if method == "rawResponse/started"
+                && string(params, "responseId")
+                    .ok()
+                    .is_some_and(|id| completed_responses.contains(id) || open_response == Some(id))
+            {
+                "duplicate upstream response identity"
+            } else if method == "providerAdmission/refused"
+                && object.is_none_or(|value| {
+                    let fields = [
+                        "threadId",
+                        "turnId",
+                        "requestOccurrenceId",
+                        "samplingOrdinal",
+                        "requestOrder",
+                        "provider",
+                        "model",
+                        "responseCreated",
+                        "willRetry",
+                        "refusalKind",
+                        "codexErrorInfo",
+                        "retryAfterMs",
+                        "diagnostic",
+                        "observedAtMs",
+                    ];
+                    value.len() != fields.len()
+                        || fields.iter().any(|field| !value.contains_key(*field))
+                })
+            {
+                "closed provider notification fields do not match"
+            } else if method == "providerAdmission/refused" && !thread_matches {
+                "provider notification threadId substitution"
+            } else if method == "providerAdmission/refused" && !turn_matches {
+                "provider notification turnId substitution"
+            } else if method == "providerAdmission/refused"
+                && string(params, "provider").ok() != Some(string(binding, "provider")?)
+            {
+                "provider notification provider substitution"
+            } else if method == "providerAdmission/refused"
+                && string(params, "model").ok() != Some(string(binding, "model")?)
+            {
+                "provider notification model substitution"
+            } else if method == "providerAdmission/refused" && current_execution.is_some() {
+                "provider refusal follows admitted execution"
+            } else if method == "providerAdmission/refused"
+                && (params.get("responseCreated") != Some(&Value::Bool(false))
+                    || params.get("willRetry") != Some(&Value::Bool(false)))
+            {
+                "provider refusal does not prove terminal pre-created state"
+            } else if method == "providerAdmission/refused"
+                && params.get("refusalKind") != Some(&Value::String("modelAtCapacity".to_owned()))
+            {
+                "unknown provider refusal kind"
+            } else if method == "providerAdmission/refused"
+                && params.get("codexErrorInfo")
+                    != Some(&Value::String("serverOverloaded".to_owned()))
+            {
+                "provider refusal typed error mismatch"
+            } else if method == "providerAdmission/refused"
+                && pending_request.is_none_or(|pending| {
+                    string(params, "requestOccurrenceId").ok() != Some(pending.0.as_str())
+                        || integer(params, "samplingOrdinal").ok() != Some(pending.1)
+                        || integer(params, "requestOrder").ok() != Some(pending.2)
+                })
+            {
+                "provider boundary has no exact pending request"
+            } else if method == "providerAdmission/refused"
+                && pending_request.is_some_and(|pending| {
+                    integer(params, "observedAtMs").is_err()
+                        || integer(params, "observedAtMs")
+                            .is_ok_and(|observed| observed < pending.3)
+                })
+            {
+                "provider refusal time precedes request start"
+            } else if method == "rawResponse/completed" && current_execution.is_none() {
+                "response completion lacks an exact response-created boundary"
+            } else if method == "rawResponse/completed" && (!thread_matches || !turn_matches) {
+                "response completion identity substitution"
+            } else if method == "rawResponse/completed"
+                && string(params, "responseId").ok() != open_response
+            {
+                "response completion has no exact admitted response identity"
             } else if method.starts_with("providerAdmission/")
                 || method.starts_with("providerRequest/")
                 || method.starts_with("rawResponse/")
@@ -2627,14 +3202,7 @@ fn validate_switchyard_raw_replay(
                     "non-derivable discrepancy raw replay",
                 ));
             };
-            let identity = current_execution.map(|execution| serde_json::json!({
-                "provider":execution.provider_id,"model":execution.model_id,"app_server_session_identity":execution.app_server_session_identity,
-                "thread_id":execution.thread_id,"turn_id":execution.turn_id,"first_response_id":execution.first_response_id,
-            }));
-            let expected = serde_json::json!({"detail":detail,"provider_execution_identity":identity,"resume_same_attempt_only":current_execution.is_some()});
-            if normalized != &expected {
-                return Err(ContractError::InvalidField("discrepancy normalized replay"));
-            }
+            validate_discrepancy(Some(detail))?;
         }
         _ => return Err(ContractError::InvalidField("raw replay evidence kind")),
     }
@@ -2866,6 +3434,12 @@ pub fn validate_execution_availability_graph(
             || prior_dispatch.run_id != requirement.run_id
             || prior_dispatch.work_item_id != dispatch.work_item_id
             || prior_dispatch.work_attempt_id != dispatch.work_attempt_id
+            || prior_dispatch.adapter_id != requirement.adapter_id
+            || prior_dispatch.adapter_version != requirement.adapter_version
+            || prior_dispatch.adapter_protocol != requirement.adapter_protocol
+            || prior_dispatch.adapter_id != dispatch.adapter_id
+            || prior_dispatch.adapter_version != dispatch.adapter_version
+            || prior_dispatch.adapter_protocol != dispatch.adapter_protocol
             || usize::from(prior_dispatch.dispatch_ordinal) != index + 1
             || prior_dispatch.selected_model_ordinal != prior.selected_model_ordinal
             || prior_dispatch.selection != *prior_selection

@@ -164,6 +164,14 @@ and execution identities, refusal, response completion, approval, normalized
 record, cut, and snapshot state must all agree. A present source timestamp that
 cannot be represented is refused; only an absent timestamp uses the explicitly
 defined receipt-time fallback.
+LOSS evidence is exact arbitrary frame custody and is never JSON-decoded;
+rawless UNKNOWN acquisition discrepancies and the owner's bounded legacy local
+facts retain their distinct exact meanings. Provider sampling ordinals and
+request order start at zero and advance together, completed occurrence IDs are
+unique, and request/response/refusal boundary times are monotonic. The
+qualification-only `verify_switchyard_owner_parity.py` predicate pins exact
+Switchyard head `2ba25db...` and proves owner replay equality for every checked
+mapper snapshot that the independent Rust suite consumes.
 This contract checkpoint does not yet claim a cumulative journal-history bound;
 that metadata-first pre-acquisition invariant belongs to the held storage
 implementation and must qualify before journal mutation is accepted.

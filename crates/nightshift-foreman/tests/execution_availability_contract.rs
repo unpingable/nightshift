@@ -481,7 +481,7 @@ fn disposition_from_exact_snapshot(
                 .as_str()
                 .map(str::to_owned)
         })
-        .unwrap();
+        .unwrap_or_else(|| "request-0".to_owned());
     let retry_after_ms = snapshot["records"]
         .as_array()
         .unwrap()
@@ -910,6 +910,20 @@ fn cumulative_multi_deferral_history_is_explicit_and_bounded() {
     )
     .unwrap_err();
 
+    let mut substituted_adapter = first_history.clone();
+    substituted_adapter.dispatch.adapter_version = "2.0.1".to_owned();
+    substituted_adapter.dispatch.seal().unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &admitted_observation,
+        &admitted_disposition,
+        &[substituted_adapter],
+        None,
+    )
+    .unwrap_err();
+
     let mut before_wake = second_dispatch.clone();
     before_wake.opened_at = first_deferred.wake_at - Duration::milliseconds(1);
     before_wake.seal().unwrap();
@@ -1089,6 +1103,16 @@ fn mapper_cut_ordinal_representation_number_and_receipt_time_substitutions_fail_
         ("schema-string-bound", |snapshot| {
             snapshot["records"][1]["normalized"]["diagnostic"] = json!("x".repeat(4097))
         }),
+        ("coherent-provider-order", |snapshot| {
+            snapshot["records"][0]["normalized"]["sampling_ordinal"] = json!(1);
+            snapshot["records"][0]["normalized"]["request_order"] = json!(1);
+            let raw = &snapshot["records"][0]["raw"];
+            let bytes = hex::decode(raw["bytes_hex"].as_str().unwrap()).unwrap();
+            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+            wire["params"]["samplingOrdinal"] = json!(1);
+            wire["params"]["requestOrder"] = json!(1);
+            snapshot["records"][0]["raw"] = mapper_raw(wire);
+        }),
     ];
     for (name, mutate) in mutations {
         let mut snapshot: Value = serde_json::from_slice(&raw).unwrap();
@@ -1138,6 +1162,21 @@ fn semantic_execution_identity_substitutions_fail_closed() {
         ("step-request-order", |snapshot| {
             snapshot["records"][1]["normalized"]["provider_execution_step_identity"]
                 ["request_order"] = json!(1)
+        }),
+        ("coherent-response-before-request", |snapshot| {
+            snapshot["records"][1]["normalized"]["observed_at_ms"] = json!(1_788_163_199_999_i64);
+            let raw = &snapshot["records"][1]["raw"];
+            let bytes = hex::decode(raw["bytes_hex"].as_str().unwrap()).unwrap();
+            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+            wire["params"]["observedAtMs"] = json!(1_788_163_199_999_i64);
+            snapshot["records"][1]["raw"] = mapper_raw(wire);
+        }),
+        ("local-fact-thread", |snapshot| {
+            let raw = &snapshot["records"][3]["raw"];
+            let bytes = hex::decode(raw["bytes_hex"].as_str().unwrap()).unwrap();
+            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+            wire["params"]["threadId"] = json!("thread-substituted");
+            snapshot["records"][3]["raw"] = mapper_raw(wire);
         }),
     ];
     for (name, mutate) in substitutions {
@@ -1308,6 +1347,144 @@ fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
         None,
     )
     .unwrap_err();
+}
+
+#[test]
+fn exact_loss_unknown_and_legacy_rawless_owner_variants_reopen() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let received = time("2026-08-31T12:01:02Z");
+
+    let mut loss: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-admission-indeterminate.snapshot.v1.json"
+    ))
+    .unwrap();
+    let malformed = b"{\"duplicate\":1,\"duplicate\":2}\n";
+    loss["records"][1]["raw"] = json!({
+        "representation":"EXACT_ACQUIRED_FRAME_BYTES_INCLUDING_LINE_TERMINATOR",
+        "byte_length":malformed.len(),
+        "sha256":format!("sha256:{:x}", Sha256::digest(malformed)),
+        "encoding":"hex",
+        "bytes_hex":hex::encode(malformed),
+    });
+    loss = reseal_mapper_snapshot(loss);
+    disposition_from_exact_snapshot(&requirement, &dispatch, &canonical(&loss), received)
+        .validate()
+        .unwrap();
+
+    let mut unknown = loss.clone();
+    unknown["records"][1]["acquisition_kind"] = json!("UNKNOWN");
+    unknown["records"][1]["raw"] = Value::Null;
+    unknown["records"][1]["normalized"]["detail"] =
+        json!("unknown ordered acquisition envelope kind");
+    unknown = reseal_mapper_snapshot(unknown);
+    disposition_from_exact_snapshot(&requirement, &dispatch, &canonical(&unknown), received)
+        .validate()
+        .unwrap();
+
+    let mut rawless_ordered = unknown.clone();
+    rawless_ordered["records"][1]["acquisition_kind"] = json!("NOTIFICATION");
+    rawless_ordered["records"][1]["normalized"]["detail"] =
+        json!("ordered message envelope shape mismatch");
+    rawless_ordered = reseal_mapper_snapshot(rawless_ordered);
+    disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&rawless_ordered),
+        received,
+    )
+    .validate()
+    .unwrap();
+
+    let mut malformed_method = unknown.clone();
+    malformed_method["records"][1]["acquisition_kind"] = json!("NOTIFICATION");
+    malformed_method["records"][1]["method"] = json!("unknown");
+    malformed_method["records"][1]["raw"] = mapper_raw(json!({"method":1}));
+    malformed_method["records"][1]["normalized"]["detail"] =
+        json!("App Server method is not a string");
+    malformed_method = reseal_mapper_snapshot(malformed_method);
+    disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&malformed_method),
+        received,
+    )
+    .validate()
+    .unwrap();
+
+    let mut legacy: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
+    ))
+    .unwrap();
+    for record in legacy["records"].as_array_mut().unwrap() {
+        record["sequence"] = json!(record["sequence"].as_u64().unwrap() + 1);
+    }
+    let mut local = legacy["records"][3].clone();
+    local["sequence"] = json!(0);
+    local["acquisition_ordinal"] = Value::Null;
+    local["acquisition_kind"] = Value::Null;
+    local["method"] = json!("thread/start");
+    local["raw"] = Value::Null;
+    legacy["records"].as_array_mut().unwrap().insert(0, local);
+    legacy = reseal_mapper_snapshot(legacy);
+    disposition_from_exact_snapshot(&requirement, &dispatch, &canonical(&legacy), received)
+        .validate()
+        .unwrap();
+}
+
+#[test]
+fn exact_owner_provider_order_discrepancy_is_derived_from_raw() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let mut snapshot = parked_snapshot();
+    let mut discrepancy = snapshot["records"][0].clone();
+    let bytes = hex::decode(discrepancy["raw"]["bytes_hex"].as_str().unwrap()).unwrap();
+    let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+    wire["params"]["samplingOrdinal"] = json!(1);
+    wire["params"]["requestOrder"] = json!(1);
+    discrepancy["raw"] = mapper_raw(wire);
+    discrepancy["kind"] = json!("ADMISSION_DISCREPANCY");
+    discrepancy["normalized"] = json!({
+        "detail":"provider request ordering or hidden retry discrepancy",
+        "provider_execution_identity":null,
+        "resume_same_attempt_only":false,
+    });
+    let mut cut = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    cut["sequence"] = json!(1);
+    cut["normalized"]["ordered_high_water"] = json!(1);
+    cut["normalized"]["consumed_ordinal_count"] = json!(1);
+    cut["normalized"]["clean"] = json!(false);
+    snapshot["records"] = json!([discrepancy, cut]);
+    snapshot["admission_disposition"] = json!("ADMISSION_INDETERMINATE");
+    snapshot["mechanism_state"] = json!("ADMISSION_INDETERMINATE");
+    snapshot["provider_execution_identity"] = Value::Null;
+    snapshot["acquisition_cut"]["ordered_high_water"] = json!(1);
+    snapshot["acquisition_cut"]["consumed_ordinal_count"] = json!(1);
+    snapshot["acquisition_cut"]["clean"] = json!(false);
+    snapshot["records"][1]["normalized"] = snapshot["acquisition_cut"].clone();
+    snapshot = reseal_mapper_snapshot(snapshot);
+    let disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&snapshot),
+        time("2026-08-31T12:01:02Z"),
+    );
+    disposition.validate().unwrap();
+
+    snapshot["records"][0]["normalized"]["detail"] =
+        json!("unknown provider-boundary notification");
+    snapshot = reseal_mapper_snapshot(snapshot);
+    let mut substituted = disposition;
+    substituted.mapper_snapshot_digest = snapshot["snapshot_digest"].as_str().unwrap().to_owned();
+    substituted.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
+    substituted.seal().unwrap_err();
 }
 
 #[test]
