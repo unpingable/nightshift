@@ -2,19 +2,27 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Barrier},
 };
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
     verify_adapter_contract, AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2,
-    ContractError, ExecutionProfileV2, ForemanAdmissionV1, ForemanError, ForemanStore,
-    HumanQuestionV1, NotStartedReceiptV1, ReceiptRepositoryV1, SchedulerStateV1,
+    CapacityAdmissionEvidenceV1, CapacityCostClassV1, ContractError, ExecutionProfileV2,
+    ForemanAdmissionV1, ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1, ForemanError,
+    ForemanStore, HumanQuestionV1, NotStartedReceiptV1, ReceiptRepositoryV1, SchedulerStateV1,
     TeardownDeclarationV1, TerminalReceiptV1, WorkItemExecutionV1, WorkerAdapterCapabilitiesV1,
     WorkerBriefV2, WorkerStartRequestV2, FOREMAN_ADMISSION_SCHEMA_V1,
+    FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1,
     FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_WORKER_BRIEF_BYTES,
     WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
     WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+};
+use nightshift_provider_capacity::{
+    decide_capacity, AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
+    CapacityObservationV1, CapacityPolicyV1, CapacityWindow, Confidence, ObservationDisposition,
+    ObservationEvidence, SourceClass, WindowType, CAPACITY_OBSERVATION_SCHEMA_V1,
 };
 use nightshiftd::packet::{
     AuthoringIdentityV1, CampaignIdentityV1, CanonicalizationV1, ExactWorkRefV1,
@@ -1608,6 +1616,10 @@ fn receipt_timestamp_lexemes_are_canonical_utc_and_nanosecond_exact() {
 fn checked_in_contract_schemas_are_closed_json_documents() {
     for bytes in [
         include_bytes!("../../../schemas/nightshift.foreman-admission.v1.schema.json").as_slice(),
+        include_bytes!("../../../schemas/nightshift.foreman-capacity-requirement.v1.schema.json")
+            .as_slice(),
+        include_bytes!("../../../schemas/nightshift.foreman-capacity-admission.v1.schema.json")
+            .as_slice(),
         include_bytes!("../../../schemas/nightshift.foreman-execution-profile.v2.schema.json")
             .as_slice(),
         include_bytes!("../../../schemas/nightshift.worker-adapter.v2.schema.json").as_slice(),
@@ -1619,4 +1631,588 @@ fn checked_in_contract_schemas_are_closed_json_documents() {
         );
         assert!(schema.get("$id").is_some());
     }
+}
+
+fn capacity_observation(at: chrono::DateTime<Utc>, remaining: f64) -> CapacityObservationV1 {
+    let mut observation = CapacityObservationV1 {
+        schema: CAPACITY_OBSERVATION_SCHEMA_V1.into(),
+        provider_id: "provider:fixture".into(),
+        account_profile_locator: "fixture-profile".into(),
+        model_family: Some("bounded".into()),
+        observed_at: at - Duration::seconds(1),
+        expires_at: at + Duration::minutes(10),
+        source_class: SourceClass::Observed,
+        confidence: Confidence::High,
+        disposition: ObservationDisposition::Usable,
+        unknown_reasons: vec![],
+        windows: vec![
+            CapacityWindow {
+                window_id: "five-hour".into(),
+                window_type: WindowType::FiveHour,
+                remaining_fraction: Some(remaining),
+                remaining_units: None,
+                resets_at: Some(at + Duration::hours(1)),
+            },
+            CapacityWindow {
+                window_id: "weekly".into(),
+                window_type: WindowType::Weekly,
+                remaining_fraction: Some(remaining),
+                remaining_units: None,
+                resets_at: Some(at + Duration::days(1)),
+            },
+        ],
+        evidence: ObservationEvidence {
+            probe_id: "gauge-latch-fixture".into(),
+            protocol_method: "fixture/read".into(),
+            protocol_version: Some("fixture/v1".into()),
+            executable_path: Some("/fixture/provider-observer".into()),
+            executable_digest: Some(format!("sha256:{}", "1".repeat(64))),
+            raw_source_digest: format!("sha256:{}", "2".repeat(64)),
+        },
+        observation_digest: String::new(),
+    };
+    observation.observation_digest = observation.compute_digest().unwrap();
+    observation
+}
+
+fn capacity_requirement(
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+    policy: &CapacityPolicyV1,
+) -> ForemanCapacityRequirementV1 {
+    let mut requirement = ForemanCapacityRequirementV1 {
+        schema: FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1.into(),
+        capacity_requirement_digest: format!("sha256:{}", "0".repeat(64)),
+        packet_digest: packet.packet_digest.clone(),
+        admission_digest: admission.admission_digest.clone(),
+        profile_digest: profile.profile_digest.clone(),
+        run_id: admission.run_id.clone(),
+        policy_id: policy.policy_id.clone(),
+        provider_id: "provider:fixture".into(),
+        model_cost_classes: packet
+            .work_items
+            .iter()
+            .map(|work| {
+                let cost = match work.model_routing.class.as_str() {
+                    "small" | "bounded" => CapacityCostClassV1::Cheap,
+                    "medium" | "large" => CapacityCostClassV1::Expensive,
+                    _ => panic!("fixture model class must be closed"),
+                };
+                (work.model_routing.class.clone(), cost)
+            })
+            .collect(),
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".into(),
+    };
+    requirement.seal().unwrap();
+    requirement
+}
+
+struct CapacityFixtureOwner<'a> {
+    packet: &'a NightshiftPacketV1,
+    admission: &'a ForemanAdmissionV1,
+    profile: &'a ExecutionProfileV2,
+    requirement: &'a ForemanCapacityRequirementV1,
+    policy: &'a CapacityPolicyV1,
+}
+
+fn capacity_bundle(
+    owner: CapacityFixtureOwner<'_>,
+    work_item_id: &str,
+    at: chrono::DateTime<Utc>,
+    remaining: f64,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, CapacityDecisionV1) {
+    let CapacityFixtureOwner {
+        packet,
+        admission,
+        profile,
+        requirement,
+        policy,
+    } = owner;
+    let observation = capacity_observation(at, remaining);
+    let decision = decide_capacity(&observation, policy, at).unwrap();
+    let mut exact = ForemanCapacityAdmissionV1 {
+        schema: FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1.into(),
+        capacity_admission_digest: format!("sha256:{}", "0".repeat(64)),
+        packet_digest: packet.packet_digest.clone(),
+        admission_digest: admission.admission_digest.clone(),
+        profile_digest: profile.profile_digest.clone(),
+        capacity_requirement_digest: requirement.capacity_requirement_digest.clone(),
+        run_id: admission.run_id.clone(),
+        work_item_id: work_item_id.into(),
+        adapter_id: profile.work_items[work_item_id].adapter_id.clone(),
+        provider_id: observation.provider_id.clone(),
+        packet_model_class: packet
+            .work_items
+            .iter()
+            .find(|work| work.id == work_item_id)
+            .unwrap()
+            .model_routing
+            .class
+            .clone(),
+        profile_model_class: profile.work_items[work_item_id]
+            .provider_model_class
+            .clone(),
+        cost_class: match packet
+            .work_items
+            .iter()
+            .find(|work| work.id == work_item_id)
+            .unwrap()
+            .model_routing
+            .class
+            .as_str()
+        {
+            "small" | "bounded" => CapacityCostClassV1::Cheap,
+            "medium" | "large" => CapacityCostClassV1::Expensive,
+            _ => panic!("fixture model class must be closed"),
+        },
+        policy_id: policy.policy_id.clone(),
+        observation_digest: observation.observation_digest.clone(),
+        policy_digest: policy.policy_digest.clone(),
+        decision_digest: decision.decision_digest.clone(),
+        evaluated_at: at,
+        speculative_requested: false,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".into(),
+    };
+    exact.seal().unwrap();
+    (
+        serde_jcs::to_vec(&exact).unwrap(),
+        serde_jcs::to_vec(&observation).unwrap(),
+        serde_jcs::to_vec(policy).unwrap(),
+        serde_jcs::to_vec(&decision).unwrap(),
+        decision,
+    )
+}
+
+fn capacity_evidence<'a>(
+    admission_bytes: &'a [u8],
+    observation_bytes: &'a [u8],
+    policy_bytes: &'a [u8],
+    decision_bytes: &'a [u8],
+) -> CapacityAdmissionEvidenceV1<'a> {
+    CapacityAdmissionEvidenceV1 {
+        admission_bytes,
+        observation_bytes,
+        policy_bytes,
+        decision_bytes,
+    }
+}
+
+fn capacity_matrix_case(
+    model_class: &str,
+    remaining: f64,
+    unknown_observation: bool,
+    unknown_allows_new_cheap_work: bool,
+) -> (CapacityAdmissionDisposition, Result<(), ForemanError>) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut packet = packet();
+    for work in &mut packet.work_items {
+        work.model_routing.class = model_class.into();
+    }
+    packet.seal().unwrap();
+    let mut admission = admission(&packet);
+    admission.allowed_provider_model_classes = vec![model_class.into()];
+    admission.seal().unwrap();
+    let mut policy = CapacityPolicyV1::default();
+    policy.unknown_allows_new_cheap_work = unknown_allows_new_cheap_work;
+    policy.policy_digest = policy.compute_digest().unwrap();
+    let mut profile = profile(&packet, &admission);
+    for execution in profile.work_items.values_mut() {
+        execution.provider_model_class = model_class.into();
+    }
+    profile.budget_policy_ref = policy.policy_id.clone();
+    profile.seal().unwrap();
+    let requirement = capacity_requirement(&packet, &admission, &profile, &policy);
+    let store = ForemanStore::open(directory.path().join("foreman.sqlite")).unwrap();
+    store
+        .admit_with_capacity_requirement(
+            &packet.canonical_bytes().unwrap(),
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            &serde_jcs::to_vec(&requirement).unwrap(),
+            instant(0),
+        )
+        .unwrap();
+    let (
+        mut capacity_admission_bytes,
+        mut observation_bytes,
+        policy_bytes,
+        mut decision_bytes,
+        mut decision,
+    ) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &packet,
+            admission: &admission,
+            profile: &profile,
+            requirement: &requirement,
+            policy: &policy,
+        },
+        "root-a",
+        instant(1),
+        remaining,
+    );
+    if unknown_observation {
+        let mut observation: CapacityObservationV1 =
+            serde_json::from_slice(&observation_bytes).unwrap();
+        observation.source_class = SourceClass::Unknown;
+        observation.confidence = Confidence::Low;
+        observation.disposition = ObservationDisposition::Unknown;
+        observation.unknown_reasons = vec!["FIXTURE_SOURCE_UNAVAILABLE".into()];
+        observation.windows.clear();
+        observation.observation_digest = observation.compute_digest().unwrap();
+        decision = decide_capacity(&observation, &policy, instant(1)).unwrap();
+        let mut capacity_admission =
+            ForemanCapacityAdmissionV1::from_slice(&capacity_admission_bytes).unwrap();
+        capacity_admission.observation_digest = observation.observation_digest.clone();
+        capacity_admission.decision_digest = decision.decision_digest.clone();
+        capacity_admission.seal().unwrap();
+        capacity_admission_bytes = serde_jcs::to_vec(&capacity_admission).unwrap();
+        observation_bytes = serde_jcs::to_vec(&observation).unwrap();
+        decision_bytes = serde_jcs::to_vec(&decision).unwrap();
+    }
+    let disposition = decision.admission;
+    let result = store
+        .prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &capacity_admission_bytes,
+                &observation_bytes,
+                &policy_bytes,
+                &decision_bytes,
+            ),
+            instant(1),
+        )
+        .map(|_| ());
+    (disposition, result)
+}
+
+#[test]
+fn capacity_policy_disposition_matrix_is_enforced_at_attempt_admission() {
+    let (ordinary_expensive, result) = capacity_matrix_case("medium", 0.60, false, false);
+    assert_eq!(
+        ordinary_expensive,
+        CapacityAdmissionDisposition::OrdinaryBounded
+    );
+    assert!(result.is_ok());
+
+    let (conserve_cheap, result) = capacity_matrix_case("bounded", 0.15, false, false);
+    assert_eq!(
+        conserve_cheap,
+        CapacityAdmissionDisposition::CheapBoundedOnly
+    );
+    assert!(result.is_ok());
+
+    let (conserve_expensive, result) = capacity_matrix_case("medium", 0.15, false, false);
+    assert_eq!(
+        conserve_expensive,
+        CapacityAdmissionDisposition::CheapBoundedOnly
+    );
+    assert!(matches!(
+        result,
+        Err(ForemanError::Transition(message))
+            if message.contains("only closed cheap model classes")
+    ));
+
+    let (unknown_cheap, result) = capacity_matrix_case("bounded", 0.60, true, true);
+    assert_eq!(
+        unknown_cheap,
+        CapacityAdmissionDisposition::CheapBoundedOnly
+    );
+    assert!(result.is_ok());
+
+    let (unknown_refused, result) = capacity_matrix_case("bounded", 0.60, true, false);
+    assert_eq!(unknown_refused, CapacityAdmissionDisposition::NoNewWork);
+    assert!(matches!(
+        result,
+        Err(ForemanError::Transition(message)) if message.contains("admits no new work")
+    ));
+
+    for model_class in ["bounded", "medium"] {
+        let (no_new_work, result) = capacity_matrix_case(model_class, 0.01, false, false);
+        assert_eq!(no_new_work, CapacityAdmissionDisposition::NoNewWork);
+        assert!(matches!(
+            result,
+            Err(ForemanError::Transition(message)) if message.contains("admits no new work")
+        ));
+    }
+}
+
+#[test]
+fn capacity_required_run_is_atomic_restartable_and_legacy_path_cannot_win() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite");
+    let packet = packet();
+    let admission = admission(&packet);
+    let policy = CapacityPolicyV1::default();
+    let mut profile = profile(&packet, &admission);
+    profile.budget_policy_ref = policy.policy_id.clone();
+    profile.seal().unwrap();
+    let requirement = capacity_requirement(&packet, &admission, &profile, &policy);
+    let requirement_raw = serde_jcs::to_vec(&requirement).unwrap();
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .admit_with_capacity_requirement(
+            &packet.canonical_bytes().unwrap(),
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            &requirement_raw,
+            instant(0),
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store.prepare_attempt("run-fixture", "root-a", instant(1)),
+        Err(ForemanError::Transition(message))
+            if message.contains("capacity-required run refuses legacy")
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .all(|work| work.active_attempt_id.is_none()));
+
+    let (root_a_admission, root_a_observation, policy_raw, root_a_decision, decision) =
+        capacity_bundle(
+            CapacityFixtureOwner {
+                packet: &packet,
+                admission: &admission,
+                profile: &profile,
+                requirement: &requirement,
+                policy: &policy,
+            },
+            "root-a",
+            instant(1),
+            0.60,
+        );
+    assert_eq!(
+        decision.admission,
+        CapacityAdmissionDisposition::OrdinaryBounded
+    );
+    let mut invalid_requirement = requirement.clone();
+    invalid_requirement
+        .model_cost_classes
+        .insert("bounded".into(), CapacityCostClassV1::Expensive);
+    assert!(matches!(
+        invalid_requirement.seal(),
+        Err(ContractError::InvalidField("capacity model-class map"))
+    ));
+    let mut speculative_admission =
+        ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    speculative_admission.speculative_requested = true;
+    assert!(matches!(
+        speculative_admission.seal(),
+        Err(ContractError::InvalidField(
+            "speculative capacity admission is unbound"
+        ))
+    ));
+    let mut noncanonical_timestamp: Value = serde_json::from_slice(&root_a_admission).unwrap();
+    noncanonical_timestamp["evaluated_at"] = Value::String("2026-08-29T12:00:01-04:00".into());
+    assert!(matches!(
+        ForemanCapacityAdmissionV1::from_slice(
+            &serde_json::to_vec(&noncanonical_timestamp).unwrap()
+        ),
+        Err(ContractError::InvalidField("evaluated_at"))
+    ));
+
+    let mut substituted_admission =
+        ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    substituted_admission.provider_id = "provider:substituted".into();
+    substituted_admission.seal().unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &serde_jcs::to_vec(&substituted_admission).unwrap(),
+                &root_a_observation,
+                &policy_raw,
+                &root_a_decision,
+            ),
+            instant(1),
+        ),
+        Err(ForemanError::IdentityMismatch(
+            "capacity requirement identity"
+        ))
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .all(|work| work.active_attempt_id.is_none()));
+
+    let mut stale_observation: CapacityObservationV1 =
+        serde_json::from_slice(&root_a_observation).unwrap();
+    stale_observation.expires_at = instant(1);
+    stale_observation.observation_digest = stale_observation.compute_digest().unwrap();
+    let stale_decision = decide_capacity(&stale_observation, &policy, instant(1)).unwrap();
+    let mut stale_admission = ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    stale_admission.observation_digest = stale_observation.observation_digest.clone();
+    stale_admission.decision_digest = stale_decision.decision_digest.clone();
+    stale_admission.seal().unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &serde_jcs::to_vec(&stale_admission).unwrap(),
+                &serde_jcs::to_vec(&stale_observation).unwrap(),
+                &policy_raw,
+                &serde_jcs::to_vec(&stale_decision).unwrap(),
+            ),
+            instant(1),
+        ),
+        Err(ForemanError::Transition(message)) if message.contains("not current")
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .all(|work| work.active_attempt_id.is_none()));
+
+    let root_a = store
+        .prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &root_a_admission,
+                &root_a_observation,
+                &policy_raw,
+                &root_a_decision,
+            ),
+            instant(1),
+        )
+        .unwrap();
+    drop(store);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert_eq!(
+        store
+            .projection("run-fixture")
+            .unwrap()
+            .work_items
+            .iter()
+            .find(|work| work.work_item_id == "root-a")
+            .unwrap()
+            .active_attempt_id
+            .as_deref(),
+        Some(root_a.attempt_id.as_str())
+    );
+
+    let (critical_admission, critical_observation, critical_policy, critical_decision, decision) =
+        capacity_bundle(
+            CapacityFixtureOwner {
+                packet: &packet,
+                admission: &admission,
+                profile: &profile,
+                requirement: &requirement,
+                policy: &policy,
+            },
+            "root-b",
+            instant(2),
+            0.01,
+        );
+    assert_eq!(decision.admission, CapacityAdmissionDisposition::NoNewWork);
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-b",
+            capacity_evidence(
+                &critical_admission,
+                &critical_observation,
+                &critical_policy,
+                &critical_decision,
+            ),
+            instant(2),
+        ),
+        Err(ForemanError::Transition(message)) if message.contains("admits no new work")
+    ));
+    store
+        .accept_terminal_receipt(
+            &serde_jcs::to_vec(&terminal(
+                &packet,
+                &root_a,
+                "EXACT-CUSTODY",
+                "INDEPENDENT-CAPACITY-AWARE-FIXTURE",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+    let (root_b_admission, root_b_observation, root_b_policy, root_b_decision, _) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &packet,
+            admission: &admission,
+            profile: &profile,
+            requirement: &requirement,
+            policy: &policy,
+        },
+        "root-b",
+        instant(6),
+        0.60,
+    );
+    drop(store);
+    let barrier = Arc::new(Barrier::new(2));
+    let legacy_barrier = barrier.clone();
+    let legacy_path = path.clone();
+    let legacy = std::thread::spawn(move || {
+        let store = ForemanStore::open(legacy_path).unwrap();
+        legacy_barrier.wait();
+        store.prepare_attempt("run-fixture", "root-b", instant(6))
+    });
+    let capacity_barrier = barrier;
+    let capacity_path = path.clone();
+    let capacity = std::thread::spawn(move || {
+        let store = ForemanStore::open(capacity_path).unwrap();
+        capacity_barrier.wait();
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-b",
+            capacity_evidence(
+                &root_b_admission,
+                &root_b_observation,
+                &root_b_policy,
+                &root_b_decision,
+            ),
+            instant(6),
+        )
+    });
+    assert!(legacy.join().unwrap().is_err());
+    let root_b = capacity.join().unwrap().unwrap();
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert_eq!(
+        store
+            .projection("run-fixture")
+            .unwrap()
+            .work_items
+            .iter()
+            .find(|work| work.work_item_id == "root-b")
+            .unwrap()
+            .active_attempt_id
+            .as_deref(),
+        Some(root_b.attempt_id.as_str())
+    );
+    drop(store);
+    let snapshot = nightshift_foreman::read_only_run_snapshot(&path, "run-fixture").unwrap();
+    let projected_requirement = snapshot.capacity_requirement.as_ref().unwrap();
+    assert_eq!(projected_requirement.requirement, requirement);
+    assert_eq!(projected_requirement.requirement_bytes, requirement_raw);
+    assert_eq!(snapshot.capacity_admissions.len(), 2);
+    let root_a_capacity = snapshot
+        .capacity_admissions
+        .iter()
+        .find(|capacity| capacity.work_item_id == "root-a")
+        .unwrap();
+    assert_eq!(root_a_capacity.admission_bytes, root_a_admission);
+    assert_eq!(root_a_capacity.observation_bytes, root_a_observation);
+    assert_eq!(root_a_capacity.policy_bytes, policy_raw);
+    assert_eq!(root_a_capacity.decision_bytes, root_a_decision);
+    assert!(snapshot
+        .events
+        .iter()
+        .all(|event| event.raw_digest.starts_with("sha256:")));
 }

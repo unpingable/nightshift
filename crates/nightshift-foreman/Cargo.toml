@@ -29,6 +29,7 @@ sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 nightshiftd = { path = "../nightshiftd" }
+nightshift-provider-capacity = { path = "../nightshift-provider-capacity" }
 
 [dev-dependencies]
 serde_json_canonicalizer.workspace = true

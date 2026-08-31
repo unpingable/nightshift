@@ -7,6 +7,10 @@ use std::{
 };
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use nightshift_provider_capacity::{
+    AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
+    CapacityObservationV1, CapacityPolicyV1,
+};
 use nightshiftd::packet::NightshiftPacketV1;
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
@@ -20,7 +24,8 @@ use uuid::Uuid;
 use crate::{
     contract::{ContractError, TeardownDeclarationV1},
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
-    AdapterEventV1, ExecutionProfileV2, ForemanAdmissionV1, HumanQuestionV1, LiveRunProjectionV1,
+    AdapterEventV1, CapacityCostClassV1, ExecutionProfileV2, ForemanAdmissionV1,
+    ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1, HumanQuestionV1, LiveRunProjectionV1,
     NotStartedReceiptV1, ReceiptRepositoryV1, Scheduler, SchedulerStateV1, TerminalReceiptV1,
     WorkerBriefV2, WorkerStartRequestV2, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
     WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
@@ -30,6 +35,7 @@ use crate::{
 const INTERNAL_EVENT_SCHEMA: &str = "nightshift.foreman-journal-event/v1";
 const BRIEF_DIGEST_DOMAIN: &[u8] = b"nightshift.worker-brief.digest/v2\0";
 const RAW_DIGEST_DOMAIN: &[u8] = b"nightshift.foreman-retained-raw.digest/v1\0";
+const MAXIMUM_CAPACITY_RECORD_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum ForemanError {
@@ -73,6 +79,24 @@ pub struct ForemanStore {
     access: StoreAccess,
 }
 
+pub struct CapacityAdmissionEvidenceV1<'a> {
+    pub admission_bytes: &'a [u8],
+    pub observation_bytes: &'a [u8],
+    pub policy_bytes: &'a [u8],
+    pub decision_bytes: &'a [u8],
+}
+
+struct ValidatedCapacityAdmission {
+    admission: ForemanCapacityAdmissionV1,
+    observation: CapacityObservationV1,
+    policy: CapacityPolicyV1,
+    decision: CapacityDecisionV1,
+    admission_bytes: Vec<u8>,
+    observation_bytes: Vec<u8>,
+    policy_bytes: Vec<u8>,
+    decision_bytes: Vec<u8>,
+}
+
 /// One exact event row retained by the append-only foreman journal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadOnlyEventRowV1 {
@@ -99,6 +123,26 @@ pub struct ReadOnlyTerminalReceiptRowV1 {
 }
 
 /// A transaction-consistent read snapshot for read-only operator projections.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyCapacityRequirementV1 {
+    pub recorded_at: String,
+    pub requirement: ForemanCapacityRequirementV1,
+    pub requirement_bytes: Vec<u8>,
+}
+
+/// One exact capacity-admission event retained by the append-only journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyCapacityAdmissionV1 {
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub recorded_at: String,
+    pub capacity_admission: ForemanCapacityAdmissionV1,
+    pub admission_bytes: Vec<u8>,
+    pub observation_bytes: Vec<u8>,
+    pub policy_bytes: Vec<u8>,
+    pub decision_bytes: Vec<u8>,
+}
+
 ///
 /// Every byte vector is copied exactly from the existing SQLite BLOB. Creating
 /// this value performs no schema initialization, journal-mode assignment, or
@@ -111,6 +155,8 @@ pub struct ReadOnlyRunSnapshotV1 {
     pub profile_bytes: Vec<u8>,
     pub projection: LiveRunProjectionV1,
     pub events: Vec<ReadOnlyEventRowV1>,
+    pub capacity_requirement: Option<ReadOnlyCapacityRequirementV1>,
+    pub capacity_admissions: Vec<ReadOnlyCapacityAdmissionV1>,
     pub terminal_receipts: Vec<ReadOnlyTerminalReceiptRowV1>,
     pub final_snapshot_bytes: Option<Vec<u8>>,
 }
@@ -126,12 +172,23 @@ pub fn read_only_run_snapshot(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InternalPayload {
     RunAdmitted,
+    CapacityRequirementAdmitted {
+        requirement: Box<ForemanCapacityRequirementV1>,
+        requirement_bytes: Vec<u8>,
+    },
     AttemptCreated {
         resource_lock_keys: Vec<String>,
         start_request: Box<WorkerStartRequestV2>,
     },
     DispatchRequested,
     ResumeRequested,
+    CapacityAdmissionAccepted {
+        capacity_admission: Box<ForemanCapacityAdmissionV1>,
+        admission_bytes: Vec<u8>,
+        observation_bytes: Vec<u8>,
+        policy_bytes: Vec<u8>,
+        decision_bytes: Vec<u8>,
+    },
     TerminalAccepted {
         outcome: AcceptedOutcomeV1,
     },
@@ -254,13 +311,61 @@ impl ForemanStore {
         require_existing_schema(&connection)?;
         Ok(store)
     }
-
     pub fn admit(
         &self,
         packet_bytes: &[u8],
         admission_bytes: &[u8],
         profile_bytes: &[u8],
         evaluated_at: DateTime<Utc>,
+    ) -> Result<String, ForemanError> {
+        self.admit_internal(
+            packet_bytes,
+            admission_bytes,
+            profile_bytes,
+            evaluated_at,
+            None,
+        )
+    }
+
+    pub fn admit_with_capacity_requirement(
+        &self,
+        packet_bytes: &[u8],
+        admission_bytes: &[u8],
+        profile_bytes: &[u8],
+        capacity_requirement_bytes: &[u8],
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<String, ForemanError> {
+        if capacity_requirement_bytes.is_empty()
+            || capacity_requirement_bytes.len() > MAXIMUM_CAPACITY_RECORD_BYTES
+        {
+            return Err(ForemanError::InputTooLarge("capacity requirement"));
+        }
+        let requirement = ForemanCapacityRequirementV1::from_slice(capacity_requirement_bytes)?;
+        requirement.validate()?;
+        if serde_jcs::to_vec(&requirement)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != capacity_requirement_bytes
+        {
+            return Err(ForemanError::Transition(
+                "capacity requirement bytes are not exact canonical owner bytes".to_owned(),
+            ));
+        }
+        self.admit_internal(
+            packet_bytes,
+            admission_bytes,
+            profile_bytes,
+            evaluated_at,
+            Some((requirement, capacity_requirement_bytes.to_vec())),
+        )
+    }
+
+    fn admit_internal(
+        &self,
+        packet_bytes: &[u8],
+        admission_bytes: &[u8],
+        profile_bytes: &[u8],
+        evaluated_at: DateTime<Utc>,
+        capacity_requirement: Option<(ForemanCapacityRequirementV1, Vec<u8>)>,
     ) -> Result<String, ForemanError> {
         let packet = NightshiftPacketV1::from_slice(packet_bytes)
             .map_err(|error| ForemanError::Packet(error.to_string()))?;
@@ -272,6 +377,9 @@ impl ForemanStore {
         let profile = ExecutionProfileV2::from_slice(profile_bytes)?;
         profile.validate()?;
         validate_bindings(&packet, &admission, &profile)?;
+        if let Some((requirement, _)) = &capacity_requirement {
+            validate_capacity_requirement(requirement, &packet, &admission, &profile)?;
+        }
 
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -328,6 +436,23 @@ impl ForemanStore {
             payload: InternalPayload::RunAdmitted,
         };
         append_internal(&transaction, &event)?;
+        if let Some((requirement, requirement_bytes)) = capacity_requirement {
+            append_internal(
+                &transaction,
+                &InternalEvent {
+                    schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                    event_id: format!("capacity-required-{}", Uuid::new_v4()),
+                    run_id: admission.run_id.clone(),
+                    work_item_id: None,
+                    attempt_id: None,
+                    recorded_at: evaluated_at,
+                    payload: InternalPayload::CapacityRequirementAdmitted {
+                        requirement: Box::new(requirement),
+                        requirement_bytes,
+                    },
+                },
+            )?;
+        }
         transaction.commit()?;
         Ok(admission.run_id)
     }
@@ -348,12 +473,38 @@ impl ForemanStore {
         transaction.commit()?;
         Ok(brief)
     }
-
     pub fn prepare_attempt(
         &self,
         run_id: &str,
         work_item_id: &str,
         recorded_at: DateTime<Utc>,
+    ) -> Result<WorkerStartRequestV2, ForemanError> {
+        self.prepare_attempt_internal(run_id, work_item_id, recorded_at, None)
+    }
+
+    /// Atomically retain one exact FUEL decision and create the attempt it admitted.
+    pub fn prepare_attempt_with_capacity(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        evidence: CapacityAdmissionEvidenceV1<'_>,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<WorkerStartRequestV2, ForemanError> {
+        let capacity = validate_capacity_bundle(
+            evidence.admission_bytes,
+            evidence.observation_bytes,
+            evidence.policy_bytes,
+            evidence.decision_bytes,
+        )?;
+        self.prepare_attempt_internal(run_id, work_item_id, recorded_at, Some(capacity))
+    }
+
+    fn prepare_attempt_internal(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        recorded_at: DateTime<Utc>,
+        capacity: Option<ValidatedCapacityAdmission>,
     ) -> Result<WorkerStartRequestV2, ForemanError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -404,7 +555,21 @@ impl ForemanStore {
                 )));
             }
         }
-        let (packet, _, profile, _) = load_contracts(&transaction, run_id)?;
+        let (packet, admission, profile, _) = load_contracts(&transaction, run_id)?;
+        let capacity_requirement = load_capacity_requirement(&transaction, run_id)?;
+        match (capacity_requirement.as_ref(), capacity.as_ref()) {
+            (Some(_), None) => {
+                return Err(ForemanError::Transition(
+                    "capacity-required run refuses legacy attempt preparation".to_owned(),
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(ForemanError::Transition(
+                    "legacy run has no immutable capacity requirement".to_owned(),
+                ))
+            }
+            _ => {}
+        }
         let attempt_id = format!("attempt-{}", Uuid::new_v4());
         let execution = profile
             .work_items
@@ -435,6 +600,37 @@ impl ForemanStore {
         request.seal()?;
         let brief = worker_brief_bytes(&transaction, &packet, &profile, run_id, work_item_id)?;
         WorkerBriefV2::from_slice_for_start(&brief, &request)?;
+        if let Some(capacity) = capacity {
+            validate_capacity_bindings(
+                &capacity,
+                &packet,
+                &admission,
+                &profile,
+                capacity_requirement.as_ref().ok_or_else(|| {
+                    ForemanError::Transition("capacity requirement missing".to_owned())
+                })?,
+                work_item_id,
+                recorded_at,
+            )?;
+            append_internal(
+                &transaction,
+                &InternalEvent {
+                    schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                    event_id: format!("capacity-admitted-{}", Uuid::new_v4()),
+                    run_id: run_id.to_owned(),
+                    work_item_id: Some(work_item_id.to_owned()),
+                    attempt_id: Some(attempt_id.clone()),
+                    recorded_at,
+                    payload: InternalPayload::CapacityAdmissionAccepted {
+                        capacity_admission: Box::new(capacity.admission),
+                        admission_bytes: capacity.admission_bytes,
+                        observation_bytes: capacity.observation_bytes,
+                        policy_bytes: capacity.policy_bytes,
+                        decision_bytes: capacity.decision_bytes,
+                    },
+                },
+            )?;
+        }
         for lock in &execution.resource_lock_keys {
             transaction.execute(
                 "INSERT INTO resource_claims
@@ -938,6 +1134,8 @@ impl ForemanStore {
         packet
             .validate_integrity()
             .map_err(|error| ForemanError::Packet(error.to_string()))?;
+        let admission = ForemanAdmissionV1::from_slice(&admission_bytes)?;
+        admission.validate()?;
         let profile = ExecutionProfileV2::from_slice(&profile_bytes)?;
         profile.validate()?;
         let events = {
@@ -964,6 +1162,8 @@ impl ForemanStore {
             }
             rows
         };
+        let (capacity_requirement, capacity_admissions) =
+            read_only_capacity_admissions(&events, &packet, &admission, &profile)?;
         let run_closed = validate_read_only_run_closed_binding(&events)?;
         let terminal_receipts = {
             let mut statement = transaction.prepare(
@@ -1063,6 +1263,8 @@ impl ForemanStore {
             profile_bytes,
             projection,
             events,
+            capacity_requirement,
+            capacity_admissions,
             terminal_receipts,
             final_snapshot_bytes,
         })
@@ -1225,6 +1427,133 @@ fn validate_read_only_event_row(
         ));
     }
     Ok(())
+}
+
+fn read_only_capacity_admissions(
+    events: &[ReadOnlyEventRowV1],
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+) -> Result<
+    (
+        Option<ReadOnlyCapacityRequirementV1>,
+        Vec<ReadOnlyCapacityAdmissionV1>,
+    ),
+    ForemanError,
+> {
+    let mut requirement = None;
+    let mut attempts = BTreeSet::new();
+    let mut capacity_by_attempt = BTreeMap::new();
+    for row in events {
+        if row.kind != "internal" {
+            continue;
+        }
+        let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        match event.payload {
+            InternalPayload::CapacityRequirementAdmitted {
+                requirement: candidate,
+                requirement_bytes,
+            } => {
+                if requirement.is_some()
+                    || event.work_item_id.is_some()
+                    || event.attempt_id.is_some()
+                    || serde_jcs::to_vec(&*candidate)
+                        .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                        != requirement_bytes
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "capacity requirement event custody is invalid".to_owned(),
+                    ));
+                }
+                candidate.validate()?;
+                validate_capacity_requirement(&candidate, packet, admission, profile)?;
+                requirement = Some(ReadOnlyCapacityRequirementV1 {
+                    recorded_at: event.recorded_at.to_rfc3339(),
+                    requirement: *candidate,
+                    requirement_bytes,
+                });
+            }
+            InternalPayload::CapacityAdmissionAccepted {
+                capacity_admission,
+                admission_bytes,
+                observation_bytes,
+                policy_bytes,
+                decision_bytes,
+            } => {
+                let work_item_id = event.work_item_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "capacity admission lacks work item identity".to_owned(),
+                    )
+                })?;
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "capacity admission lacks attempt identity".to_owned(),
+                    )
+                })?;
+                let bundle = validate_capacity_bundle(
+                    &admission_bytes,
+                    &observation_bytes,
+                    &policy_bytes,
+                    &decision_bytes,
+                )?;
+                if bundle.admission != *capacity_admission
+                    || capacity_by_attempt.contains_key(&attempt_id)
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "capacity admission event exact bytes or identity disagree".to_owned(),
+                    ));
+                }
+                let exact_requirement = requirement.as_ref().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "capacity admission precedes immutable requirement".to_owned(),
+                    )
+                })?;
+                validate_capacity_bindings(
+                    &bundle,
+                    packet,
+                    admission,
+                    profile,
+                    &exact_requirement.requirement,
+                    &work_item_id,
+                    event.recorded_at,
+                )?;
+                capacity_by_attempt.insert(
+                    attempt_id.clone(),
+                    ReadOnlyCapacityAdmissionV1 {
+                        work_item_id,
+                        attempt_id,
+                        recorded_at: event.recorded_at.to_rfc3339(),
+                        capacity_admission: *capacity_admission,
+                        admission_bytes,
+                        observation_bytes,
+                        policy_bytes,
+                        decision_bytes,
+                    },
+                );
+            }
+            InternalPayload::AttemptCreated { .. } => {
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("attempt-created lacks identity".to_owned())
+                })?;
+                attempts.insert(attempt_id);
+            }
+            _ => {}
+        }
+    }
+    if requirement.is_some()
+        && (attempts != capacity_by_attempt.keys().cloned().collect::<BTreeSet<_>>())
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "capacity-required attempt graph is incomplete".to_owned(),
+        ));
+    }
+    if requirement.is_none() && !capacity_by_attempt.is_empty() {
+        return Err(ForemanError::ReadOnlyStore(
+            "legacy run carries capacity admission evidence".to_owned(),
+        ));
+    }
+    Ok((requirement, capacity_by_attempt.into_values().collect()))
 }
 
 fn validate_read_only_receipt_row(
@@ -1547,6 +1876,239 @@ fn validate_bindings(
     Ok(())
 }
 
+fn load_capacity_requirement(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<Option<ForemanCapacityRequirementV1>, ForemanError> {
+    let mut statement = connection.prepare(
+        "SELECT raw_bytes FROM events WHERE run_id = ?1 AND kind = 'internal' ORDER BY sequence",
+    )?;
+    let rows = statement.query_map([run_id], |row| row.get::<_, Vec<u8>>(0))?;
+    let mut found = None;
+    for row in rows {
+        let raw = row?;
+        let event: InternalEvent = serde_json::from_slice(&raw)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        if let InternalPayload::CapacityRequirementAdmitted {
+            requirement,
+            requirement_bytes,
+        } = event.payload
+        {
+            if found.is_some()
+                || serde_jcs::to_vec(&*requirement)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != requirement_bytes
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "capacity requirement history is not singular exact custody".to_owned(),
+                ));
+            }
+            requirement.validate()?;
+            found = Some(*requirement);
+        }
+    }
+    Ok(found)
+}
+
+fn validate_capacity_requirement(
+    requirement: &ForemanCapacityRequirementV1,
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+) -> Result<(), ForemanError> {
+    let packet_classes = packet
+        .work_items
+        .iter()
+        .map(|work| work.model_routing.class.as_str())
+        .collect::<BTreeSet<_>>();
+    let requirement_classes = requirement
+        .model_cost_classes
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if requirement.packet_digest != packet.packet_digest
+        || requirement.admission_digest != admission.admission_digest
+        || requirement.profile_digest != profile.profile_digest
+        || requirement.run_id != admission.run_id
+        || requirement.policy_id != profile.budget_policy_ref
+        || packet_classes != requirement_classes
+        || packet.work_items.iter().any(|work| {
+            profile
+                .work_items
+                .get(&work.id)
+                .is_none_or(|execution| execution.provider_model_class != work.model_routing.class)
+        })
+    {
+        return Err(ForemanError::IdentityMismatch(
+            "capacity requirement binding",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_capacity_bundle(
+    admission_bytes: &[u8],
+    observation_bytes: &[u8],
+    policy_bytes: &[u8],
+    decision_bytes: &[u8],
+) -> Result<ValidatedCapacityAdmission, ForemanError> {
+    for (name, bytes) in [
+        ("capacity admission", admission_bytes),
+        ("capacity observation", observation_bytes),
+        ("capacity policy", policy_bytes),
+        ("capacity decision", decision_bytes),
+    ] {
+        if bytes.is_empty() || bytes.len() > MAXIMUM_CAPACITY_RECORD_BYTES {
+            return Err(ForemanError::InputTooLarge(name));
+        }
+    }
+    let admission = ForemanCapacityAdmissionV1::from_slice(admission_bytes)?;
+    admission.validate()?;
+    let observation: CapacityObservationV1 = serde_json::from_slice(observation_bytes)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    let policy: CapacityPolicyV1 = serde_json::from_slice(policy_bytes)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    let decision: CapacityDecisionV1 = serde_json::from_slice(decision_bytes)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    observation
+        .validate()
+        .map_err(|error| ForemanError::Transition(error.to_string()))?;
+    policy
+        .validate()
+        .map_err(|error| ForemanError::Transition(error.to_string()))?;
+    decision
+        .validate()
+        .map_err(|error| ForemanError::Transition(error.to_string()))?;
+    for (name, expected, value) in [
+        (
+            "capacity admission",
+            admission_bytes,
+            serde_jcs::to_vec(&admission)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        ),
+        (
+            "capacity observation",
+            observation_bytes,
+            serde_jcs::to_vec(&observation)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        ),
+        (
+            "capacity policy",
+            policy_bytes,
+            serde_jcs::to_vec(&policy)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        ),
+        (
+            "capacity decision",
+            decision_bytes,
+            serde_jcs::to_vec(&decision)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?,
+        ),
+    ] {
+        if expected != value {
+            return Err(ForemanError::Transition(format!(
+                "{name} bytes are not exact canonical owner bytes"
+            )));
+        }
+    }
+    Ok(ValidatedCapacityAdmission {
+        admission,
+        observation,
+        policy,
+        decision,
+        admission_bytes: admission_bytes.to_vec(),
+        observation_bytes: observation_bytes.to_vec(),
+        policy_bytes: policy_bytes.to_vec(),
+        decision_bytes: decision_bytes.to_vec(),
+    })
+}
+
+fn validate_capacity_bindings(
+    capacity: &ValidatedCapacityAdmission,
+    packet: &NightshiftPacketV1,
+    foreman_admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+    requirement: &ForemanCapacityRequirementV1,
+    work_item_id: &str,
+    recorded_at: DateTime<Utc>,
+) -> Result<(), ForemanError> {
+    let binding = &capacity.admission;
+    let work = packet
+        .work_items
+        .iter()
+        .find(|work| work.id == work_item_id)
+        .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?;
+    let execution = profile
+        .work_items
+        .get(work_item_id)
+        .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?;
+    if binding.capacity_requirement_digest != requirement.capacity_requirement_digest
+        || binding.provider_id != requirement.provider_id
+        || binding.policy_id != requirement.policy_id
+        || requirement
+            .model_cost_classes
+            .get(&binding.packet_model_class)
+            != Some(&binding.cost_class)
+    {
+        return Err(ForemanError::IdentityMismatch(
+            "capacity requirement identity",
+        ));
+    }
+    if binding.packet_digest != packet.packet_digest
+        || binding.admission_digest != foreman_admission.admission_digest
+        || binding.profile_digest != profile.profile_digest
+        || binding.run_id != foreman_admission.run_id
+        || binding.work_item_id != work_item_id
+        || binding.adapter_id != execution.adapter_id
+        || binding.packet_model_class != work.model_routing.class
+        || binding.profile_model_class != execution.provider_model_class
+    {
+        return Err(ForemanError::IdentityMismatch("capacity admission binding"));
+    }
+    if binding.provider_id != capacity.observation.provider_id
+        || binding.provider_id != capacity.decision.provider_id
+        || binding.policy_id != capacity.policy.policy_id
+        || binding.policy_id != profile.budget_policy_ref
+        || binding.observation_digest != capacity.observation.observation_digest
+        || binding.policy_digest != capacity.policy.policy_digest
+        || binding.decision_digest != capacity.decision.decision_digest
+        || capacity.decision.observation_digest != capacity.observation.observation_digest
+        || capacity.decision.policy_digest != capacity.policy.policy_digest
+    {
+        return Err(ForemanError::IdentityMismatch("capacity owner identity"));
+    }
+    if binding.evaluated_at != recorded_at
+        || capacity.decision.decision_at != recorded_at
+        || recorded_at < capacity.observation.observed_at
+        || recorded_at >= capacity.observation.expires_at
+    {
+        return Err(ForemanError::Transition(
+            "capacity decision is not current at exact attempt admission".to_owned(),
+        ));
+    }
+    match capacity.decision.admission {
+        CapacityAdmissionDisposition::NoNewWork => Err(ForemanError::Transition(
+            "capacity decision admits no new work".to_owned(),
+        )),
+        CapacityAdmissionDisposition::CheapBoundedOnly
+            if binding.cost_class != CapacityCostClassV1::Cheap =>
+        {
+            Err(ForemanError::Transition(
+                "capacity decision admits only closed cheap model classes".to_owned(),
+            ))
+        }
+        CapacityAdmissionDisposition::OrdinaryBounded
+            if binding.cost_class == CapacityCostClassV1::Expensive
+                && !capacity.decision.allow_new_expensive_work =>
+        {
+            Err(ForemanError::Transition(
+                "capacity decision does not admit new expensive work".to_owned(),
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn append_internal(
     transaction: &Transaction<'_>,
     event: &InternalEvent,
@@ -1681,6 +2243,8 @@ fn load_projection(
                 .map_err(|error| ForemanError::Serialization(error.to_string()))?;
             match event.payload {
                 InternalPayload::RunAdmitted => ReplayKind::RunAdmitted,
+                InternalPayload::CapacityRequirementAdmitted { .. }
+                | InternalPayload::CapacityAdmissionAccepted { .. } => ReplayKind::CapacityEvidence,
                 InternalPayload::AttemptCreated {
                     resource_lock_keys, ..
                 } => ReplayKind::AttemptCreated { resource_lock_keys },

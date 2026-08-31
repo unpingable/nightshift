@@ -8,7 +8,8 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::{
-    FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+    FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1,
+    FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
     MAXIMUM_ADAPTER_TIMEOUT_SECONDS, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
     MAXIMUM_WORKER_OUTPUT_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
     WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_ATTEMPT_BINDING_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2,
@@ -17,6 +18,8 @@ use crate::{
 };
 
 const ADMISSION_DOMAIN: &[u8] = b"nightshift.foreman-admission.digest/v1\0";
+const CAPACITY_ADMISSION_DOMAIN: &[u8] = b"nightshift.foreman-capacity-admission.digest/v1\0";
+const CAPACITY_REQUIREMENT_DOMAIN: &[u8] = b"nightshift.foreman-capacity-requirement.digest/v1\0";
 const PROFILE_DOMAIN_V2: &[u8] = b"nightshift.foreman-execution-profile.digest/v2\0";
 const START_DOMAIN_V2: &[u8] = b"nightshift.worker-start-request.digest/v2\0";
 const EVENT_DOMAIN: &[u8] = b"nightshift.worker-adapter-event.digest/v1\0";
@@ -98,6 +101,188 @@ impl ForemanAdmissionV1 {
         self.validate()?;
         if now < self.admitted_at || now > self.expires_at {
             return Err(ContractError::InvalidField("admission expired"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CapacityCostClassV1 {
+    Cheap,
+    Expensive,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForemanCapacityRequirementV1 {
+    pub schema: String,
+    pub capacity_requirement_digest: String,
+    pub packet_digest: String,
+    pub admission_digest: String,
+    pub profile_digest: String,
+    pub run_id: String,
+    pub policy_id: String,
+    pub provider_id: String,
+    pub model_cost_classes: BTreeMap<String, CapacityCostClassV1>,
+    pub authority_effect: String,
+}
+
+impl ForemanCapacityRequirementV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        parse(bytes)
+    }
+
+    pub fn seal(&mut self) -> Result<(), ContractError> {
+        self.capacity_requirement_digest = digest_without(
+            self,
+            "capacity_requirement_digest",
+            CAPACITY_REQUIREMENT_DOMAIN,
+        )?;
+        self.validate()
+    }
+
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1)?;
+        for (name, value) in [
+            (
+                "capacity_requirement_digest",
+                self.capacity_requirement_digest.as_str(),
+            ),
+            ("packet_digest", self.packet_digest.as_str()),
+            ("admission_digest", self.admission_digest.as_str()),
+            ("profile_digest", self.profile_digest.as_str()),
+        ] {
+            digest(name, value)?;
+        }
+        for (name, value) in [
+            ("run_id", self.run_id.as_str()),
+            ("policy_id", self.policy_id.as_str()),
+            ("provider_id", self.provider_id.as_str()),
+        ] {
+            id(name, value)?;
+        }
+        if self.model_cost_classes.is_empty() || self.model_cost_classes.len() > 16 {
+            return Err(ContractError::InvalidField("capacity model-class map"));
+        }
+        for (model, cost) in &self.model_cost_classes {
+            id("capacity model class", model)?;
+            if capacity_cost_class(model)? != *cost {
+                return Err(ContractError::InvalidField("capacity model-class map"));
+            }
+        }
+        if self.authority_effect != "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY" {
+            return Err(ContractError::InvalidField("capacity authority effect"));
+        }
+        if digest_without(
+            self,
+            "capacity_requirement_digest",
+            CAPACITY_REQUIREMENT_DOMAIN,
+        )? != self.capacity_requirement_digest
+        {
+            return Err(ContractError::DigestMismatch("capacity_requirement_digest"));
+        }
+        Ok(())
+    }
+}
+
+fn capacity_cost_class(value: &str) -> Result<CapacityCostClassV1, ContractError> {
+    match value {
+        "small" | "bounded" => Ok(CapacityCostClassV1::Cheap),
+        "medium" | "large" => Ok(CapacityCostClassV1::Expensive),
+        _ => Err(ContractError::InvalidField("capacity model-class mapping")),
+    }
+}
+
+/// Exact local scheduling admission under one retained capacity decision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForemanCapacityAdmissionV1 {
+    pub schema: String,
+    pub capacity_admission_digest: String,
+    pub packet_digest: String,
+    pub admission_digest: String,
+    pub profile_digest: String,
+    pub capacity_requirement_digest: String,
+    pub run_id: String,
+    pub work_item_id: String,
+    pub adapter_id: String,
+    pub provider_id: String,
+    pub packet_model_class: String,
+    pub profile_model_class: String,
+    pub cost_class: CapacityCostClassV1,
+    pub policy_id: String,
+    pub observation_digest: String,
+    pub policy_digest: String,
+    pub decision_digest: String,
+    pub evaluated_at: DateTime<Utc>,
+    pub speculative_requested: bool,
+    pub authority_effect: String,
+}
+
+impl ForemanCapacityAdmissionV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        let value: Value = parse(bytes)?;
+        canonical_timestamp_value("evaluated_at", &value)?;
+        serde_json::from_value(value).map_err(json_error)
+    }
+
+    pub fn seal(&mut self) -> Result<(), ContractError> {
+        self.capacity_admission_digest =
+            digest_without(self, "capacity_admission_digest", CAPACITY_ADMISSION_DOMAIN)?;
+        self.validate()
+    }
+
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1)?;
+        for (name, value) in [
+            ("packet_digest", self.packet_digest.as_str()),
+            ("admission_digest", self.admission_digest.as_str()),
+            ("profile_digest", self.profile_digest.as_str()),
+            (
+                "capacity_requirement_digest",
+                self.capacity_requirement_digest.as_str(),
+            ),
+            ("observation_digest", self.observation_digest.as_str()),
+            ("policy_digest", self.policy_digest.as_str()),
+            ("decision_digest", self.decision_digest.as_str()),
+            (
+                "capacity_admission_digest",
+                self.capacity_admission_digest.as_str(),
+            ),
+        ] {
+            digest(name, value)?;
+        }
+        for (name, value) in [
+            ("run_id", self.run_id.as_str()),
+            ("work_item_id", self.work_item_id.as_str()),
+            ("adapter_id", self.adapter_id.as_str()),
+            ("provider_id", self.provider_id.as_str()),
+            ("packet_model_class", self.packet_model_class.as_str()),
+            ("profile_model_class", self.profile_model_class.as_str()),
+            ("policy_id", self.policy_id.as_str()),
+        ] {
+            id(name, value)?;
+        }
+        if self.packet_model_class != self.profile_model_class {
+            return Err(ContractError::InvalidField("capacity model-class binding"));
+        }
+        let expected = capacity_cost_class(&self.packet_model_class)?;
+        if self.cost_class != expected {
+            return Err(ContractError::InvalidField("capacity cost class"));
+        }
+        if self.speculative_requested {
+            return Err(ContractError::InvalidField(
+                "speculative capacity admission is unbound",
+            ));
+        }
+        if self.authority_effect != "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY" {
+            return Err(ContractError::InvalidField("capacity authority effect"));
+        }
+        if digest_without(self, "capacity_admission_digest", CAPACITY_ADMISSION_DOMAIN)?
+            != self.capacity_admission_digest
+        {
+            return Err(ContractError::DigestMismatch("capacity_admission_digest"));
         }
         Ok(())
     }

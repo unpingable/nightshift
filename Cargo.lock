@@ -501,6 +501,7 @@ dependencies = [
  "hex",
  "libc",
  "nightshift-casework",
+ "nightshift-provider-capacity",
  "nightshiftd",
  "rusqlite",
  "serde",

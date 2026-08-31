@@ -22,6 +22,8 @@ class ForemanSchemaTests(unittest.TestCase):
             "nightshift.foreman-admission.v1.schema.json",
             "nightshift.foreman-execution-profile.v1.schema.json",
             "nightshift.foreman-execution-profile.v2.schema.json",
+            "nightshift.foreman-capacity-requirement.v1.schema.json",
+            "nightshift.foreman-capacity-admission.v1.schema.json",
             "nightshift.worker-adapter.v1.schema.json",
             "nightshift.worker-adapter.v2.schema.json",
         ]:
@@ -264,6 +266,72 @@ class ForemanSchemaTests(unittest.TestCase):
         ):
             with self.assertRaises(ValidationError):
                 validator.validate(refused)
+
+    def test_capacity_admission_contracts_are_closed_and_aligned(self):
+        requirement = {
+            "schema": "nightshift.foreman-capacity-requirement/v1",
+            "capacity_requirement_digest": DIGEST,
+            "packet_digest": DIGEST,
+            "admission_digest": DIGEST,
+            "profile_digest": DIGEST,
+            "run_id": "run-fixture",
+            "policy_id": "nightshift-default-provider-reserve-v1",
+            "provider_id": "provider:fixture",
+            "model_cost_classes": {"bounded": "CHEAP", "large": "EXPENSIVE"},
+            "authority_effect": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+        }
+        requirement_validator = Draft202012Validator(
+            schema("nightshift.foreman-capacity-requirement.v1.schema.json")
+        )
+        requirement_validator.validate(requirement)
+        for changed in (
+            {"model_cost_classes": {"bounded": "EXPENSIVE"}},
+            {"model_cost_classes": {"unrecognized": "CHEAP"}},
+            {"provider_id": "provider fixture"},
+            {"target_effects_authorized": False},
+        ):
+            refused = copy.deepcopy(requirement)
+            refused.update(changed)
+            with self.assertRaises(ValidationError):
+                requirement_validator.validate(refused)
+
+        admission = {
+            "schema": "nightshift.foreman-capacity-admission/v1",
+            "capacity_admission_digest": DIGEST,
+            "packet_digest": DIGEST,
+            "admission_digest": DIGEST,
+            "profile_digest": DIGEST,
+            "capacity_requirement_digest": DIGEST,
+            "run_id": "run-fixture",
+            "work_item_id": "root-a",
+            "adapter_id": "fixture-adapter",
+            "provider_id": "provider:fixture",
+            "packet_model_class": "bounded",
+            "profile_model_class": "bounded",
+            "cost_class": "CHEAP",
+            "policy_id": "nightshift-default-provider-reserve-v1",
+            "observation_digest": DIGEST,
+            "policy_digest": DIGEST,
+            "decision_digest": DIGEST,
+            "evaluated_at": "2026-08-29T16:00:01Z",
+            "speculative_requested": False,
+            "authority_effect": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+        }
+        admission_validator = Draft202012Validator(
+            schema("nightshift.foreman-capacity-admission.v1.schema.json")
+        )
+        admission_validator.validate(admission)
+        for changed in (
+            {"profile_model_class": "small"},
+            {"cost_class": "EXPENSIVE"},
+            {"speculative_requested": True},
+            {"evaluated_at": "2026-08-29T12:00:01-04:00"},
+            {"approval_response": True},
+        ):
+            refused = copy.deepcopy(admission)
+            refused.update(changed)
+            with self.assertRaises(ValidationError):
+                admission_validator.validate(refused)
 
 if __name__ == "__main__":
     unittest.main()

@@ -85,6 +85,7 @@ pub(crate) enum ReplayKind {
     TerminalRefused,
     NotStartedAccepted(AcceptedOutcomeV1),
     ResourcesReleased,
+    CapacityEvidence,
     RunClosed { final_receipts_digest: String },
 }
 
@@ -183,7 +184,9 @@ impl Scheduler {
                     ReplayKind::ResourcesReleased => {
                         claims.retain(|_, claim| claim.work_item_id != *work_item_id);
                     }
-                    ReplayKind::RunAdmitted | ReplayKind::RunClosed { .. } => {}
+                    ReplayKind::RunAdmitted
+                    | ReplayKind::CapacityEvidence
+                    | ReplayKind::RunClosed { .. } => {}
                 }
             }
             if let ReplayKind::RunClosed {
