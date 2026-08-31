@@ -10,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::live_model::*;
+use crate::{live_capacity::project_provider_capacity, live_model::*};
 
 #[derive(Debug, Error)]
 pub enum LiveCaseworkError {
@@ -240,6 +240,14 @@ fn project(
         .filter(|receipt| receipt.receipt_kind == "not_started")
         .count();
 
+    let provider_capacity =
+        project_provider_capacity(&snapshot, &packet, &admission, &profile, evaluated_at)?;
+    let capacity_binding_status = if provider_capacity.requirement.is_some() {
+        "EXACT_RECORDED_CAPACITY_REQUIREMENT"
+    } else {
+        "POLICY_REFERENCE_ONLY_NO_RECORDED_DECISION"
+    };
+
     let mut projection = CaseworkLiveRunV1 {
         schema: CASEWORK_LIVE_RUN_SCHEMA_V1.to_owned(),
         projection_digest: String::new(),
@@ -267,7 +275,7 @@ fn project(
             profile_digest: profile.profile_digest.clone(),
             exact_bytes_sha256: profile_sha.clone(),
             budget_policy_ref: profile.budget_policy_ref,
-            capacity_binding_status: "POLICY_REFERENCE_ONLY_NO_RECORDED_DECISION".to_owned(),
+            capacity_binding_status: capacity_binding_status.to_owned(),
         },
         foreman: LiveForemanV1 {
             source_schema: snapshot.projection.schema.clone(),
@@ -275,10 +283,7 @@ fn project(
             scheduler_state_counts: state_counts,
             terminal_receipt_count,
             not_started_receipt_count,
-            closed_final_receipts_digest: snapshot
-                .projection
-                .closed_final_receipts_digest
-                .clone(),
+            closed_final_receipts_digest: snapshot.projection.closed_final_receipts_digest.clone(),
         },
         work_items,
         resource_claims: snapshot
@@ -301,15 +306,7 @@ fn project(
             final_snapshot_sha256: final_snapshot_sha,
         },
         sealed_case_run_id: None,
-        provider_capacity: LiveProviderCapacityV1 {
-            status: "NOT_RECORDED_BY_FOREMAN".to_owned(),
-            observation_digest: None,
-            policy_digest: None,
-            decision_digest: None,
-            explanation:
-                "The execution profile retains only a policy reference; no exact capacity observation or decision is recorded in this foreman journal."
-                    .to_owned(),
-        },
+        provider_capacity,
         authority_effect: "READ_ONLY_OPERATOR_PROJECTION".to_owned(),
     };
     projection.projection_digest = projection_digest(&projection)?;
@@ -428,9 +425,18 @@ pub(crate) mod test_support {
 
     use chrono::{Duration, TimeZone as _};
     use nightshift_foreman::{
-        AdapterRegistrationV2, ExecutionProfileV2, ForemanAdmissionV1, ForemanStore,
-        NotStartedReceiptV1, WorkItemExecutionV1, FOREMAN_ADMISSION_SCHEMA_V1,
-        FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+        AdapterRegistrationV2, CapacityAdmissionEvidenceV1, CapacityCostClassV1,
+        ExecutionProfileV2, ForemanAdmissionV1, ForemanCapacityAdmissionV1,
+        ForemanCapacityRequirementV1, ForemanStore, NotStartedReceiptV1, WorkItemExecutionV1,
+        FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1,
+        FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+        WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+    };
+
+    use nightshift_provider_capacity::{
+        decide_capacity, CapacityObservationV1, CapacityPolicyV1, CapacityWindow, Confidence,
+        ObservationDisposition, ObservationEvidence, SourceClass, WindowType,
+        CAPACITY_OBSERVATION_SCHEMA_V1,
     };
 
     use super::*;
@@ -616,6 +622,274 @@ pub(crate) mod test_support {
         assert_ne!(first, second);
         assert_eq!(first, question_navigation_id("lane-a", "question:shared"));
         assert_eq!(first.len(), 64);
+    }
+
+    fn recorded_capacity_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
+        packet.validate_integrity().unwrap();
+        let mut admission = ForemanAdmissionV1 {
+            schema: FOREMAN_ADMISSION_SCHEMA_V1.to_owned(),
+            admission_digest: format!("sha256:{}", "0".repeat(64)),
+            run_id: "capacity-glass/live:fixture".to_owned(),
+            packet_digest: packet.packet_digest.clone(),
+            operator_basis_digest: format!("sha256:{}", "a".repeat(64)),
+            admitted_at: instant() - Duration::hours(1),
+            expires_at: instant() + Duration::hours(1),
+            local_runtime_identity: "capacity-glass-fixture".to_owned(),
+            maximum_concurrent_workers: 2,
+            allowed_adapter_ids: vec!["fixture-adapter".to_owned()],
+            allowed_provider_model_classes: vec!["large".to_owned()],
+            maximum_new_attempts_per_work_item: 1,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+            target_effects_authorized: false,
+        };
+        admission.seal().unwrap();
+        let policy = CapacityPolicyV1::default();
+        let work_items = packet
+            .work_items
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    WorkItemExecutionV1 {
+                        adapter_id: "fixture-adapter".to_owned(),
+                        workspace_identity: format!("workspace:{}", item.id),
+                        resource_lock_keys: vec![format!("resource:{}", item.id)],
+                        provider_model_class: item.model_routing.class.clone(),
+                    },
+                )
+            })
+            .collect();
+        let mut profile = ExecutionProfileV2 {
+            schema: FOREMAN_EXECUTION_PROFILE_SCHEMA_V2.to_owned(),
+            profile_digest: format!("sha256:{}", "0".repeat(64)),
+            packet_digest: packet.packet_digest.clone(),
+            admission_digest: admission.admission_digest.clone(),
+            adapters: BTreeMap::from([(
+                "fixture-adapter".to_owned(),
+                AdapterRegistrationV2 {
+                    adapter_id: "fixture-adapter".to_owned(),
+                    protocol: "fixture.adapter/v1".to_owned(),
+                    adapter_version: "fixture.adapter/v1".to_owned(),
+                    executable_identity: format!("sha256:{}", "b".repeat(64)),
+                    bounded_arguments: Vec::new(),
+                },
+            )]),
+            work_items,
+            budget_policy_ref: policy.policy_id.clone(),
+            log_custody_root: "/tmp/capacity-glass-fixture/log".to_owned(),
+            receipt_custody_root: "/tmp/capacity-glass-fixture/receipts".to_owned(),
+            maximum_event_bytes: 65_536,
+            maximum_receipt_bytes: 65_536,
+            adapter_timeout_seconds: 60,
+            closeout_policy: "ALL_EXPLICIT_TERMINAL_OR_NOT_STARTED".to_owned(),
+        };
+        profile.seal().unwrap();
+        let mut requirement = ForemanCapacityRequirementV1 {
+            schema: FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1.to_owned(),
+            capacity_requirement_digest: format!("sha256:{}", "0".repeat(64)),
+            packet_digest: packet.packet_digest.clone(),
+            admission_digest: admission.admission_digest.clone(),
+            profile_digest: profile.profile_digest.clone(),
+            run_id: admission.run_id.clone(),
+            policy_id: policy.policy_id.clone(),
+            provider_id: "provider:fixture".to_owned(),
+            model_cost_classes: BTreeMap::from([(
+                "large".to_owned(),
+                CapacityCostClassV1::Expensive,
+            )]),
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+        };
+        requirement.seal().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("foreman.sqlite");
+        let store = ForemanStore::open(&path).unwrap();
+        store
+            .admit_with_capacity_requirement(
+                PACKET,
+                &serde_jcs::to_vec(&admission).unwrap(),
+                &serde_jcs::to_vec(&profile).unwrap(),
+                &serde_jcs::to_vec(&requirement).unwrap(),
+                instant() - Duration::minutes(1),
+            )
+            .unwrap();
+        let at = instant();
+        let mut observation = CapacityObservationV1 {
+            schema: CAPACITY_OBSERVATION_SCHEMA_V1.to_owned(),
+            provider_id: "provider:fixture".to_owned(),
+            account_profile_locator: "fixture-profile".to_owned(),
+            model_family: Some("large".to_owned()),
+            observed_at: at - Duration::seconds(1),
+            expires_at: at + Duration::minutes(10),
+            source_class: SourceClass::Observed,
+            confidence: Confidence::High,
+            disposition: ObservationDisposition::Usable,
+            unknown_reasons: Vec::new(),
+            windows: vec![
+                CapacityWindow {
+                    window_id: "five-hour".to_owned(),
+                    window_type: WindowType::FiveHour,
+                    remaining_fraction: Some(0.75),
+                    remaining_units: None,
+                    resets_at: Some(at + Duration::hours(1)),
+                },
+                CapacityWindow {
+                    window_id: "weekly".to_owned(),
+                    window_type: WindowType::Weekly,
+                    remaining_fraction: Some(0.75),
+                    remaining_units: None,
+                    resets_at: Some(at + Duration::days(1)),
+                },
+            ],
+            evidence: ObservationEvidence {
+                probe_id: "capacity-glass-fixture".to_owned(),
+                protocol_method: "fixture/read".to_owned(),
+                protocol_version: Some("fixture/v1".to_owned()),
+                executable_path: Some("/fixture/provider-observer".to_owned()),
+                executable_digest: Some(format!("sha256:{}", "1".repeat(64))),
+                raw_source_digest: format!("sha256:{}", "2".repeat(64)),
+            },
+            observation_digest: String::new(),
+        };
+        observation.observation_digest = observation.compute_digest().unwrap();
+        let decision = decide_capacity(&observation, &policy, at).unwrap();
+        let mut capacity_admission = ForemanCapacityAdmissionV1 {
+            schema: FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1.to_owned(),
+            capacity_admission_digest: format!("sha256:{}", "0".repeat(64)),
+            packet_digest: packet.packet_digest.clone(),
+            admission_digest: admission.admission_digest.clone(),
+            profile_digest: profile.profile_digest.clone(),
+            capacity_requirement_digest: requirement.capacity_requirement_digest.clone(),
+            run_id: admission.run_id.clone(),
+            work_item_id: "foreman-core".to_owned(),
+            adapter_id: "fixture-adapter".to_owned(),
+            provider_id: observation.provider_id.clone(),
+            packet_model_class: "large".to_owned(),
+            profile_model_class: "large".to_owned(),
+            cost_class: CapacityCostClassV1::Expensive,
+            policy_id: policy.policy_id.clone(),
+            observation_digest: observation.observation_digest.clone(),
+            policy_digest: policy.policy_digest.clone(),
+            decision_digest: decision.decision_digest.clone(),
+            evaluated_at: at,
+            speculative_requested: false,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+        };
+        capacity_admission.seal().unwrap();
+        let admission_bytes = serde_jcs::to_vec(&capacity_admission).unwrap();
+        let observation_bytes = serde_jcs::to_vec(&observation).unwrap();
+        let policy_bytes = serde_jcs::to_vec(&policy).unwrap();
+        let decision_bytes = serde_jcs::to_vec(&decision).unwrap();
+        store
+            .prepare_attempt_with_capacity(
+                &admission.run_id,
+                "foreman-core",
+                CapacityAdmissionEvidenceV1 {
+                    admission_bytes: &admission_bytes,
+                    observation_bytes: &observation_bytes,
+                    policy_bytes: &policy_bytes,
+                    decision_bytes: &decision_bytes,
+                },
+                at,
+            )
+            .unwrap();
+        (directory, path, admission.run_id)
+    }
+
+    fn retained_event_digest(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+        hasher.update(bytes);
+        format!("sha256:{:x}", hasher.finalize())
+    }
+
+    #[test]
+    fn recorded_capacity_is_exact_ordered_restartable_and_substitution_closed() {
+        let (_directory, path, run_id) = recorded_capacity_fixture();
+        let before = database_census(&path);
+        let first = load_live_run_at(&path, &run_id, instant()).unwrap();
+        let restarted = load_live_run_at(&path, &run_id, instant()).unwrap();
+        let after = database_census(&path);
+        assert_eq!(before, after);
+        assert_eq!(first.projection, restarted.projection);
+        assert_eq!(
+            first.projection.provider_capacity.status,
+            "EXACT_RECORDED_BY_FOREMAN"
+        );
+        assert_eq!(
+            first.projection.execution_profile.capacity_binding_status,
+            "EXACT_RECORDED_CAPACITY_REQUIREMENT"
+        );
+        let requirement = first
+            .projection
+            .provider_capacity
+            .requirement
+            .as_ref()
+            .unwrap();
+        assert_eq!(requirement.provider_id, "provider:fixture");
+        assert_eq!(requirement.model_cost_classes["large"], "EXPENSIVE");
+        let attempts = &first.projection.provider_capacity.attempts;
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].work_item_id, "foreman-core");
+        assert_eq!(attempts[0].capacity_state, "ABUNDANT");
+        assert_eq!(attempts[0].admission_disposition, "ORDINARY_BOUNDED");
+        assert_eq!(attempts[0].source_class, "OBSERVED");
+        assert_eq!(attempts[0].confidence, "HIGH");
+        assert_eq!(attempts[0].currentness, "CURRENT");
+
+        let snapshot = read_only_run_snapshot(&path, &run_id).unwrap();
+        let historical = project(snapshot.clone(), instant() + Duration::minutes(11)).unwrap();
+        assert_eq!(
+            historical.projection.provider_capacity.attempts[0].currentness,
+            "EXPIRED"
+        );
+        let mut split_requirement = snapshot.clone();
+        let requirement_event = split_requirement
+            .events
+            .iter_mut()
+            .find(|event| event.kind == "capacity_requirement")
+            .unwrap();
+        let mut event_value: Value = serde_json::from_slice(&requirement_event.raw_bytes).unwrap();
+        let mut nested_requirement: ForemanCapacityRequirementV1 =
+            serde_json::from_value(event_value["payload"]["requirement"].clone()).unwrap();
+        nested_requirement.provider_id = "provider:split-journal".to_owned();
+        nested_requirement.seal().unwrap();
+        let nested_requirement_bytes = serde_jcs::to_vec(&nested_requirement).unwrap();
+        event_value["payload"]["requirement"] = serde_json::to_value(&nested_requirement).unwrap();
+        event_value["payload"]["requirement_bytes"] =
+            serde_json::to_value(&nested_requirement_bytes).unwrap();
+        requirement_event.raw_bytes = serde_jcs::to_vec(&event_value).unwrap();
+        requirement_event.raw_digest = retained_event_digest(&requirement_event.raw_bytes);
+        assert!(project(split_requirement, instant()).is_err());
+
+        let mut split_admission = snapshot.clone();
+        let admission_event = split_admission
+            .events
+            .iter_mut()
+            .find(|event| event.kind == "capacity_admission")
+            .unwrap();
+        let mut event_value: Value = serde_json::from_slice(&admission_event.raw_bytes).unwrap();
+        let mut nested_admission: ForemanCapacityAdmissionV1 =
+            serde_json::from_value(event_value["payload"]["capacity_admission"].clone()).unwrap();
+        nested_admission.provider_id = "provider:split-journal".to_owned();
+        nested_admission.seal().unwrap();
+        let nested_admission_bytes = serde_jcs::to_vec(&nested_admission).unwrap();
+        event_value["payload"]["capacity_admission"] =
+            serde_json::to_value(&nested_admission).unwrap();
+        event_value["payload"]["admission_bytes"] =
+            serde_json::to_value(&nested_admission_bytes).unwrap();
+        admission_event.raw_bytes = serde_jcs::to_vec(&event_value).unwrap();
+        admission_event.raw_digest = retained_event_digest(&admission_event.raw_bytes);
+        assert!(project(split_admission, instant()).is_err());
+
+        let mut substituted = snapshot.clone();
+        substituted.capacity_admissions[0]
+            .capacity_admission
+            .provider_id = "provider:substituted".to_owned();
+        assert!(project(substituted, instant()).is_err());
+        let mut mutated = snapshot;
+        mutated.capacity_admissions[0].observation_bytes.push(b' ');
+        assert!(project(mutated, instant()).is_err());
     }
 
     #[test]

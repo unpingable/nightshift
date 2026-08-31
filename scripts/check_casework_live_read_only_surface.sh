@@ -17,6 +17,7 @@ fail() {
 }
 
 sources=(
+    crates/nightshift-casework/src/live_capacity.rs
     crates/nightshift-casework/src/live_loader.rs
     crates/nightshift-casework/src/live_model.rs
     crates/nightshift-casework/src/server.rs
@@ -33,6 +34,9 @@ required_markers=(
     'read_only_run_snapshot'
     'NIGHTSHIFT-FOREMAN-JOURNAL-FRAMING-V1'
     'NOT_RECORDED_BY_FOREMAN'
+    'EXACT_RECORDED_BY_FOREMAN'
+    'capacity_admission_digest'
+    'READ_ONLY_OPERATOR_PROJECTION'
     'NO_ACCEPTED_TERMINAL_OR_NOT_STARTED_RECEIPT'
     '/api/v1/active-runs'
 )
@@ -55,7 +59,7 @@ if rg -n 'fs::(write|rename|remove_|create_dir)|File::create|OpenOptions|Command
     fail "live projection contains a filesystem, subprocess, or outbound transition:"
     cat "$hits" >&2
 fi
-if rg -n -i 'aggregate[_ -]?(result|verdict|health)|overall[_ -]?health' crates/nightshift-casework/src/live_loader.rs crates/nightshift-casework/src/live_model.rs ui/casework/src/LiveViews.tsx schemas/nightshift.casework-live-run.v1.schema.json >"$hits"; then
+if rg -n -i 'aggregate[_ -]?(result|verdict|health)|overall[_ -]?health' crates/nightshift-casework/src/live_capacity.rs crates/nightshift-casework/src/live_loader.rs crates/nightshift-casework/src/live_model.rs ui/casework/src/LiveViews.tsx schemas/nightshift.casework-live-run.v1.schema.json >"$hits"; then
     fail "live projection contains an aggregate result or health field:"
     cat "$hits" >&2
 fi
@@ -76,7 +80,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
     trap 'rm -rf "$temporary"; rm -f "$hits" "$snapshot" "$self_hits"' EXIT
     mkdir -p "$temporary/crates/nightshift-casework/src" "$temporary/crates/nightshift-foreman/src" "$temporary/ui/casework/src" "$temporary/schemas" "$temporary/scripts"
     cp scripts/check_casework_live_read_only_surface.sh "$temporary/scripts/"
-    cp crates/nightshift-casework/src/live_loader.rs crates/nightshift-casework/src/live_model.rs crates/nightshift-casework/src/server.rs "$temporary/crates/nightshift-casework/src/"
+    cp crates/nightshift-casework/src/live_capacity.rs crates/nightshift-casework/src/live_loader.rs crates/nightshift-casework/src/live_model.rs crates/nightshift-casework/src/server.rs "$temporary/crates/nightshift-casework/src/"
     cp crates/nightshift-foreman/src/store.rs "$temporary/crates/nightshift-foreman/src/"
     cp ui/casework/src/LiveViews.tsx ui/casework/src/api.ts "$temporary/ui/casework/src/"
     cp schemas/nightshift.casework-live-run.v1.schema.json "$temporary/schemas/"

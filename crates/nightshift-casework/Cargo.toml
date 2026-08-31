@@ -22,6 +22,7 @@ chrono.workspace = true
 clap.workspace = true
 nightshiftd = { path = "../nightshiftd" }
 nightshift-foreman = { path = "../nightshift-foreman" }
+nightshift-provider-capacity = { path = "../nightshift-provider-capacity" }
 serde.workspace = true
 rustix = { version = "1", features = ["fs"] }
 serde_jcs.workspace = true

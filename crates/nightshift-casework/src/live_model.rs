@@ -166,10 +166,52 @@ pub struct LiveRawSourcesV1 {
 #[serde(deny_unknown_fields)]
 pub struct LiveProviderCapacityV1 {
     pub status: String,
-    pub observation_digest: Option<String>,
-    pub policy_digest: Option<String>,
-    pub decision_digest: Option<String>,
+    pub requirement: Option<LiveProviderCapacityRequirementV1>,
+    pub attempts: Vec<LiveProviderCapacityAttemptV1>,
     pub explanation: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderCapacityRequirementV1 {
+    pub capacity_requirement_digest: String,
+    pub exact_bytes_sha256: String,
+    pub recorded_at: String,
+    pub policy_id: String,
+    pub provider_id: String,
+    pub model_cost_classes: BTreeMap<String, String>,
+    pub authority_effect: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderCapacityAttemptV1 {
+    pub journal_sequence: u64,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub recorded_at: String,
+    pub provider_id: String,
+    pub packet_model_class: String,
+    pub profile_model_class: String,
+    pub cost_class: String,
+    pub capacity_state: String,
+    pub admission_disposition: String,
+    pub source_class: String,
+    pub confidence: String,
+    pub observation_disposition: String,
+    pub observed_at: String,
+    pub expires_at: String,
+    pub decision_at: String,
+    pub evaluated_at: String,
+    pub currentness: String,
+    pub capacity_admission_digest: String,
+    pub observation_digest: String,
+    pub policy_digest: String,
+    pub decision_digest: String,
+    pub admission_exact_bytes_sha256: String,
+    pub observation_exact_bytes_sha256: String,
+    pub policy_exact_bytes_sha256: String,
+    pub decision_exact_bytes_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

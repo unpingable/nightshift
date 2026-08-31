@@ -10,9 +10,10 @@ pub mod store;
 pub use contract::*;
 pub use scheduler::{LiveRunProjectionV1, LiveWorkItemV1, Scheduler};
 pub use store::{
-    read_only_run_snapshot, CapacityAdmissionEvidenceV1, ForemanError, ForemanStore,
-    ReadOnlyCapacityAdmissionV1, ReadOnlyCapacityRequirementV1, ReadOnlyEventRowV1,
-    ReadOnlyRunSnapshotV1, ReadOnlyTerminalReceiptRowV1,
+    read_only_run_snapshot, reopen_capacity_journal_event, CapacityAdmissionEvidenceV1,
+    ForemanError, ForemanStore, ReadOnlyCapacityAdmissionV1, ReadOnlyCapacityJournalEventV1,
+    ReadOnlyCapacityRequirementV1, ReadOnlyEventRowV1, ReadOnlyRunSnapshotV1,
+    ReadOnlyTerminalReceiptRowV1,
 };
 
 pub const FOREMAN_ADMISSION_SCHEMA_V1: &str = "nightshift.foreman-admission/v1";

@@ -112,9 +112,8 @@ class LiveCaseworkSchemaTests(unittest.TestCase):
             "sealed_case_run_id": None,
             "provider_capacity": {
                 "status": "NOT_RECORDED_BY_FOREMAN",
-                "observation_digest": None,
-                "policy_digest": None,
-                "decision_digest": None,
+                "requirement": None,
+                "attempts": [],
                 "explanation": "No exact capacity decision is present.",
             },
             "authority_effect": "READ_ONLY_OPERATOR_PROJECTION",
@@ -135,12 +134,64 @@ class LiveCaseworkSchemaTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 self.validator.validate(invalid)
 
-    def test_capacity_is_explicitly_unbound(self):
+    def test_capacity_absence_cannot_claim_recorded_evidence(self):
         invalid = copy.deepcopy(self.document)
-        invalid["provider_capacity"]["status"] = "ABUNDANT"
-        invalid["provider_capacity"]["decision_digest"] = DIGEST
+        invalid["provider_capacity"]["status"] = "EXACT_RECORDED_BY_FOREMAN"
         with self.assertRaises(ValidationError):
             self.validator.validate(invalid)
+
+    def test_exact_recorded_capacity_mechanism_validates_and_is_closed(self):
+        recorded = copy.deepcopy(self.document)
+        recorded["execution_profile"]["capacity_binding_status"] = "EXACT_RECORDED_CAPACITY_REQUIREMENT"
+        recorded["provider_capacity"] = {
+            "status": "EXACT_RECORDED_BY_FOREMAN",
+            "requirement": {
+                "capacity_requirement_digest": DIGEST,
+                "exact_bytes_sha256": DIGEST,
+                "recorded_at": "2026-08-31T00:00:00Z",
+                "policy_id": "policy:fixture",
+                "provider_id": "provider:fixture",
+                "model_cost_classes": {"bounded": "CHEAP"},
+                "authority_effect": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+            },
+            "attempts": [{
+                "journal_sequence": 3,
+                "work_item_id": "lane",
+                "attempt_id": "attempt:one",
+                "recorded_at": "2026-08-31T00:00:00Z",
+                "provider_id": "provider:fixture",
+                "packet_model_class": "bounded",
+                "profile_model_class": "bounded",
+                "cost_class": "CHEAP",
+                "capacity_state": "NORMAL",
+                "admission_disposition": "ORDINARY_BOUNDED",
+                "source_class": "OBSERVED",
+                "confidence": "HIGH",
+                "observation_disposition": "USABLE",
+                "observed_at": "2026-08-30T23:59:59Z",
+                "expires_at": "2026-08-31T00:10:00Z",
+                "decision_at": "2026-08-31T00:00:00Z",
+                "evaluated_at": "2026-08-31T00:00:00Z",
+                "currentness": "CURRENT",
+                "capacity_admission_digest": DIGEST,
+                "observation_digest": DIGEST,
+                "policy_digest": DIGEST,
+                "decision_digest": DIGEST,
+                "admission_exact_bytes_sha256": DIGEST,
+                "observation_exact_bytes_sha256": DIGEST,
+                "policy_exact_bytes_sha256": DIGEST,
+                "decision_exact_bytes_sha256": DIGEST,
+            }],
+            "explanation": "Exact journal-recorded provider-capacity mechanism evidence.",
+        }
+        self.validator.validate(recorded)
+        contradictory = copy.deepcopy(recorded)
+        contradictory["execution_profile"]["capacity_binding_status"] = "POLICY_REFERENCE_ONLY_NO_RECORDED_DECISION"
+        with self.assertRaises(ValidationError):
+            self.validator.validate(contradictory)
+        recorded["provider_capacity"]["attempts"][0]["approve"] = True
+        with self.assertRaises(ValidationError):
+            self.validator.validate(recorded)
 
     def test_terminal_and_not_started_kinds_remain_distinct(self):
         terminal = copy.deepcopy(self.document)

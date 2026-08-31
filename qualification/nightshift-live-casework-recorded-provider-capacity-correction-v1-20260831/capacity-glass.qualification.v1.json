@@ -1,0 +1,56 @@
+{
+  "schema": "nightshift.live-casework-recorded-provider-capacity-qualification/v1",
+  "campaign": {
+    "codename": "CAPACITY-GLASS",
+    "canonical_slug": "nightshift-live-casework-recorded-provider-capacity-correction-v1",
+    "track": "nightshift-operator-surface"
+  },
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "integration_parent": "370e5bcca19d99b57371bab3c0a73b99214a380c",
+  "qualified_subject": "46582fb6147c5fbc8a0305a65d99c1c4d5d311cf",
+  "classification": "CAPACITY-GLASS-LIVE-CASEWORK-RECORDED-PROVIDER-CAPACITY-V1-QUALIFIED",
+  "classifications_aggregated": false,
+  "projection_law": {
+    "legacy_absence_preserved": true,
+    "recorded_capacity_requires_exact_journal_evidence": true,
+    "internal_event_nested_typed_raw_equality": true,
+    "fuel_decision_reproduced": true,
+    "journal_order_preserved": true,
+    "sealed_casework_v1_changed": false,
+    "authority_effect": "READ_ONLY_OPERATOR_PROJECTION"
+  },
+  "qualification": {
+    "locked_workspace_passed": 374,
+    "locked_workspace_failed": 0,
+    "locked_workspace_ignored_environment_dependent": 14,
+    "casework_library_passed": 11,
+    "casework_library_failed": 0,
+    "schema_passed": 25,
+    "schema_failed": 0,
+    "frontend_passed": 26,
+    "frontend_failed": 0,
+    "frontend_production_build": "PASSED",
+    "workspace_clippy_all_targets_all_features_warnings_denied": "PASSED",
+    "format": "PASSED",
+    "canonical_no_actuation_gate_and_negative_control": "PASSED",
+    "sealed_casework_gate_and_negative_control": "PASSED",
+    "live_casework_gate_and_negative_control": "PASSED",
+    "casework_ui_gate_and_negative_control": "PASSED",
+    "independent_audit": "ACCEPTED"
+  },
+  "independent_predecessor_dimension": {
+    "tunnel_real_provider_lifecycle": "NOT-RUN-AUTHORITY-REQUIRED"
+  },
+  "human_questions": [],
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "provider_probe_started": false,
+  "provider_session_created": false,
+  "approval_response_sent": false,
+  "protected_effect_occurred": false,
+  "listener_remaining": false,
+  "service_installed": false,
+  "secret_read_or_added": false,
+  "teardown_obligation_remaining": false,
+  "successor_base_policy": "EXACT_RESULT_ANCESTRY"
+}
