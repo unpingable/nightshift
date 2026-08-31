@@ -55,11 +55,13 @@ The non-rewriting correction additionally ran:
     bash scripts/check_no_actuation_surface.sh
     bash scripts/check_no_actuation_surface.sh --self-test-inject
 
-Corrected focused Nightshift owner qualification: 12 passed, 0 failed. Executable Draft 2020-12 schema qualification: 4 passed, 0 failed. Both operational-lineage gate modes, both canonical no-actuation gate modes, warnings-denied focused Clippy, formatting, schema parsing, exact two-binary census, and diff hygiene passed.
+Corrected focused Nightshift owner qualification: 13 passed, 0 failed. Executable Draft 2020-12 schema qualification: 4 passed, 0 failed. The full locked workspace all-targets suite passed, including 198 nightshiftd library cases with 2 documented environment-dependent ignores. Both operational-lineage gate modes, both canonical no-actuation gate modes, warnings-denied workspace all-targets all-features Clippy, formatting, schema parsing, exact two-binary census, and diff hygiene passed.
 
 ## Rejected checkpoint correction
 
 Checkpoint 17d0743909eff79d2b95cfdd40477712e23a8a37 remains immutable but is not an accepted predecessor. Its successor verifies the Ed25519 transcript over the exact supplied raw Monitor body slice, preserves fractional RFC3339 precision, mirrors FIELD Monitor 512-byte and 32-item limits plus the closed locator enum, recomputes embedded identities, cross-binds NQ finding references and values, and executes exact family-specific JSON Schema parity tests. Independently fixed accepted FIELD Monitor and NQ bytes plus four refused Monitor vectors are retained under crates/nightshiftd/tests/fixtures/operational_lineage.
+
+Checkpoint bf64f4d6ef4d9291f0c4ca6d471698364bbc45da also remains immutable and is not an accepted predecessor. Its successor makes the runtime and executable schemas share an explicit printable-ASCII metadata subset without widening FIELD, and mirrors the exact NQ qualify_one closure across every input: unopened refusal, reopened refusal, produced support/cannot-testify, acquisition-failure cannot-testify, and exact contradiction derivation remain mutually constrained.
 
 ## Custody and scope
 

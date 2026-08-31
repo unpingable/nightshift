@@ -57,13 +57,13 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 1024,
-      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+      "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
     },
     "nq_input_id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 1024,
-      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+      "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
     },
     "subject": {
       "oneOf": [
@@ -84,7 +84,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.host-machine/v1"
@@ -125,7 +125,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.service-instance-registry/v1"
@@ -171,7 +171,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.deployment-release-content/v1"
@@ -217,7 +217,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.repository-revision-content/v1"
@@ -263,7 +263,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.scheduler-job-occurrence/v1"
@@ -309,7 +309,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.ecad-design-revision-content/v1"
@@ -355,7 +355,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.toolchain-content/v1"
@@ -396,7 +396,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.pdk-content/v1"
@@ -437,7 +437,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.license-entitlement-registry/v1"
@@ -478,7 +478,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.worker-registry/v1"
@@ -519,7 +519,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.artifact-set-content/v1"
@@ -560,7 +560,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+              "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
             },
             "basis_contract": {
               "const": "monitor.subject-basis.stage-occurrence/v1"
@@ -654,7 +654,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 512,
-      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+      "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
     },
     "sequence": {
       "type": "integer",
@@ -677,7 +677,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 512,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -762,13 +762,13 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 512,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "collector_id": {
           "type": "string",
           "minLength": 1,
           "maxLength": 512,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "key_algorithm": {
           "const": "ed25519"
@@ -785,7 +785,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 512,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         }
       }
     },
@@ -803,13 +803,13 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "proposition": {
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0020-\\u007E]+$(?![\\s\\S])"
         },
         "value_digest": {
           "type": "string",
@@ -833,13 +833,13 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "reason": {
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0020-\\u007E]+$(?![\\s\\S])"
         }
       }
     },
@@ -856,7 +856,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "exact_basis_digest": {
           "type": "string",
@@ -866,7 +866,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0020-\\u007E]+$(?![\\s\\S])"
         }
       }
     },
@@ -890,13 +890,13 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "first_input_id": {
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "first_value_digest": {
           "type": "string",
@@ -906,7 +906,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 1024,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+          "pattern": "^[\\u0021-\\u007E]+$(?![\\s\\S])"
         },
         "second_value_digest": {
           "type": "string",

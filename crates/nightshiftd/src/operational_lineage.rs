@@ -6,7 +6,7 @@
 //! target. Immutable lineage and changing re-observation evaluation remain
 //! separate contracts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -987,7 +987,7 @@ fn validate_nq(value: &NqArtifactV1) -> Result<(), String> {
         if !ids.insert(input.input_id.as_str()) {
             return Err("duplicate NQ input".into());
         }
-        validate_nq_findings(input)?;
+        validate_nq_findings(input, value.evaluated_at)?;
     }
     let mut contradiction_ids = BTreeSet::new();
     for item in &value.contradictions {
@@ -1025,6 +1025,9 @@ fn validate_nq(value: &NqArtifactV1) -> Result<(), String> {
             return Err("NQ contradiction does not bind exact input claim values".into());
         }
     }
+    if value.contradictions != expected_nq_contradictions(&value.inputs) {
+        return Err("NQ contradiction graph differs from qualify_one closure".into());
+    }
     if value.nonclaims
         != NQ_NONCLAIMS
             .into_iter()
@@ -1036,12 +1039,66 @@ fn validate_nq(value: &NqArtifactV1) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_nq_findings(input: &NqInputV1) -> Result<(), String> {
+fn validate_nq_findings(input: &NqInputV1, evaluated_at: DateTime<Utc>) -> Result<(), String> {
     if input.claim_support.len() > MAX_COLLECTION
         || input.cannot_testify.len() > MAX_COLLECTION
-        || input.refusals.len() > MAX_COLLECTION
+        || input.refusals.len() > 1
     {
-        return Err("NQ input finding collection exceeds its bound".into());
+        return Err("NQ input finding collection or refusal count is invalid".into());
+    }
+    if let Some(value) = &input.monitor_record_digest {
+        digest("monitor_record_digest", value)?;
+    }
+    if let Some(value) = &input.subject_identity_digest {
+        digest("subject_identity_digest", value)?;
+    }
+    if let Some(value) = &input.producer_identity_digest {
+        digest("producer_identity_digest", value)?;
+    }
+    if let Some(value) = &input.producer_principal_id {
+        token("producer_principal_id", value)?;
+    }
+    if let Some(value) = &input.producer_class {
+        token("producer_class", value)?;
+    }
+    if let Some(value) = &input.payload_schema {
+        token("payload_schema", value)?;
+    }
+    let reopened = [
+        input.monitor_record_digest.is_some(),
+        input.subject_identity_digest.is_some(),
+        input.producer_identity_digest.is_some(),
+        input.producer_principal_id.is_some(),
+        input.producer_class.is_some(),
+        input.acquisition_outcome.is_some(),
+    ];
+    if reopened.iter().any(|present| *present) && !reopened.iter().all(|present| *present) {
+        return Err("NQ reopened Monitor identity tuple is partial".into());
+    }
+    let outcome = input.acquisition_outcome.as_deref();
+    if let Some(value) = outcome {
+        if ![
+            "observation_produced",
+            "no_response",
+            "command_failed",
+            "producer_unavailable",
+            "receiver_unavailable",
+            "malformed_input",
+            "refused",
+        ]
+        .contains(&value)
+        {
+            return Err("NQ acquisition outcome is outside FIELD".into());
+        }
+        if value == "observation_produced" {
+            if input.producer_observed_at.is_none() || input.payload_schema.is_none() {
+                return Err("NQ produced input lacks producer time or payload schema".into());
+            }
+        } else if input.producer_observed_at.is_some() || input.payload_schema.is_some() {
+            return Err("NQ failed input carries produced testimony metadata".into());
+        }
+    } else if input.producer_observed_at.is_some() || input.payload_schema.is_some() {
+        return Err("NQ unopened input carries Monitor testimony metadata".into());
     }
     let mut support_ids = BTreeSet::new();
     for claim in &input.claim_support {
@@ -1068,22 +1125,47 @@ fn validate_nq_findings(input: &NqInputV1) -> Result<(), String> {
             return Err("NQ cannot-testify overlaps or duplicates claim support".into());
         }
     }
-    let mut refusal_codes = BTreeSet::new();
     for refusal in &input.refusals {
         token("refusal.code", &refusal.code)?;
         text("refusal.detail", &refusal.detail)?;
         digest("refusal.exact_basis_digest", &refusal.exact_basis_digest)?;
-        if refusal.exact_basis_digest != input.raw_record_digest
-            || !refusal_codes.insert(refusal.code.as_str())
-        {
-            return Err("NQ refusal does not bind exact input bytes or is duplicated".into());
+        if refusal.exact_basis_digest != input.raw_record_digest {
+            return Err("NQ refusal does not bind exact input bytes".into());
         }
     }
-    if (!input.refusals.is_empty()
-        || input.acquisition_outcome.as_deref() != Some("observation_produced"))
-        && !input.claim_support.is_empty()
-    {
-        return Err("NQ failure or refusal was promoted into claim support".into());
+    let is_reopened = reopened.iter().all(|present| *present);
+    let evaluation_inverted = evaluated_at < input.receiver_custody_at;
+    let evaluation_refusal = input
+        .refusals
+        .first()
+        .is_some_and(|refusal| refusal.code == "evaluation_time_inversion");
+    if is_reopened && evaluation_inverted != evaluation_refusal {
+        return Err(
+            "NQ evaluation/receiver time ordering does not match qualify_one refusal".into(),
+        );
+    }
+    match (is_reopened, input.refusals.is_empty()) {
+        (false, false) => {
+            if !input.claim_support.is_empty() || !input.cannot_testify.is_empty() {
+                return Err("NQ unopened refusal carries qualification findings".into());
+            }
+        }
+        (false, true) => return Err("NQ unopened input lacks its exact refusal".into()),
+        (true, false) => {
+            if !input.claim_support.is_empty() || !input.cannot_testify.is_empty() {
+                return Err("NQ refusal is mixed with support or cannot-testify".into());
+            }
+        }
+        (true, true) => {
+            if input.claim_support.is_empty() && input.cannot_testify.is_empty() {
+                return Err("NQ non-refused input has no qualification finding".into());
+            }
+            if outcome != Some("observation_produced")
+                && (!input.claim_support.is_empty() || input.cannot_testify.is_empty())
+            {
+                return Err("NQ failed acquisition has an impossible finding shape".into());
+            }
+        }
     }
     Ok(())
 }
@@ -1093,6 +1175,34 @@ fn claim_value_is(input: &NqInputV1, claim_id: &str, value_digest: &str) -> bool
         .claim_support
         .iter()
         .any(|claim| claim.claim_id == claim_id && claim.value_digest == value_digest)
+}
+
+fn expected_nq_contradictions(inputs: &[NqInputV1]) -> Vec<ContradictionV1> {
+    let mut seen: BTreeMap<(&str, &str), (&str, &str)> = BTreeMap::new();
+    let mut output = Vec::new();
+    for input in inputs {
+        let Some(subject) = input.subject_identity_digest.as_deref() else {
+            continue;
+        };
+        for claim in &input.claim_support {
+            let key = (subject, claim.claim_id.as_str());
+            if let Some((prior_input, prior_value)) = seen.get(&key) {
+                if *prior_value != claim.value_digest {
+                    output.push(ContradictionV1 {
+                        subject_identity_digest: subject.to_owned(),
+                        claim_id: claim.claim_id.clone(),
+                        first_input_id: (*prior_input).to_owned(),
+                        first_value_digest: (*prior_value).to_owned(),
+                        second_input_id: input.input_id.clone(),
+                        second_value_digest: claim.value_digest.clone(),
+                    });
+                }
+            } else {
+                seen.insert(key, (&input.input_id, &claim.value_digest));
+            }
+        }
+    }
+    output
 }
 
 fn bind_input(
@@ -1293,8 +1403,14 @@ fn time(name: &str, value: &str) -> Result<DateTime<Utc>, String> {
 }
 
 fn text(name: &str, value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
-        Err(format!("{name} is empty, oversized, or contains controls"))
+    if value.is_empty()
+        || value.len() > 1024
+        || !value.is_ascii()
+        || value.chars().any(char::is_control)
+    {
+        Err(format!(
+            "{name} is empty, oversized, non-ASCII, or contains controls"
+        ))
     } else {
         Ok(())
     }
@@ -1339,10 +1455,11 @@ fn ordered(name: &str, values: &[String], allow_empty: bool) -> Result<(), Strin
 fn monitor_text(name: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MONITOR_MAX_TEXT_BYTES
+        || !value.is_ascii()
         || value.chars().any(char::is_control)
     {
         Err(format!(
-            "{name} is empty, exceeds 512 bytes, or contains controls"
+            "{name} is empty, exceeds 512 bytes, is non-ASCII, or contains controls"
         ))
     } else {
         Ok(())
@@ -1837,6 +1954,11 @@ mod tests {
         assert!(validate_monitor_fixture(&wrong_family)
             .unwrap_err()
             .contains("stable-basis family"));
+        let mut unicode: SignedMonitorV1 = serde_json::from_slice(&raw).unwrap();
+        unicode.body.subject.namespace = "é".repeat(512);
+        assert!(validate_monitor_fixture(&unicode)
+            .unwrap_err()
+            .contains("non-ASCII"));
         let mut signed: SignedMonitorV1 = serde_json::from_slice(&raw).unwrap();
         signed.body.acquisition.started_at = "2026-08-30T02:00:00Z".into();
         assert!(validate_monitor_fixture(&signed)
@@ -2034,7 +2156,11 @@ mod tests {
     }
     #[test]
     fn runtime_profile_bounds_embedded_identities_and_nq_findings_are_cross_bound() {
-        for profile_id in ["p".repeat(1025), "profile:\u{1}fixture".into()] {
+        for profile_id in [
+            "p".repeat(1025),
+            "profile:\u{1}fixture".into(),
+            "é".repeat(512),
+        ] {
             assert!(ReobservationProfileV1 {
                 profile_id,
                 max_age_seconds: 60,
@@ -2102,6 +2228,117 @@ mod tests {
                 .contains("exact input claim values")
         );
     }
+
+    #[test]
+    fn nq_qualify_one_closure_and_all_inputs_are_validated() {
+        let raw = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
+        let qualified_bytes = nq(&raw, false);
+        let qualified: NqArtifactV1 = serde_json::from_slice(&qualified_bytes).unwrap();
+
+        let mut mixed = qualified.clone();
+        mixed.inputs[0].claim_support.clear();
+        mixed.inputs[0].cannot_testify.push(CannotTestifyV1 {
+            claim_id: "claim:stage".into(),
+            reason: "cannot testify".into(),
+        });
+        let mixed_raw_digest = mixed.inputs[0].raw_record_digest.clone();
+        mixed.inputs[0].refusals.push(RefusalV1 {
+            code: "fixture_refusal".into(),
+            exact_basis_digest: mixed_raw_digest,
+            detail: "fixture refusal".into(),
+        });
+        assert!(validate_nq(&mixed)
+            .unwrap_err()
+            .contains("mixed with support or cannot-testify"));
+
+        let mut empty = qualified.clone();
+        empty.inputs[0].claim_support.clear();
+        assert!(validate_nq(&empty)
+            .unwrap_err()
+            .contains("no qualification finding"));
+
+        let mut unopened = qualified.clone();
+        {
+            let input = &mut unopened.inputs[0];
+            input.monitor_record_digest = None;
+            input.subject_identity_digest = None;
+            input.producer_identity_digest = None;
+            input.producer_principal_id = None;
+            input.producer_class = None;
+            input.acquisition_outcome = None;
+            input.producer_observed_at = None;
+            input.payload_schema = None;
+            input.claim_support.clear();
+            input.cannot_testify.clear();
+            input.refusals = vec![RefusalV1 {
+                code: "record_malformed".into(),
+                exact_basis_digest: input.raw_record_digest.clone(),
+                detail: "exact Monitor bytes could not be reopened".into(),
+            }];
+        }
+        validate_nq(&unopened).unwrap();
+        let mut partial = unopened.clone();
+        partial.inputs[0].producer_class = Some("instrumented_monitor".into());
+        assert!(validate_nq(&partial)
+            .unwrap_err()
+            .contains("identity tuple is partial"));
+
+        let mut unselected_bad_identity = qualified.clone();
+        let mut other = unselected_bad_identity.inputs[0].clone();
+        other.input_id = "input:unselected".into();
+        other.producer_identity_digest = Some("not-a-digest".into());
+        unselected_bad_identity.inputs.push(other);
+        assert!(validate_nq(&unselected_bad_identity)
+            .unwrap_err()
+            .contains("SHA-256"));
+
+        let mut unselected_bad_outcome = qualified.clone();
+        let mut other = unselected_bad_outcome.inputs[0].clone();
+        other.input_id = "input:unselected".into();
+        other.acquisition_outcome = Some("response".into());
+        unselected_bad_outcome.inputs.push(other);
+        assert!(validate_nq(&unselected_bad_outcome)
+            .unwrap_err()
+            .contains("outside FIELD"));
+
+        let mut unselected_bad_time = qualified.clone();
+        let mut other = unselected_bad_time.inputs[0].clone();
+        other.input_id = "input:unselected".into();
+        other.receiver_custody_at = "2026-08-30T01:00:12Z".parse().unwrap();
+        unselected_bad_time.inputs.push(other);
+        assert!(validate_nq(&unselected_bad_time)
+            .unwrap_err()
+            .contains("time ordering"));
+
+        let failure_raw = monitor(AcquisitionOutcomeV1::NoResponse, 0, None);
+        let mut failure: NqArtifactV1 = serde_json::from_slice(&nq(&failure_raw, false)).unwrap();
+        validate_nq(&failure).unwrap();
+        failure.inputs[0].cannot_testify.clear();
+        assert!(validate_nq(&failure)
+            .unwrap_err()
+            .contains("no qualification finding"));
+
+        let mut multiple_refusals = unopened;
+        let second_raw_digest = multiple_refusals.inputs[0].raw_record_digest.clone();
+        multiple_refusals.inputs[0].refusals.push(RefusalV1 {
+            code: "second_refusal".into(),
+            exact_basis_digest: second_raw_digest,
+            detail: "owner-impossible second refusal".into(),
+        });
+        assert!(validate_nq(&multiple_refusals)
+            .unwrap_err()
+            .contains("refusal count"));
+
+        let mut missing_contradiction = qualified;
+        let mut other = missing_contradiction.inputs[0].clone();
+        other.input_id = "input:other".into();
+        other.claim_support[0].value_digest = d("other");
+        missing_contradiction.inputs.push(other);
+        assert!(validate_nq(&missing_contradiction)
+            .unwrap_err()
+            .contains("contradiction graph"));
+    }
+
     #[test]
     fn independently_fixed_field_owner_vectors_reopen_and_negatives_refuse() {
         const MONITOR: &[u8] =

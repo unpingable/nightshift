@@ -52,6 +52,8 @@ no_response, command_failed, producer_unavailable, receiver_unavailable, malform
 
 Re-observation is a request to acquire new testimony. It is not retry of an effect, remediation, dispatch, approval, execution, standing, or authorization. The module opens no listener, starts no subprocess, calls no office, and adds no binary. Canonical nightshiftd remains exactly two production binaries.
 
-The compatibility parser mirrors FIELD Monitor v1 limits: closed locator kinds, at most 32 locators and attachments, and at most 512 bytes for Monitor-owned text. Nightshift and NQ projection text remains bounded at 1024 bytes. Executable schemas encode exact subject-family alternatives.
+The compatibility parser mirrors FIELD Monitor v1 limits: closed locator kinds, at most 32 locators and attachments, and at most 512 bytes for Monitor-owned text. This v1 Nightshift compatibility profile deliberately admits only printable ASCII metadata within those owner byte ceilings; that schema-expressible subset never admits text FIELD would refuse. Unicode FIELD testimony remains upstream evidence but is not admitted into this projection. Nightshift and NQ projection text uses the same printable-ASCII subset and remains bounded at 1024 bytes. Executable schemas encode exact subject-family alternatives and direct Unicode refusal witnesses.
+
+Every NQ input is validated, not only the selected input. The accepted graph mirrors NQ qualify_one: a record-reopening refusal has no Monitor identity tuple or other finding; a later refusal has a complete reopened tuple and no support or cannot-testify; a non-refused input has a complete tuple and at least one support or cannot-testify finding; acquisition failures carry cannot-testify only; and contradictions equal the deterministic graph derived from supported claims. Optional identity, outcome, time, and payload-schema fields cannot form partial alternate shapes.
 
 No aggregate result exists.

@@ -151,6 +151,21 @@ class OperationalLineageSchemaTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.lineage.validate(controlled_lineage)
 
+        trailing_newline = lineage_fixture()
+        trailing_newline["nq_profile_id"] = "profile:fixture\n"
+        with self.assertRaises(ValidationError):
+            self.lineage.validate(trailing_newline)
+
+        unicode_monitor_text = lineage_fixture()
+        unicode_monitor_text["subject"]["namespace"] = "é" * 512
+        with self.assertRaises(ValidationError):
+            self.lineage.validate(unicode_monitor_text)
+
+        unicode_nightshift_token = lineage_fixture()
+        unicode_nightshift_token["nq_profile_id"] = "é" * 512
+        with self.assertRaises(ValidationError):
+            self.lineage.validate(unicode_nightshift_token)
+
         oversized_evaluation = evaluation_fixture()
         oversized_evaluation["profile_id"] = "p" * 1025
         with self.assertRaises(ValidationError):
@@ -160,6 +175,11 @@ class OperationalLineageSchemaTest(unittest.TestCase):
         controlled_evaluation["profile_id"] = "profile:\u0001fixture"
         with self.assertRaises(ValidationError):
             self.evaluation.validate(controlled_evaluation)
+
+        unicode_evaluation = evaluation_fixture()
+        unicode_evaluation["profile_id"] = "é" * 512
+        with self.assertRaises(ValidationError):
+            self.evaluation.validate(unicode_evaluation)
 
     def test_unknown_fields_and_authority_substitution_refuse(self) -> None:
         unknown = lineage_fixture()
