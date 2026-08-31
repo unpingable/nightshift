@@ -18,6 +18,7 @@ check_owner_law() {
     'capacity-required run refuses legacy attempt preparation' \
     'TransactionBehavior::Immediate' \
     'capacity decision is not current at exact attempt admission' \
+    'capacity decision is not the exact deterministic FUEL outcome' \
     'CapacityRequirementAdmitted' \
     'CapacityAdmissionAccepted' \
     'capacity_admissions'; do

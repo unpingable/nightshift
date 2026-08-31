@@ -21,8 +21,9 @@ use nightshift_foreman::{
 };
 use nightshift_provider_capacity::{
     decide_capacity, AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
-    CapacityObservationV1, CapacityPolicyV1, CapacityWindow, Confidence, ObservationDisposition,
-    ObservationEvidence, SourceClass, WindowType, CAPACITY_OBSERVATION_SCHEMA_V1,
+    CapacityObservationV1, CapacityPolicyV1, CapacityState, CapacityWindow, Confidence,
+    ObservationDisposition, ObservationEvidence, SourceClass, WindowType,
+    CAPACITY_OBSERVATION_SCHEMA_V1,
 };
 use nightshiftd::packet::{
     AuthoringIdentityV1, CampaignIdentityV1, CanonicalizationV1, ExactWorkRefV1,
@@ -2015,6 +2016,63 @@ fn capacity_required_run_is_atomic_restartable_and_legacy_path_cannot_win() {
         ),
         Err(ContractError::InvalidField("evaluated_at"))
     ));
+
+    let exact_observation: CapacityObservationV1 =
+        serde_json::from_slice(&root_a_observation).unwrap();
+    let mut substituted_decision: CapacityDecisionV1 =
+        serde_json::from_slice(&root_a_decision).unwrap();
+    substituted_decision.state = CapacityState::Normal;
+    substituted_decision.allow_new_speculative_work = false;
+    substituted_decision.reason_codes = vec!["MINIMUM_REMAINING_WINDOW_NORMAL".into()];
+    substituted_decision.decision_digest = substituted_decision.compute_digest().unwrap();
+    substituted_decision.validate().unwrap();
+    let mut substituted_outcome_admission =
+        ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    substituted_outcome_admission.decision_digest = substituted_decision.decision_digest.clone();
+    substituted_outcome_admission.seal().unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &serde_jcs::to_vec(&substituted_outcome_admission).unwrap(),
+                &root_a_observation,
+                &policy_raw,
+                &serde_jcs::to_vec(&substituted_decision).unwrap(),
+            ),
+            instant(1),
+        ),
+        Err(ForemanError::Transition(message))
+            if message.contains("not the exact deterministic FUEL outcome")
+    ));
+
+    let substituted_time_decision =
+        decide_capacity(&exact_observation, &policy, instant(2)).unwrap();
+    let mut substituted_time_admission =
+        ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    substituted_time_admission.evaluated_at = instant(2);
+    substituted_time_admission.decision_digest = substituted_time_decision.decision_digest.clone();
+    substituted_time_admission.seal().unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &serde_jcs::to_vec(&substituted_time_admission).unwrap(),
+                &root_a_observation,
+                &policy_raw,
+                &serde_jcs::to_vec(&substituted_time_decision).unwrap(),
+            ),
+            instant(1),
+        ),
+        Err(ForemanError::Transition(message)) if message.contains("not current")
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .all(|work| work.active_attempt_id.is_none()));
 
     let mut substituted_admission =
         ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();

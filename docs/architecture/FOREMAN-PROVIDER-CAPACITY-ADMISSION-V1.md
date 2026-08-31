@@ -46,6 +46,8 @@ policy, and decision validity. The foreman additionally requires:
   profile digest), observation, decision, and attempt admission;
 - exact policy-ID equality with `budget_policy_ref`, plus exact policy digest;
 - exact observation and decision digest relationships;
+- full equality with the deterministic FUEL decision recomputed from the exact
+  retained observation, policy, and decision time;
 - a half-open currentness interval: `observed_at <= evaluated_at < expires_at`;
 - decision time equal to attempt-admission time; and
 - exact packet/profile model-class equality and the closed cost mapping.

@@ -8,7 +8,7 @@ use std::{
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use nightshift_provider_capacity::{
-    AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
+    decide_capacity, AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
     CapacityObservationV1, CapacityPolicyV1,
 };
 use nightshiftd::packet::NightshiftPacketV1;
@@ -1979,6 +1979,13 @@ fn validate_capacity_bundle(
     decision
         .validate()
         .map_err(|error| ForemanError::Transition(error.to_string()))?;
+    let reproduced_decision = decide_capacity(&observation, &policy, decision.decision_at)
+        .map_err(|error| ForemanError::Transition(error.to_string()))?;
+    if reproduced_decision != decision {
+        return Err(ForemanError::Transition(
+            "capacity decision is not the exact deterministic FUEL outcome".to_owned(),
+        ));
+    }
     for (name, expected, value) in [
         (
             "capacity admission",
