@@ -949,6 +949,7 @@ impl ForemanStore {
             }
             rows
         };
+        let run_closed = validate_read_only_run_closed_binding(&events)?;
         let terminal_receipts = {
             let mut statement = transaction.prepare(
                 "SELECT work_item_id, attempt_id, receipt_digest, raw_bytes, receipt_kind
@@ -994,11 +995,20 @@ impl ForemanStore {
             .optional()?;
         let final_snapshot_bytes = match (
             final_snapshot_row,
+            run_closed,
             projection.closed_final_receipts_digest.as_deref(),
         ) {
-            (None, None) => None,
-            (Some((updated_at, retained_digest, bytes)), Some(replayed_digest)) => {
-                if retained_digest != raw_digest(&bytes) || retained_digest != replayed_digest {
+            (None, None, None) => None,
+            (
+                Some((updated_at, retained_digest, bytes)),
+                Some((run_closed_sequence, run_closed_at, run_closed_digest)),
+                Some(replayed_digest),
+            ) => {
+                if retained_digest != raw_digest(&bytes)
+                    || retained_digest != replayed_digest
+                    || retained_digest != run_closed_digest
+                    || events.last().map(|event| event.sequence) != Some(run_closed_sequence)
+                {
                     return Err(ForemanError::ReadOnlyStore(
                         "final snapshot digest and RunClosed replay disagree".to_owned(),
                     ));
@@ -1006,6 +1016,13 @@ impl ForemanStore {
                 let updated_at = DateTime::parse_from_rfc3339(&updated_at)
                     .map_err(|error| ForemanError::Serialization(error.to_string()))?
                     .with_timezone(&Utc);
+                if updated_at != run_closed_at
+                    || updated_at < latest_terminal_evidence_at(&transaction, run_id)?
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "final snapshot and RunClosed time custody disagree".to_owned(),
+                    ));
+                }
                 let rebuilt = build_final_document(&transaction, &packet, run_id, updated_at)?;
                 let rebuilt = serde_jcs::to_vec(&rebuilt)
                     .map_err(|error| ForemanError::Serialization(error.to_string()))?;
@@ -1247,6 +1264,33 @@ fn validate_read_only_receipt_row(
     row.state = state;
     row.result_classification = result_classification;
     Ok(row)
+}
+
+fn validate_read_only_run_closed_binding(
+    events: &[ReadOnlyEventRowV1],
+) -> Result<Option<(u64, DateTime<Utc>, String)>, ForemanError> {
+    let mut binding = None;
+    for row in events {
+        if row.kind != "internal" {
+            continue;
+        }
+        let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        if let InternalPayload::RunClosed {
+            final_receipts_digest,
+        } = event.payload
+        {
+            if binding
+                .replace((row.sequence, event.recorded_at, final_receipts_digest))
+                .is_some()
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "multiple RunClosed events are not an exact terminal history".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(binding)
 }
 
 fn validate_read_only_projection_receipts(

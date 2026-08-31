@@ -929,14 +929,39 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
     drop(store);
     let connection = Connection::open(&database).unwrap();
     connection
-        .execute_batch("DROP TRIGGER final_snapshots_no_update;")
+        .execute_batch(
+            "DROP TRIGGER final_snapshots_no_update;
+             DROP TRIGGER events_no_update;",
+        )
         .unwrap();
-    let substituted = b"{}".to_vec();
+    let mut substituted: Value = serde_json::from_slice(&expected).unwrap();
+    substituted["updated_at"] =
+        Value::String(instant(4).to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let substituted = serde_jcs::to_vec(&substituted).unwrap();
+    let final_digest = retained_raw_digest(&substituted);
     connection
         .execute(
-            "UPDATE final_snapshots SET raw_digest = ?1, raw_bytes = ?2
+            "UPDATE final_snapshots SET updated_at = ?1, raw_digest = ?2, raw_bytes = ?3
              WHERE run_id = 'run-fixture'",
-            rusqlite::params![retained_raw_digest(&substituted), substituted],
+            rusqlite::params![instant(4).to_rfc3339(), final_digest, substituted],
+        )
+        .unwrap();
+    let run_closed_raw: Vec<u8> = connection
+        .query_row(
+            "SELECT raw_bytes FROM events WHERE run_id = 'run-fixture'
+             ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut run_closed: Value = serde_json::from_slice(&run_closed_raw).unwrap();
+    run_closed["payload"]["final_receipts_digest"] = Value::String(final_digest);
+    let run_closed = serde_jcs::to_vec(&run_closed).unwrap();
+    connection
+        .execute(
+            "UPDATE events SET raw_bytes = ?1, raw_digest = ?2
+             WHERE sequence = (SELECT MAX(sequence) FROM events)",
+            rusqlite::params![run_closed, retained_raw_digest(&run_closed)],
         )
         .unwrap();
     drop(connection);
