@@ -75,8 +75,8 @@ if rg -n -i '<(button|textarea)|contentEditable|method:[[:space:]]*"(POST|PUT|PA
     cat "$hits" >&2
 fi
 if ! rg -Fq 'method != "GET" && !(method == "HEAD" && operational_family)' crates/nightshift-casework/src/server.rs ||
-   ! rg -q 'path == "/api/v1/operational-conditions"' crates/nightshift-casework/src/server.rs ||
-   ! rg -Fq 'path.starts_with("/api/v1/operational-conditions/")' crates/nightshift-casework/src/server.rs ||
+   ! rg -Fq 'operational_family = is_operational_condition_route(path)' crates/nightshift-casework/src/server.rs ||
+   ! rg -q 'fn is_operational_condition_route' crates/nightshift-casework/src/server.rs ||
    ! rg -Fq 'head_only = method == "HEAD" && response.allow == "GET, HEAD"' crates/nightshift-casework/src/server.rs; then
     fail "GET/HEAD is not restricted to the exact operational route family"
 fi

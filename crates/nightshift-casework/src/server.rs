@@ -98,8 +98,7 @@ impl Api {
     }
 
     pub fn response(&self, method: &str, path: &str) -> Response {
-        let operational_family = path == "/api/v1/operational-conditions"
-            || path.starts_with("/api/v1/operational-conditions/");
+        let operational_family = is_operational_condition_route(path);
         if method != "GET" && !(method == "HEAD" && operational_family) {
             return Response::text(405, "Method Not Allowed", b"method not allowed\n".to_vec());
         }
@@ -403,6 +402,18 @@ fn parse_live_run_path(path: &str) -> Option<(&str, &str)> {
     }
     Some((navigation_id, suffix))
 }
+fn is_operational_condition_route(path: &str) -> bool {
+    if path == "/api/v1/operational-conditions" {
+        return true;
+    }
+    parse_operational_condition_path(path).is_some_and(|(_, suffix)| {
+        matches!(
+            suffix,
+            "" | "/raw/monitor" | "/raw/nq" | "/raw/lineage" | "/raw/profile" | "/raw/evaluation"
+        )
+    })
+}
+
 fn parse_operational_condition_path(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix("/api/v1/operational-conditions/")?;
     let (navigation_id, suffix) = match rest.find('/') {
@@ -945,6 +956,14 @@ mod wire_tests {
             )
             .status,
             404
+        );
+        assert_eq!(
+            api.response(
+                "HEAD",
+                &format!("/api/v1/operational-conditions/{navigation_id}/raw/monitor/extra"),
+            )
+            .status,
+            405
         );
         assert_eq!(
             api.response("GET", "/api/v1/operational-conditions/../raw/monitor")

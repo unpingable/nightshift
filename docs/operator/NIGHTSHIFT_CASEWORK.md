@@ -37,3 +37,34 @@ instant captured before all runs load.
 There are no write, approval, answer, retry, dispatch, resume, merge,
 promotion, or execution endpoints. Stop the foreground process when
 inspection is complete.
+
+## Operational conditions
+
+An explicit operational-condition directory has the five fixed EPOCH-LANTERN owner
+artifacts documented in
+`docs/architecture/OPERATIONAL-CONDITION-CASEWORK-V1.md`. After building the
+browser, inspect one or more directories with:
+
+```bash
+cargo run --locked -p nightshift-casework --bin nightshift-casework -- \
+  --condition-dir /absolute/path/to/condition \
+  --ui-dir ui/casework/dist \
+  --bind 127.0.0.1:4177
+```
+
+Repeat `--condition-dir PATH` for additional explicit conditions. No run
+or foreman source is required when at least one condition source is present. The
+loader does not search, follow symlinks, or open paths recorded inside an artifact.
+
+The exact operational API is:
+
+```bash
+curl --fail http://127.0.0.1:4177/api/v1/operational-conditions
+curl --fail http://127.0.0.1:4177/api/v1/operational-conditions/CONDITION_NAVIGATION_ID
+curl --fail http://127.0.0.1:4177/api/v1/operational-conditions/CONDITION_NAVIGATION_ID/raw/monitor
+```
+
+The seven fixed operational API routes accept GET and bodyless HEAD. Existing
+sealed-run, live-run, health, and asset routes remain GET-only. Every write method
+returns 405. The browser has no answer, retry, remediation, dispatch, or execution
+control. Stop the foreground process when inspection is complete.

@@ -455,6 +455,74 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "set NIGHTSHIFT_SHIFT_ATLAS_FIXTURE_DIR for the installed-browser qualification journey"]
+    fn emit_installed_browser_condition_fixture() {
+        let output = std::env::var_os("NIGHTSHIFT_SHIFT_ATLAS_FIXTURE_DIR")
+            .map(PathBuf::from)
+            .expect("NIGHTSHIFT_SHIFT_ATLAS_FIXTURE_DIR must name an explicit temporary directory");
+        assert!(output.is_dir());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 0);
+
+        let mut nq: serde_json::Value = serde_json::from_slice(NQ).unwrap();
+        let input = nq["inputs"][0].as_object_mut().unwrap();
+        let support = input
+            .get_mut("claim_support")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        let claim_id = support["claim_id"].as_str().unwrap().to_owned();
+        input.insert("claim_support".into(), serde_json::Value::Array(Vec::new()));
+        input.insert(
+            "cannot_testify".into(),
+            serde_json::json!([{
+                "claim_id": claim_id,
+                "reason": "profile claim absent from exact observation payload"
+            }]),
+        );
+        let nq_bytes = serde_json::to_vec(&nq).unwrap();
+        let admitted_at = "2026-08-30T03:00:00.523456789Z"
+            .parse::<DateTime<Utc>>()
+            .unwrap();
+        let lineage =
+            admit_operational_lineage(MONITOR, &nq_bytes, "input:field-vector", admitted_at, &[])
+                .unwrap()
+                .0;
+        let profile = ReobservationProfileV1 {
+            profile_id: "profile:shift-atlas-browser-fixture".into(),
+            max_age_seconds: 60,
+        };
+        let evaluation = nightshiftd::operational_lineage::evaluate_reobservation(
+            &lineage,
+            &profile,
+            admitted_at,
+        )
+        .unwrap();
+        fs::write(output.join(MONITOR_FILE), MONITOR).unwrap();
+        fs::write(output.join(NQ_FILE), nq_bytes).unwrap();
+        fs::write(
+            output.join(LINEAGE_FILE),
+            serde_jcs::to_vec(&lineage).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            output.join(PROFILE_FILE),
+            serde_jcs::to_vec(&profile).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            output.join(EVALUATION_FILE),
+            serde_jcs::to_vec(&evaluation).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_operational_conditions_at(std::slice::from_ref(&output)).unwrap();
+        assert_eq!(
+            loaded.values().next().unwrap().projection.questions.len(),
+            1
+        );
+    }
+
+    #[test]
     fn unrelated_subjects_are_excluded_but_successors_share_history() {
         let target = lineage();
         let mut successor = target.clone();
