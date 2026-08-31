@@ -111,8 +111,9 @@ describe("Nightshift Casework golden journeys", () => {
   it("uses only the accepted same-origin GET endpoints", async () => {
     const fetchMock = installApiMock(); at("/"); render(<App />);
     await screen.findByRole("heading", { name: index.runs[0].packet_id });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/runs", expect.objectContaining({ method: "GET" }));
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/active-runs", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/operational-conditions", expect.objectContaining({ method: "GET" }));
   });
 });

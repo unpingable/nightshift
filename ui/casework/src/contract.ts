@@ -271,3 +271,162 @@ export interface CaseworkLiveRun {
   };
   authority_effect: string;
 }
+export interface OperationalConditionIndexEntry {
+  navigation_id: string;
+  projection_digest: string;
+  lineage_id: string;
+  evaluation_id: string;
+  subject_kind: string;
+  subject_namespace: string;
+  subject_identity_digest: string;
+  disposition: string;
+  reobservation_trigger: string;
+  evaluated_at: string;
+  question_count: number;
+}
+
+export interface OperationalConditionIndex {
+  schema: string;
+  conditions: OperationalConditionIndexEntry[];
+}
+
+export interface OperationalSubject {
+  kind: string;
+  namespace: string;
+  basis_contract: string;
+  stable_basis: { basis_type: string } & Record<string, string>;
+}
+
+export interface OperationalProducer {
+  principal_id: string;
+  collector_id: string;
+  key_algorithm: string;
+  public_key_hex: string;
+  public_key_digest: string;
+  producer_class: string;
+}
+
+export interface OperationalCustody {
+  raw_bytes_sha256: string;
+  raw_bytes_length: number;
+  semantic_digest: string;
+}
+
+export interface OperationalClaimSupport {
+  claim_id: string;
+  proposition: string;
+  value_digest: string;
+  monitor_record_digest: string;
+}
+
+export interface OperationalCannotTestify {
+  claim_id: string;
+  reason: string;
+}
+
+export interface OperationalRefusal {
+  code: string;
+  exact_basis_digest: string;
+  detail: string;
+}
+
+export interface OperationalContradiction {
+  subject_identity_digest: string;
+  claim_id: string;
+  first_input_id: string;
+  first_value_digest: string;
+  second_input_id: string;
+  second_value_digest: string;
+}
+
+export interface OperationalLineage {
+  schema: string;
+  lineage_id: string;
+  monitor_result_head: string;
+  nq_result_head: string;
+  monitor_custody: OperationalCustody;
+  nq_custody: OperationalCustody;
+  nq_profile_id: string;
+  nq_input_id: string;
+  subject: OperationalSubject;
+  subject_identity_digest: string;
+  producer: OperationalProducer;
+  producer_identity_digest: string;
+  acquisition_outcome: string;
+  acquisition_started_at: string;
+  acquisition_ended_at: string;
+  producer_observed_at: string | null;
+  receiver_custody_at: string;
+  nq_qualified_at: string;
+  nightshift_admitted_at: string;
+  epoch: string;
+  sequence: number;
+  predecessor_observation_digest: string | null;
+  payload_schema: string | null;
+  claim_support: OperationalClaimSupport[];
+  cannot_testify: OperationalCannotTestify[];
+  refusals: OperationalRefusal[];
+  contradictions: OperationalContradiction[];
+  nonclaims: string[];
+}
+
+export interface OperationalEvaluation {
+  schema: string;
+  evaluation_id: string;
+  lineage_id: string;
+  profile_id: string;
+  profile_digest: string;
+  max_age_seconds: number;
+  evaluated_at: string;
+  current_until: string | null;
+  exact_supported_claim_ids: string[];
+  disposition: string;
+  reobservation_trigger: string;
+  next_lawful_action: string;
+  grants_authority: false;
+}
+
+export interface OperationalQuestion {
+  navigation_id: string;
+  question_id: string;
+  question: string;
+  source_index: number;
+  source:
+    | { source_kind: "cannot_testify"; finding: OperationalCannotTestify }
+    | { source_kind: "refusal"; finding: OperationalRefusal }
+    | { source_kind: "contradiction"; finding: OperationalContradiction };
+  next_lawful_action: string;
+  presentation_only: true;
+}
+
+export interface OperationalRawSource {
+  exact_bytes_sha256: string;
+  exact_bytes_length: number;
+  validation: string;
+}
+
+export interface CaseworkOperationalCondition {
+  schema: string;
+  projection_digest: string;
+  navigation_id: string;
+  subject: OperationalSubject;
+  subject_identity_digest: string;
+  producer: OperationalProducer;
+  producer_identity_digest: string;
+  acquisition_outcome: string;
+  lineage: OperationalLineage;
+  evaluation: OperationalEvaluation;
+  profile: {
+    profile_id: string;
+    max_age_seconds: number;
+  };
+  questions: OperationalQuestion[];
+  raw_sources: {
+    monitor: OperationalRawSource;
+    nq: OperationalRawSource;
+    lineage: OperationalRawSource;
+    profile: OperationalRawSource;
+    evaluation: OperationalRawSource;
+  };
+  authority_effect: "read_only_projection_no_authority";
+}

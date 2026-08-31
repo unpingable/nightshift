@@ -1,4 +1,4 @@
-import type { CaseworkLiveRun, CaseworkRun, LiveRunIndex, RunIndex } from "./contract";
+import type { CaseworkLiveRun, CaseworkOperationalCondition, CaseworkRun, LiveRunIndex, OperationalConditionIndex, RunIndex } from "./contract";
 
 async function get(path: string): Promise<Response> {
   const response = await fetch(path, { method: "GET", headers: { Accept: "application/json" } });
@@ -34,4 +34,26 @@ export async function getLiveRaw(
   if (kind !== "foreman-journal" && kind !== "accepted-receipts") return response.text();
   const bytes = new Uint8Array(await response.arrayBuffer());
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+export async function getOperationalConditionIndex(): Promise<OperationalConditionIndex> {
+  return (await get("/api/v1/operational-conditions")).json() as Promise<OperationalConditionIndex>;
+}
+
+export async function getOperationalCondition(
+  navigationId: string,
+): Promise<CaseworkOperationalCondition> {
+  return (
+    await get(`/api/v1/operational-conditions/${encodeURIComponent(navigationId)}`)
+  ).json() as Promise<CaseworkOperationalCondition>;
+}
+
+export async function getOperationalRaw(
+  navigationId: string,
+  kind: "monitor" | "nq" | "lineage" | "profile" | "evaluation",
+): Promise<string> {
+  return (
+    await get(
+      `/api/v1/operational-conditions/${encodeURIComponent(navigationId)}/raw/${kind}`,
+    )
+  ).text();
 }
