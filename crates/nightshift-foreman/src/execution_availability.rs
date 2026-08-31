@@ -6,7 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{
+    de::{DeserializeOwned, Error as _, MapAccess, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
@@ -93,6 +96,10 @@ impl ExactAvailabilityEvidenceV1 {
             || self.byte_length == 0
             || self.byte_length as usize > MAXIMUM_AVAILABILITY_EVIDENCE_BYTES
             || self.bytes_hex.len() != self.byte_length as usize * 2
+            || self
+                .bytes_hex
+                .bytes()
+                .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
         {
             return Err(ContractError::InvalidField(
                 "availability evidence encoding",
@@ -142,6 +149,10 @@ impl ExactMapperSnapshotV1 {
             || self.byte_length == 0
             || self.byte_length as usize > MAXIMUM_SWITCHYARD_MAPPER_SNAPSHOT_BYTES
             || self.bytes_hex.len() != self.byte_length as usize * 2
+            || self
+                .bytes_hex
+                .bytes()
+                .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
         {
             return Err(ContractError::InvalidField("mapper snapshot encoding"));
         }
@@ -786,6 +797,25 @@ pub struct DeferredProviderDispatchV1 {
     pub provider_capacity_released: bool,
     pub semantic_retry: bool,
     pub authority_effect: String,
+}
+
+/// Exact typed history needed to admit a later dispatch occurrence.  The wrapper
+/// is deliberately not a separately sealed receipt: its three owner receipts
+/// retain their own digest laws and are reopened together by the graph validator.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderDeferralHistoryEntryV1 {
+    pub dispatch: ProviderDispatchOccurrenceV1,
+    pub disposition: ProviderAdmissionDispositionV1,
+    pub deferred: DeferredProviderDispatchV1,
+}
+
+impl ProviderDeferralHistoryEntryV1 {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        self.dispatch.validate()?;
+        self.disposition.validate()?;
+        self.deferred.validate()
+    }
 }
 
 impl DeferredProviderDispatchV1 {
@@ -1454,8 +1484,15 @@ fn validate_switchyard_raw(value: &Value) -> Result<(), ContractError> {
     {
         return Err(ContractError::InvalidField("mapper raw representation"));
     }
-    let bytes = hex::decode(string(value, "bytes_hex")?)
-        .map_err(|_| ContractError::InvalidField("mapper raw hex"))?;
+    let bytes_hex = string(value, "bytes_hex")?;
+    if bytes_hex
+        .bytes()
+        .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(ContractError::InvalidField("mapper raw lowercase hex"));
+    }
+    let bytes =
+        hex::decode(bytes_hex).map_err(|_| ContractError::InvalidField("mapper raw hex"))?;
     if bytes.is_empty()
         || bytes.len() > MAXIMUM_AVAILABILITY_EVIDENCE_BYTES
         || bytes.last() != Some(&b'\n')
@@ -1465,6 +1502,93 @@ fn validate_switchyard_raw(value: &Value) -> Result<(), ContractError> {
         return Err(ContractError::InvalidField("mapper raw custody"));
     }
     Ok(())
+}
+
+struct UniqueJson(Value);
+
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(UniqueJsonVisitor)
+    }
+}
+
+struct UniqueJsonVisitor;
+
+impl<'de> Visitor<'de> for UniqueJsonVisitor {
+    type Value = UniqueJson;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unique-key JSON")
+    }
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Bool(value)))
+    }
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Number(value.into())))
+    }
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Number(value.into())))
+    }
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .map(UniqueJson)
+            .ok_or_else(|| E::custom("non-finite JSON number"))
+    }
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::String(value.to_owned())))
+    }
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::String(value)))
+    }
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Null))
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(UniqueJson(Value::Null))
+    }
+    fn visit_seq<A>(self, mut values: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut result = Vec::new();
+        while let Some(value) = values.next_element::<UniqueJson>()? {
+            result.push(value.0);
+        }
+        Ok(UniqueJson(Value::Array(result)))
+    }
+    fn visit_map<A>(self, mut values: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut result = serde_json::Map::new();
+        while let Some(key) = values.next_key::<String>()? {
+            if result.contains_key(&key) {
+                return Err(A::Error::custom("duplicate JSON object key"));
+            }
+            result.insert(key, values.next_value::<UniqueJson>()?.0);
+        }
+        Ok(UniqueJson(Value::Object(result)))
+    }
+}
+
+fn decode_switchyard_raw(value: &Value) -> Result<Value, ContractError> {
+    validate_switchyard_raw(value)?;
+    let bytes = hex::decode(string(value, "bytes_hex")?)
+        .map_err(|_| ContractError::InvalidField("mapper raw hex"))?;
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    let decoded = UniqueJson::deserialize(&mut deserializer)
+        .map_err(|_| ContractError::InvalidField("unique mapper raw JSON"))?;
+    deserializer
+        .end()
+        .map_err(|_| ContractError::InvalidField("mapper raw JSON framing"))?;
+    Ok(decoded.0)
 }
 
 fn exact_object_keys(
@@ -1518,6 +1642,11 @@ fn validate_switchyard_snapshot_complete(
 ) -> Result<(), ContractError> {
     validate_switchyard_snapshot(disposition, raw)?;
     let snapshot: Value = serde_json::from_slice(raw).map_err(json_error)?;
+    if serde_jcs::to_vec(&snapshot).map_err(json_error)? != raw {
+        return Err(ContractError::InvalidField(
+            "mapper snapshot RFC8785 representation",
+        ));
+    }
     validate_safe_json(&snapshot)?;
     let records = snapshot["records"]
         .as_array()
@@ -1586,6 +1715,8 @@ fn validate_switchyard_snapshot_complete(
         if cut_value.is_some() {
             return Err(ContractError::InvalidField("evidence after terminal cut"));
         }
+
+        validate_switchyard_raw_replay(record, &snapshot["binding"], execution.as_ref())?;
 
         if let Some(ordinal) = acquisition_ordinal.as_i64() {
             if ordinal != next_acquisition_ordinal {
@@ -2103,7 +2234,7 @@ fn validate_kind_lane(kind: &str, method: &str, lane: &str) -> Result<(), Contra
             lane == "SERVER_REQUEST"
                 && matches!(
                     method,
-                    "commandExecution/requestApproval" | "fileChange/requestApproval"
+                    "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
                 )
         }
         "LOCAL_TURN_FACT" | "ACQUISITION_WATERMARK" => lane == "NOTIFICATION",
@@ -2122,6 +2253,390 @@ fn validate_kind_lane(kind: &str, method: &str, lane: &str) -> Result<(), Contra
         return Err(ContractError::InvalidField(
             "evidence kind/lane/method binding",
         ));
+    }
+    Ok(())
+}
+
+fn validate_switchyard_raw_replay(
+    record: &Value,
+    binding: &Value,
+    current_execution: Option<&ProviderExecutionIdentityV1>,
+) -> Result<(), ContractError> {
+    let kind = string(record, "kind")?;
+    let method = string(record, "method")?;
+    let normalized = record
+        .get("normalized")
+        .ok_or(ContractError::InvalidField("raw replay normalized"))?;
+    let raw = record
+        .get("raw")
+        .ok_or(ContractError::InvalidField("raw replay custody"))?;
+    if raw.is_null() {
+        if kind != "ADMISSION_DISCREPANCY"
+            || method != "adapter/acquisition"
+            || record.get("acquisition_kind").and_then(Value::as_str) != Some("LOSS")
+        {
+            return Err(ContractError::InvalidField("raw replay evidence absence"));
+        }
+        let execution = current_execution.map(|execution| {
+            serde_json::json!({
+                "provider":execution.provider_id,"model":execution.model_id,
+                "app_server_session_identity":execution.app_server_session_identity,
+                "thread_id":execution.thread_id,"turn_id":execution.turn_id,
+                "first_response_id":execution.first_response_id,
+            })
+        });
+        exact_object_keys(
+            normalized,
+            &[
+                "detail",
+                "provider_execution_identity",
+                "resume_same_attempt_only",
+            ],
+            "rawless acquisition loss normalized closure",
+        )?;
+        let expected_execution = execution.unwrap_or(Value::Null);
+        if string(normalized, "detail")?.is_empty()
+            || normalized.get("provider_execution_identity") != Some(&expected_execution)
+            || normalized
+                .get("resume_same_attempt_only")
+                .and_then(Value::as_bool)
+                != Some(current_execution.is_some())
+        {
+            return Err(ContractError::InvalidField(
+                "rawless acquisition loss replay",
+            ));
+        }
+        return Ok(());
+    }
+    let wire = decode_switchyard_raw(raw)?;
+    let wire_object = wire
+        .as_object()
+        .ok_or(ContractError::InvalidField("raw replay object"))?;
+
+    if kind == "CLIENT_RESPONSE_RETAINED" {
+        exact_object_keys(&wire, &["id", "result"], "client response raw closure")?;
+        let request_id = integer(&wire, "id")?;
+        let result = wire
+            .get("result")
+            .filter(|value| value.is_object())
+            .ok_or(ContractError::InvalidField("client response result"))?;
+        if integer(normalized, "request_id")? != request_id
+            || normalized
+                .get("proves_provider_admission")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || plain_sha256(&serde_jcs::to_vec(result).map_err(json_error)?)
+                != string(normalized, "result_sha256")?
+            || method != format!("client-response/{}", string(normalized, "request_method")?)
+        {
+            return Err(ContractError::InvalidField(
+                "client response raw normalized binding",
+            ));
+        }
+        let request_method = string(normalized, "request_method")?;
+        if matches!(
+            request_method,
+            "thread/start" | "thread/read" | "thread/resume"
+        ) {
+            if result
+                .get("thread")
+                .and_then(Value::as_object)
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+                != Some(string(binding, "thread_id")?)
+            {
+                return Err(ContractError::InvalidField(
+                    "client response thread identity",
+                ));
+            }
+        } else if request_method == "turn/start"
+            && result
+                .get("turn")
+                .and_then(Value::as_object)
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+                != Some(string(binding, "turn_id")?)
+        {
+            return Err(ContractError::InvalidField("client response turn identity"));
+        }
+        return Ok(());
+    }
+
+    let wire_method = wire_object
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or(ContractError::InvalidField("raw replay method"))?;
+    if kind == "CLIENT_REQUEST_ISSUED" {
+        let request_method =
+            method
+                .strip_prefix("client-request/")
+                .ok_or(ContractError::InvalidField(
+                    "client request retained method",
+                ))?;
+        let owner_method = matches!(
+            request_method,
+            "initialize" | "thread/start" | "turn/start" | "thread/read" | "thread/resume"
+        );
+        let fixture_method = request_method.starts_with("fixture/")
+            && string(binding, "executable_kind")? == "DETERMINISTIC_FIXTURE";
+        if !owner_method && !fixture_method {
+            return Err(ContractError::InvalidField("client request owner method"));
+        }
+        if wire_method != request_method || string(normalized, "request_method")? != request_method
+        {
+            return Err(ContractError::InvalidField("client request method binding"));
+        }
+        let expected_fields = if wire_object.contains_key("params") {
+            &["id", "method", "params"][..]
+        } else {
+            &["id", "method"][..]
+        };
+        exact_object_keys(&wire, expected_fields, "client request raw closure")?;
+        let params = wire.get("params").unwrap_or(&Value::Null);
+        if !params.is_null() && !params.is_object() {
+            return Err(ContractError::InvalidField("client request params"));
+        }
+        if matches!(
+            request_method,
+            "turn/start" | "thread/read" | "thread/resume"
+        ) && params.get("threadId").and_then(Value::as_str)
+            != Some(string(binding, "thread_id")?)
+        {
+            return Err(ContractError::InvalidField(
+                "client request thread identity",
+            ));
+        }
+        if integer(&wire, "id")? != integer(normalized, "request_id")?
+            || normalized
+                .get("proves_provider_admission")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || plain_sha256(&serde_jcs::to_vec(params).map_err(json_error)?)
+                != string(normalized, "params_sha256")?
+        {
+            return Err(ContractError::InvalidField(
+                "client request raw normalized binding",
+            ));
+        }
+        return Ok(());
+    }
+
+    if wire_method != method {
+        return Err(ContractError::InvalidField("raw method record binding"));
+    }
+    let params = wire
+        .get("params")
+        .filter(|value| value.is_object())
+        .ok_or(ContractError::InvalidField("raw params object"))?;
+    let common_request = |params: &Value, fields: &[&str]| -> Result<(), ContractError> {
+        exact_object_keys(params, fields, "provider raw params closure")?;
+        for (field, expected) in [
+            ("threadId", string(binding, "thread_id")?),
+            ("turnId", string(binding, "turn_id")?),
+            ("provider", string(binding, "provider")?),
+            ("model", string(binding, "model")?),
+        ] {
+            if string(params, field)? != expected {
+                return Err(ContractError::InvalidField("provider raw identity binding"));
+            }
+        }
+        Ok(())
+    };
+    match kind {
+        "PROVIDER_REQUEST_STARTED" => {
+            common_request(
+                params,
+                &[
+                    "threadId",
+                    "turnId",
+                    "requestOccurrenceId",
+                    "samplingOrdinal",
+                    "requestOrder",
+                    "provider",
+                    "model",
+                    "startedAtMs",
+                ],
+            )?;
+            let expected = serde_json::json!({
+                "request_occurrence_id": string(params, "requestOccurrenceId")?,
+                "sampling_ordinal": integer(params, "samplingOrdinal")?,
+                "request_order": integer(params, "requestOrder")?,
+                "started_at_ms": integer(params, "startedAtMs")?,
+                "proves_provider_admission": false,
+            });
+            if normalized != &expected {
+                return Err(ContractError::InvalidField("provider request raw replay"));
+            }
+        }
+        "PROVIDER_EXECUTION_STEP" => {
+            common_request(
+                params,
+                &[
+                    "threadId",
+                    "turnId",
+                    "requestOccurrenceId",
+                    "samplingOrdinal",
+                    "requestOrder",
+                    "provider",
+                    "model",
+                    "responseId",
+                    "observedAtMs",
+                ],
+            )?;
+            let response_id = string(params, "responseId")?;
+            let first_identity =
+                current_execution
+                    .cloned()
+                    .unwrap_or(ProviderExecutionIdentityV1 {
+                        provider_id: string(binding, "provider")?.to_owned(),
+                        model_id: string(binding, "model")?.to_owned(),
+                        app_server_session_identity: string(
+                            binding,
+                            "app_server_session_identity",
+                        )?
+                        .to_owned(),
+                        thread_id: string(binding, "thread_id")?.to_owned(),
+                        turn_id: string(binding, "turn_id")?.to_owned(),
+                        first_response_id: response_id.to_owned(),
+                    });
+            let expected = serde_json::json!({
+                "provider_execution_identity": {
+                    "provider": first_identity.provider_id,
+                    "model": first_identity.model_id,
+                    "app_server_session_identity": first_identity.app_server_session_identity,
+                    "thread_id": first_identity.thread_id,
+                    "turn_id": first_identity.turn_id,
+                    "first_response_id": first_identity.first_response_id,
+                },
+                "provider_execution_step_identity": {
+                    "provider": string(params, "provider")?, "model": string(params, "model")?,
+                    "thread_id": string(params, "threadId")?, "turn_id": string(params, "turnId")?,
+                    "request_occurrence_id": string(params, "requestOccurrenceId")?,
+                    "sampling_ordinal": integer(params, "samplingOrdinal")?,
+                    "request_order": integer(params, "requestOrder")?, "response_id": response_id,
+                },
+                "first_admission_boundary": current_execution.is_none(),
+                "observed_at_ms": integer(params, "observedAtMs")?,
+            });
+            if normalized != &expected {
+                return Err(ContractError::InvalidField("provider step raw replay"));
+            }
+        }
+        "PROVIDER_ADMISSION_REFUSED" => {
+            common_request(
+                params,
+                &[
+                    "threadId",
+                    "turnId",
+                    "requestOccurrenceId",
+                    "samplingOrdinal",
+                    "requestOrder",
+                    "provider",
+                    "model",
+                    "responseCreated",
+                    "willRetry",
+                    "refusalKind",
+                    "codexErrorInfo",
+                    "retryAfterMs",
+                    "diagnostic",
+                    "observedAtMs",
+                ],
+            )?;
+            let expected = serde_json::json!({
+                "request_occurrence_id": string(params, "requestOccurrenceId")?,
+                "sampling_ordinal": integer(params, "samplingOrdinal")?, "request_order": integer(params, "requestOrder")?,
+                "response_created": params["responseCreated"], "will_retry": params["willRetry"],
+                "refusal_kind": "MODEL_AT_CAPACITY", "codex_error_info": "serverOverloaded",
+                "retry_after_ms": params["retryAfterMs"], "diagnostic": params["diagnostic"],
+                "observed_at_ms": integer(params, "observedAtMs")?, "provider_execution_identity": null,
+            });
+            if params["refusalKind"] != "modelAtCapacity"
+                || params["codexErrorInfo"] != "serverOverloaded"
+                || normalized != &expected
+            {
+                return Err(ContractError::InvalidField("provider refusal raw replay"));
+            }
+        }
+        "PROVIDER_RESPONSE_COMPLETED" => {
+            exact_object_keys(
+                params,
+                &["threadId", "turnId", "responseId", "usage"],
+                "completion params closure",
+            )?;
+            if string(params, "threadId")? != string(binding, "thread_id")?
+                || string(params, "turnId")? != string(binding, "turn_id")?
+                || normalized
+                    != &serde_json::json!({"response_id":string(params,"responseId")?,"proves_new_admission":false})
+            {
+                return Err(ContractError::InvalidField("completion raw replay"));
+            }
+        }
+        "WAITING_APPROVAL" => {
+            if !matches!(
+                method,
+                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+            ) || string(params, "threadId")? != string(binding, "thread_id")?
+                || string(params, "turnId")? != string(binding, "turn_id")?
+            {
+                return Err(ContractError::InvalidField("approval raw replay"));
+            }
+            let execution = current_execution
+                .ok_or(ContractError::InvalidField("approval before execution"))?;
+            let expected = serde_json::json!({"approval_response_sent":false,"protected_effect_absent":true,"provider_execution_identity":{
+                "provider":execution.provider_id,"model":execution.model_id,"app_server_session_identity":execution.app_server_session_identity,
+                "thread_id":execution.thread_id,"turn_id":execution.turn_id,"first_response_id":execution.first_response_id,
+            }});
+            if normalized != &expected {
+                return Err(ContractError::InvalidField("approval normalized replay"));
+            }
+        }
+        "LOCAL_TURN_FACT" => {
+            if method == "turn/completed"
+                && (string(params, "threadId")? != string(binding, "thread_id")?
+                    || params
+                        .get("turn")
+                        .and_then(|turn| turn.get("id"))
+                        .and_then(Value::as_str)
+                        != Some(string(binding, "turn_id")?))
+            {
+                return Err(ContractError::InvalidField("local turn raw identity"));
+            }
+            if normalized != &serde_json::json!({"proves_provider_admission":false}) {
+                return Err(ContractError::InvalidField("local fact normalized replay"));
+            }
+        }
+        "ACQUISITION_WATERMARK" => {
+            if normalized != &serde_json::json!({"proves_provider_admission":false}) {
+                return Err(ContractError::InvalidField("watermark normalized replay"));
+            }
+        }
+        "ADMISSION_DISCREPANCY" => {
+            let detail = if method == "error" {
+                "coarse or unclassified App Server error cannot establish admission"
+            } else if record.get("acquisition_kind").and_then(Value::as_str)
+                == Some("SERVER_REQUEST")
+            {
+                "unknown App Server server request"
+            } else if method.starts_with("providerAdmission/")
+                || method.starts_with("providerRequest/")
+                || method.starts_with("rawResponse/")
+            {
+                "unknown provider-boundary notification"
+            } else {
+                return Err(ContractError::InvalidField(
+                    "non-derivable discrepancy raw replay",
+                ));
+            };
+            let identity = current_execution.map(|execution| serde_json::json!({
+                "provider":execution.provider_id,"model":execution.model_id,"app_server_session_identity":execution.app_server_session_identity,
+                "thread_id":execution.thread_id,"turn_id":execution.turn_id,"first_response_id":execution.first_response_id,
+            }));
+            let expected = serde_json::json!({"detail":detail,"provider_execution_identity":identity,"resume_same_attempt_only":current_execution.is_some()});
+            if normalized != &expected {
+                return Err(ContractError::InvalidField("discrepancy normalized replay"));
+            }
+        }
+        _ => return Err(ContractError::InvalidField("raw replay evidence kind")),
     }
     Ok(())
 }
@@ -2163,13 +2678,60 @@ fn validate_safe_json(value: &Value) -> Result<(), ContractError> {
 ///
 /// This function is pure. It grants no authority and performs no store, adapter,
 /// provider, lock, timer, or process operation.
+fn exact_deferral_seconds(
+    policy: &ExecutionAvailabilityPolicyV1,
+    disposition: &ProviderAdmissionDispositionV1,
+    deferred: &DeferredProviderDispatchV1,
+) -> Result<u64, ContractError> {
+    let (expected_wake, expected_seconds) = match deferred.wake_basis {
+        DeferredWakeBasisV1::ProviderRetryAfter => {
+            let wake = disposition
+                .provider_retry_after
+                .ok_or(ContractError::InvalidField("provider retry-after absence"))?;
+            let milliseconds = (wake - disposition.received_at).num_milliseconds();
+            if milliseconds <= 0 || milliseconds % 1_000 != 0 {
+                return Err(ContractError::InvalidField(
+                    "exact provider retry-after duration",
+                ));
+            }
+            (wake, milliseconds as u64 / 1_000)
+        }
+        DeferredWakeBasisV1::PolicyBackoff => {
+            if disposition.provider_retry_after.is_some() || deferred.provider_retry_after.is_some()
+            {
+                return Err(ContractError::InvalidField(
+                    "policy backoff retry-after absence",
+                ));
+            }
+            let seconds = *policy
+                .backoff_seconds
+                .get(usize::from(deferred.backoff_ordinal))
+                .ok_or(ContractError::InvalidField("backoff ordinal"))?;
+            (
+                disposition.received_at + Duration::seconds(seconds as i64),
+                seconds,
+            )
+        }
+    };
+    if deferred.refusal_received_at != disposition.received_at
+        || deferred.provider_retry_after != disposition.provider_retry_after
+        || deferred.wake_at != expected_wake
+        || deferred.backoff_seconds != expected_seconds
+    {
+        return Err(ContractError::InvalidField(
+            "exact deferred wake derivation",
+        ));
+    }
+    Ok(expected_seconds)
+}
+
 pub fn validate_execution_availability_graph(
     requirement: &ForemanExecutionAvailabilityRequirementV1,
     policy: &ExecutionAvailabilityPolicyV1,
     dispatch: &ProviderDispatchOccurrenceV1,
     observation: &ExecutionAvailabilityObservationV1,
     disposition: &ProviderAdmissionDispositionV1,
-    prior_deferrals: &[DeferredProviderDispatchV1],
+    prior_history: &[ProviderDeferralHistoryEntryV1],
     deferred: Option<&DeferredProviderDispatchV1>,
 ) -> Result<(), ContractError> {
     requirement.validate()?;
@@ -2177,7 +2739,9 @@ pub fn validate_execution_availability_graph(
     dispatch.validate()?;
     observation.validate()?;
     disposition.validate()?;
-    if requirement.policy_id != policy.policy_id
+    if requirement.admitted_at > dispatch.opened_at
+        || dispatch.opened_at > disposition.received_at
+        || requirement.policy_id != policy.policy_id
         || requirement.policy_digest != policy.policy_digest
         || dispatch.requirement_digest != requirement.requirement_digest
         || dispatch.policy_digest != policy.policy_digest
@@ -2271,8 +2835,8 @@ pub fn validate_execution_availability_graph(
         ));
     }
 
-    if usize::from(dispatch.dispatch_ordinal) != prior_deferrals.len() + 1
-        || prior_deferrals.len() >= usize::from(policy.maximum_dispatch_occurrences_per_attempt)
+    if usize::from(dispatch.dispatch_ordinal) != prior_history.len() + 1
+        || prior_history.len() >= usize::from(policy.maximum_dispatch_occurrences_per_attempt)
     {
         return Err(ContractError::InvalidField(
             "dispatch ordinal prior deferral continuity",
@@ -2281,9 +2845,13 @@ pub fn validate_execution_availability_graph(
     let mut cumulative_deferral_seconds = 0_u64;
     let mut prior_dispatch_ids = BTreeSet::new();
     let mut prior_refusal_time: Option<DateTime<Utc>> = None;
+    let mut prior_wake_time: Option<DateTime<Utc>> = None;
     let mut prior_model_ordinal: Option<u16> = None;
-    for (index, prior) in prior_deferrals.iter().enumerate() {
-        prior.validate()?;
+    for (index, entry) in prior_history.iter().enumerate() {
+        entry.validate()?;
+        let prior_dispatch = &entry.dispatch;
+        let prior_disposition = &entry.disposition;
+        let prior = &entry.deferred;
         let prior_selection = selections
             .get(usize::from(prior.selected_model_ordinal))
             .ok_or(ContractError::InvalidField("prior deferred model ordinal"))?;
@@ -2292,7 +2860,37 @@ pub fn validate_execution_availability_graph(
         } else {
             Vec::new()
         };
-        if prior.requirement_digest != requirement.requirement_digest
+        if prior_dispatch.requirement_digest != requirement.requirement_digest
+            || prior_dispatch.policy_digest != policy.policy_digest
+            || prior_dispatch.packet_digest != requirement.packet_digest
+            || prior_dispatch.run_id != requirement.run_id
+            || prior_dispatch.work_item_id != dispatch.work_item_id
+            || prior_dispatch.work_attempt_id != dispatch.work_attempt_id
+            || usize::from(prior_dispatch.dispatch_ordinal) != index + 1
+            || prior_dispatch.selected_model_ordinal != prior.selected_model_ordinal
+            || prior_dispatch.selection != *prior_selection
+            || prior_dispatch.dispatch_occurrence_id != prior.last_dispatch_occurrence_id
+            || prior_disposition.dispatch_digest != prior_dispatch.dispatch_digest
+            || prior_disposition.requirement_digest != requirement.requirement_digest
+            || prior_disposition.policy_digest != policy.policy_digest
+            || prior_disposition.packet_digest != requirement.packet_digest
+            || prior_disposition.run_id != requirement.run_id
+            || prior_disposition.work_item_id != dispatch.work_item_id
+            || prior_disposition.work_attempt_id != dispatch.work_attempt_id
+            || prior_disposition.dispatch_occurrence_id != prior_dispatch.dispatch_occurrence_id
+            || prior_disposition.provider_id != prior_dispatch.selection.provider_id
+            || prior_disposition.model_id != prior_dispatch.selection.model_id
+            || prior_disposition.adapter_process_occurrence_id
+                != prior_dispatch.adapter_process_occurrence_id
+            || prior_disposition.app_server_session_identity
+                != prior_dispatch.app_server_session_identity
+            || prior.disposition_digest != prior_disposition.disposition_digest
+            || !prior_disposition.disposition.permits_automatic_park()
+            || requirement.admitted_at > prior_dispatch.opened_at
+            || prior_dispatch.opened_at > prior_disposition.received_at
+            || prior_wake_time.is_some_and(|wake| prior_dispatch.opened_at < wake)
+            || prior_wake_time.is_some_and(|wake| prior_disposition.received_at < wake)
+            || prior.requirement_digest != requirement.requirement_digest
             || prior.policy_digest != policy.policy_digest
             || prior.packet_digest != requirement.packet_digest
             || prior.run_id != requirement.run_id
@@ -2305,19 +2903,30 @@ pub fn validate_execution_availability_graph(
             || prior.parked_resource_lock_policy != policy.parked_resource_lock_policy
             || !prior_dispatch_ids.insert(prior.last_dispatch_occurrence_id.clone())
             || prior_refusal_time.is_some_and(|time| prior.refusal_received_at < time)
+            || (!policy.allow_ordered_model_fallback && prior.selected_model_ordinal != 0)
             || prior_model_ordinal.is_some_and(|ordinal| {
                 prior.selected_model_ordinal < ordinal
                     || prior.selected_model_ordinal > ordinal.saturating_add(1)
             })
-            || prior.wake_at > dispatch.opened_at
         {
             return Err(ContractError::InvalidField("prior deferral graph"));
         }
+        let exact_seconds = exact_deferral_seconds(policy, prior_disposition, prior)?;
         prior_refusal_time = Some(prior.refusal_received_at);
+        prior_wake_time = Some(prior.wake_at);
         prior_model_ordinal = Some(prior.selected_model_ordinal);
         cumulative_deferral_seconds = cumulative_deferral_seconds
-            .checked_add(prior.backoff_seconds)
+            .checked_add(exact_seconds)
             .ok_or(ContractError::InvalidField("cumulative deferral overflow"))?;
+    }
+    if prior_wake_time.is_some_and(|wake| dispatch.opened_at < wake)
+        || prior_wake_time.is_some_and(|wake| disposition.received_at < wake)
+        || (!policy.allow_ordered_model_fallback && dispatch.selected_model_ordinal != 0)
+        || cumulative_deferral_seconds > policy.maximum_total_deferral_seconds
+    {
+        return Err(ContractError::InvalidField(
+            "prior wake dispatch progression",
+        ));
     }
     if prior_model_ordinal.is_some_and(|ordinal| {
         dispatch.selected_model_ordinal < ordinal
@@ -2358,37 +2967,12 @@ pub fn validate_execution_availability_graph(
         if parked.remaining_model_ordinals != expected_remaining {
             return Err(ContractError::InvalidField("ordered fallback suffix"));
         }
+        let exact_seconds = exact_deferral_seconds(policy, disposition, parked)?;
         cumulative_deferral_seconds = cumulative_deferral_seconds
-            .checked_add(parked.backoff_seconds)
+            .checked_add(exact_seconds)
             .ok_or(ContractError::InvalidField("cumulative deferral overflow"))?;
         if cumulative_deferral_seconds > policy.maximum_total_deferral_seconds {
             return Err(ContractError::InvalidField("maximum cumulative deferral"));
-        }
-        match parked.wake_basis {
-            DeferredWakeBasisV1::ProviderRetryAfter => {
-                let retry_after = disposition
-                    .provider_retry_after
-                    .ok_or(ContractError::InvalidField("provider retry-after absence"))?;
-                let seconds = (retry_after - disposition.received_at).num_seconds();
-                if parked.provider_retry_after != Some(retry_after)
-                    || seconds <= 0
-                    || parked.backoff_seconds != seconds as u64
-                {
-                    return Err(ContractError::InvalidField("provider retry-after wake"));
-                }
-            }
-            DeferredWakeBasisV1::PolicyBackoff => {
-                let expected = policy
-                    .backoff_seconds
-                    .get(usize::from(parked.backoff_ordinal))
-                    .ok_or(ContractError::InvalidField("backoff ordinal"))?;
-                if disposition.provider_retry_after.is_some()
-                    || parked.provider_retry_after.is_some()
-                    || parked.backoff_seconds != *expected
-                {
-                    return Err(ContractError::InvalidField("policy backoff wake"));
-                }
-            }
         }
     } else if deferred.is_some() {
         return Err(ContractError::InvalidField("unlawful automatic park"));
@@ -2426,11 +3010,13 @@ fn switchyard_source_observation(
                 .find(|record| record.get("kind").and_then(Value::as_str) == Some(kind))
         })
         .ok_or(ContractError::InvalidField("observation source evidence"))?;
-    let observed_at = record["normalized"]
-        .get("observed_at_ms")
-        .and_then(Value::as_i64)
-        .and_then(DateTime::<Utc>::from_timestamp_millis)
-        .unwrap_or(disposition.received_at);
+    let observed_at = match record["normalized"].get("observed_at_ms") {
+        None => disposition.received_at,
+        Some(value) => value
+            .as_i64()
+            .and_then(DateTime::<Utc>::from_timestamp_millis)
+            .ok_or(ContractError::InvalidField("source observed_at_ms"))?,
+    };
     let evidence = match record.get("raw") {
         Some(Value::Null)
             if matches!(

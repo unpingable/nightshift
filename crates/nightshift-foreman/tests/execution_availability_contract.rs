@@ -56,6 +56,51 @@ fn reseal_mapper_snapshot(mut snapshot: Value) -> Value {
     )
 }
 
+fn retarget_snapshot_dispatch(mut snapshot: Value, dispatch_occurrence_id: &str) -> Value {
+    snapshot["binding"]["dispatch_occurrence_id"] = json!(dispatch_occurrence_id);
+    snapshot["binding"] = seal_value(
+        snapshot["binding"].clone(),
+        "binding_digest",
+        b"switchyard.codex-provider-admission-binding.digest/v1\0",
+    );
+    let binding_digest = snapshot["binding"]["binding_digest"].clone();
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        record["dispatch_occurrence_id"] = json!(dispatch_occurrence_id);
+        record["binding_digest"] = binding_digest.clone();
+    }
+    reseal_mapper_snapshot(snapshot)
+}
+
+fn replace_string(value: &mut Value, from: &str, to: &str) {
+    match value {
+        Value::String(text) if text == from => *text = to.to_owned(),
+        Value::Array(values) => {
+            for value in values {
+                replace_string(value, from, to);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                replace_string(value, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn retarget_snapshot_model(mut snapshot: Value, model: &str) -> Value {
+    replace_string(&mut snapshot, "gpt-5.6-sol", model);
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        if let Some(raw) = record["raw"].as_object() {
+            let bytes = hex::decode(raw["bytes_hex"].as_str().unwrap()).unwrap();
+            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+            replace_string(&mut wire, "gpt-5.6-sol", model);
+            record["raw"] = mapper_raw(wire);
+        }
+    }
+    retarget_snapshot_dispatch(snapshot, "dispatch-holding-2")
+}
+
 type SnapshotMutation = (&'static str, fn(&mut Value));
 
 fn policy() -> ExecutionAvailabilityPolicyV1 {
@@ -601,6 +646,51 @@ fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
     )
     .unwrap();
 
+    let mut late_requirement = requirement.clone();
+    late_requirement.admitted_at = dispatch.opened_at + Duration::milliseconds(1);
+    late_requirement.seal().unwrap();
+    let late_dispatch = crate::dispatch(&late_requirement);
+    let late_disposition = crate::disposition(&late_requirement, &late_dispatch);
+    let late_observation = observation_for_disposition(&late_disposition);
+    let late_deferred = deferred_for(
+        &late_requirement,
+        &policy,
+        &late_dispatch,
+        &late_disposition,
+    );
+    validate_execution_availability_graph(
+        &late_requirement,
+        &policy,
+        &late_dispatch,
+        &late_observation,
+        &late_disposition,
+        &[],
+        Some(&late_deferred),
+    )
+    .unwrap_err();
+
+    let mut after_receipt_dispatch = dispatch.clone();
+    after_receipt_dispatch.opened_at = disposition.received_at + Duration::milliseconds(1);
+    after_receipt_dispatch.seal().unwrap();
+    let after_receipt_disposition = crate::disposition(&requirement, &after_receipt_dispatch);
+    let after_receipt_observation = observation_for_disposition(&after_receipt_disposition);
+    let after_receipt_deferred = deferred_for(
+        &requirement,
+        &policy,
+        &after_receipt_dispatch,
+        &after_receipt_disposition,
+    );
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &after_receipt_dispatch,
+        &after_receipt_observation,
+        &after_receipt_disposition,
+        &[],
+        Some(&after_receipt_deferred),
+    )
+    .unwrap_err();
+
     let mut substituted_observation = observation.clone();
     substituted_observation.received_at += Duration::seconds(1);
     substituted_observation.seal().unwrap();
@@ -724,6 +814,11 @@ fn cumulative_multi_deferral_history_is_explicit_and_bounded() {
     let first_dispatch = dispatch(&requirement);
     let first_disposition = disposition(&requirement, &first_dispatch);
     let first_deferred = deferred_for(&requirement, &policy, &first_dispatch, &first_disposition);
+    let first_history = ProviderDeferralHistoryEntryV1 {
+        dispatch: first_dispatch.clone(),
+        disposition: first_disposition.clone(),
+        deferred: first_deferred.clone(),
+    };
 
     let mut second_dispatch = first_dispatch.clone();
     second_dispatch.dispatch_occurrence_id = "dispatch-holding-2".to_owned();
@@ -771,16 +866,76 @@ fn cumulative_multi_deferral_history_is_explicit_and_bounded() {
         &second_dispatch,
         &second_observation,
         &second_disposition,
-        std::slice::from_ref(&first_deferred),
+        std::slice::from_ref(&first_history),
         Some(&second_deferred),
     )
     .unwrap();
 
-    let mut reversed_model = first_deferred.clone();
-    reversed_model.selected_model_ordinal = 1;
-    reversed_model.model_id = "gpt-5.6-terra".to_owned();
-    reversed_model.remaining_model_ordinals.clear();
-    reversed_model.seal().unwrap();
+    let completed_snapshot = retarget_snapshot_dispatch(
+        serde_json::from_slice(include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
+        ))
+        .unwrap(),
+        &second_dispatch.dispatch_occurrence_id,
+    );
+    let admitted_disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &second_dispatch,
+        &canonical(&completed_snapshot),
+        time("2026-08-31T12:02:00Z"),
+    );
+    let admitted_observation = observation_for_disposition(&admitted_disposition);
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &admitted_observation,
+        &admitted_disposition,
+        std::slice::from_ref(&first_history),
+        None,
+    )
+    .unwrap();
+
+    let mut mismatched_history = first_history.clone();
+    mismatched_history.deferred.disposition_digest = placeholder();
+    mismatched_history.deferred.seal().unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &admitted_observation,
+        &admitted_disposition,
+        &[mismatched_history],
+        None,
+    )
+    .unwrap_err();
+
+    let mut before_wake = second_dispatch.clone();
+    before_wake.opened_at = first_deferred.wake_at - Duration::milliseconds(1);
+    before_wake.seal().unwrap();
+    let early_disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &before_wake,
+        &canonical(&completed_snapshot),
+        time("2026-08-31T12:02:00Z"),
+    );
+    let early_observation = observation_for_disposition(&early_disposition);
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &before_wake,
+        &early_observation,
+        &early_disposition,
+        std::slice::from_ref(&first_history),
+        None,
+    )
+    .unwrap_err();
+
+    let mut reversed_model = first_history.clone();
+    reversed_model.deferred.selected_model_ordinal = 1;
+    reversed_model.deferred.model_id = "gpt-5.6-terra".to_owned();
+    reversed_model.deferred.remaining_model_ordinals.clear();
+    reversed_model.deferred.seal().unwrap();
     validate_execution_availability_graph(
         &requirement,
         &policy,
@@ -834,10 +989,70 @@ fn cumulative_multi_deferral_history_is_explicit_and_bounded() {
         &second_dispatch,
         &over_budget_observation,
         &over_budget_disposition,
-        &[first_deferred],
+        &[first_history],
         Some(&current_deferred),
     )
     .unwrap_err();
+}
+
+#[test]
+fn admitted_current_still_enforces_budget_and_disabled_fallback_cannot_advance() {
+    for (maximum_total, fallback) in [(4, true), (10, false)] {
+        let mut policy = policy();
+        policy.backoff_seconds = vec![1];
+        policy.maximum_total_deferral_seconds = maximum_total;
+        policy.allow_ordered_model_fallback = fallback;
+        policy.seal().unwrap();
+        let requirement = requirement(&policy);
+        let first_dispatch = dispatch(&requirement);
+        let first_disposition = disposition(&requirement, &first_dispatch);
+        let mut first_deferred =
+            deferred_for(&requirement, &policy, &first_dispatch, &first_disposition);
+        if !fallback {
+            first_deferred.remaining_model_ordinals.clear();
+            first_deferred.seal().unwrap();
+        }
+        let history = ProviderDeferralHistoryEntryV1 {
+            dispatch: first_dispatch,
+            disposition: first_disposition,
+            deferred: first_deferred.clone(),
+        };
+        let mut second_dispatch = dispatch(&requirement);
+        second_dispatch.dispatch_occurrence_id = "dispatch-holding-2".to_owned();
+        second_dispatch.dispatch_ordinal = 2;
+        second_dispatch.opened_at = first_deferred.wake_at;
+        if !fallback {
+            second_dispatch.selected_model_ordinal = 1;
+            second_dispatch.selection = requirement.work_item_model_selections["WORK-A"][1].clone();
+        }
+        second_dispatch.seal().unwrap();
+        let base_snapshot = serde_json::from_slice(include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
+        ))
+        .unwrap();
+        let snapshot = if fallback {
+            retarget_snapshot_dispatch(base_snapshot, &second_dispatch.dispatch_occurrence_id)
+        } else {
+            retarget_snapshot_model(base_snapshot, &second_dispatch.selection.model_id)
+        };
+        let disposition = disposition_from_exact_snapshot(
+            &requirement,
+            &second_dispatch,
+            &canonical(&snapshot),
+            time("2026-08-31T12:02:00Z"),
+        );
+        let observation = observation_for_disposition(&disposition);
+        let result = validate_execution_availability_graph(
+            &requirement,
+            &policy,
+            &second_dispatch,
+            &observation,
+            &disposition,
+            &[history],
+            None,
+        );
+        assert!(result.is_err(), "accepted budget/fallback bypass");
+    }
 }
 
 #[test]
@@ -847,6 +1062,15 @@ fn mapper_cut_ordinal_representation_number_and_receipt_time_substitutions_fail_
     let dispatch = dispatch(&requirement);
     let original = disposition(&requirement, &dispatch);
     let raw = original.mapper_snapshot.validate().unwrap();
+
+    let mut uppercase_snapshot = original.mapper_snapshot.clone();
+    uppercase_snapshot.bytes_hex = uppercase_snapshot.bytes_hex.to_ascii_uppercase();
+    uppercase_snapshot.validate().unwrap_err();
+    let mut uppercase_evidence = observation_for_disposition(&original)
+        .exact_evidence
+        .unwrap();
+    uppercase_evidence.bytes_hex = uppercase_evidence.bytes_hex.to_ascii_uppercase();
+    uppercase_evidence.validate().unwrap_err();
 
     let mutations: &[SnapshotMutation] = &[
         ("cut-session", |snapshot| {
@@ -956,16 +1180,26 @@ fn client_request_response_pairing_is_exact() {
     request["acquisition_kind"] = json!("CLIENT_REQUEST");
     request["kind"] = json!("CLIENT_REQUEST_ISSUED");
     request["method"] = json!("client-request/thread/read");
-    request["normalized"] = json!({"request_id":7,"request_method":"thread/read","params_sha256":placeholder(),"proves_provider_admission":false});
-    request["raw"] = mapper_raw(json!({"id":7,"method":"thread/read","params":{}}));
+    let request_params = json!({"threadId":"thread-holding-1"});
+    let params_sha256 = format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_jcs::to_vec(&request_params).unwrap())
+    );
+    request["normalized"] = json!({"request_id":7,"request_method":"thread/read","params_sha256":params_sha256,"proves_provider_admission":false});
+    request["raw"] = mapper_raw(json!({"id":7,"method":"thread/read","params":request_params}));
     let mut response = request.clone();
     response["sequence"] = json!(1);
     response["acquisition_ordinal"] = json!(1);
     response["acquisition_kind"] = json!("CLIENT_RESPONSE");
     response["kind"] = json!("CLIENT_RESPONSE_RETAINED");
     response["method"] = json!("client-response/thread/read");
-    response["normalized"] = json!({"request_id":7,"request_method":"thread/read","params_sha256":placeholder(),"result_sha256":placeholder(),"proves_provider_admission":false});
-    response["raw"] = mapper_raw(json!({"id":7,"result":{"thread":"thread-holding-1"}}));
+    let result = json!({"thread":{"id":"thread-holding-1"}});
+    let result_sha256 = format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_jcs::to_vec(&result).unwrap())
+    );
+    response["normalized"] = json!({"request_id":7,"request_method":"thread/read","params_sha256":params_sha256,"result_sha256":result_sha256,"proves_provider_admission":false});
+    response["raw"] = mapper_raw(json!({"id":7,"result":result}));
     snapshot["records"]
         .as_array_mut()
         .unwrap()
@@ -1044,4 +1278,82 @@ fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
             assert!(!disposition.disposition.permits_automatic_park());
         }
     }
+
+    let mut unrepresentable: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
+    ))
+    .unwrap();
+    unrepresentable["records"][1]["normalized"]["observed_at_ms"] =
+        json!(9_007_199_254_740_991_i64);
+    let raw = &unrepresentable["records"][1]["raw"];
+    let bytes = hex::decode(raw["bytes_hex"].as_str().unwrap()).unwrap();
+    let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+    wire["params"]["observedAtMs"] = json!(9_007_199_254_740_991_i64);
+    unrepresentable["records"][1]["raw"] = mapper_raw(wire);
+    unrepresentable = reseal_mapper_snapshot(unrepresentable);
+    let unrepresentable_disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&unrepresentable),
+        time("2026-08-31T12:01:02Z"),
+    );
+    let unrepresentable_observation = observation_for_disposition(&unrepresentable_disposition);
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &dispatch,
+        &unrepresentable_observation,
+        &unrepresentable_disposition,
+        &[],
+        None,
+    )
+    .unwrap_err();
+}
+
+#[test]
+fn exact_owner_approval_method_reaches_waiting_and_raw_identity_substitution_refuses() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let mut snapshot: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"
+    ))
+    .unwrap();
+    let execution = snapshot["provider_execution_identity"].clone();
+    let approval = &mut snapshot["records"][3];
+    approval["kind"] = json!("WAITING_APPROVAL");
+    approval["method"] = json!("item/commandExecution/requestApproval");
+    approval["raw"] = mapper_raw(json!({
+        "method":"item/commandExecution/requestApproval",
+        "params":{"threadId":"thread-holding-1","turnId":"turn-holding-1"}
+    }));
+    approval["normalized"] = json!({
+        "approval_response_sent":false,
+        "protected_effect_absent":true,
+        "provider_execution_identity":execution,
+    });
+    snapshot = reseal_mapper_snapshot(snapshot);
+    let disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&snapshot),
+        time("2026-08-31T12:01:02Z"),
+    );
+    assert_eq!(
+        disposition.mechanism_state,
+        ProviderMechanismStateV1::PostAdmissionInterrupted
+    );
+
+    let raw = &mut snapshot["records"][1]["raw"];
+    let bytes = hex::decode(raw["bytes_hex"].as_str().unwrap()).unwrap();
+    let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+    wire["params"]["threadId"] = json!("thread-substituted");
+    snapshot["records"][1]["normalized"]["provider_execution_step_identity"]["thread_id"] =
+        json!("thread-substituted");
+    snapshot["records"][1]["raw"] = mapper_raw(wire);
+    snapshot = reseal_mapper_snapshot(snapshot);
+    let mut substituted = disposition;
+    substituted.mapper_snapshot_digest = snapshot["snapshot_digest"].as_str().unwrap().to_owned();
+    substituted.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
+    substituted.seal().unwrap_err();
 }

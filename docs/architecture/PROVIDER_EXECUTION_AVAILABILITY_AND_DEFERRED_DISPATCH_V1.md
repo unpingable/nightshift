@@ -157,14 +157,26 @@ Every record uses RFC 8785 serialization and a distinct
 explicit byte length, plain SHA-256, and a 16 KiB per-evidence ceiling. The
 complete canonical Switchyard mapper snapshot is a distinct carrier with
 representation `RFC8785_SWITCHYARD_MAPPER_SNAPSHOT` and a 16 MiB ceiling.
+Nightshift executes the exact vendored Switchyard schema and then replays every
+retained raw frame: lowercase hex, line framing, duplicate-key refusal,
+acquisition lane/method, client request/response digests, provider occurrence
+and execution identities, refusal, response completion, approval, normalized
+record, cut, and snapshot state must all agree. A present source timestamp that
+cannot be represented is refused; only an absent timestamp uses the explicitly
+defined receipt-time fallback.
 This contract checkpoint does not yet claim a cumulative journal-history bound;
 that metadata-first pre-acquisition invariant belongs to the held storage
 implementation and must qualify before journal mutation is accepted.
-The pure contract graph does require the exact ordered prior-deferral slice for
-the same work attempt. It binds dispatch/backoff ordinals and exact identities,
-checked-adds every retained deferral duration, and refuses a current deferral
-whose cumulative duration exceeds the immutable policy maximum. Storage must
-later prove that the supplied slice is the complete append-only history.
+The pure contract graph requires the exact ordered prior history for the same
+work attempt. Every entry carries and reopens its exact dispatch occurrence,
+admission disposition, and deferral receipt. The graph binds their digests and
+identities, requires requirement admission before dispatch and dispatch before
+disposition, requires each prior wake before the next dispatch and refusal,
+recomputes every duration from exact timestamps or the immutable policy rather
+than trusting stored seconds, and checked-adds the result even when the current
+occurrence admits execution. Model ordinals cannot advance when fallback is
+disabled. Storage must later prove that the supplied slice is the complete
+append-only history.
 
 The worker-adapter successor is V3. V2 remains readable and unchanged, but a
 run admitted with an execution-availability requirement refuses the V2 start
