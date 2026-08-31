@@ -1,0 +1,14 @@
+{
+  "schema": "nightshift.provider-capacity-policy/v1",
+  "policy_id": "nightshift-default-provider-reserve-v1",
+  "abundant_min_remaining": 0.5,
+  "normal_min_remaining": 0.25,
+  "conserve_min_remaining": 0.1,
+  "minimum_confidence": "MEDIUM",
+  "required_window_types": [
+    "FIVE_HOUR",
+    "WEEKLY"
+  ],
+  "unknown_allows_new_cheap_work": false,
+  "policy_digest": "sha256:7567588f6fe319430e5d83e5955c7c20ded2dcb8e5554676db9a1a6482305cb0"
+}

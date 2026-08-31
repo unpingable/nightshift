@@ -1,0 +1,60 @@
+{
+  "schema": "nightshift.provider-capacity-qualification/v1",
+  "campaign": {
+    "codename": "FUEL-NEEDLE",
+    "canonical_slug": "provider-capacity-observation-and-scheduling-policy-v1",
+    "track": "provider-capacity-observation"
+  },
+  "packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "authorized_integration_base": "888dd1e140200394cfadb81dc0c9377887585b05",
+  "starting_seed": "20e56f983923d5fdb198b0fa4a43d86707c5c49b",
+  "qualified_subject": "c29c1c8f7c0b9845499fd25d81a4e93ead839fcd",
+  "rejected_predecessor_result_head": "896098a87daa7d51a8e8a87b95180b677eb4f788",
+  "classification": "PROVIDER-CAPACITY-OBSERVATION-AND-SCHEDULING-POLICY-V1-QUALIFIED",
+  "classifications_aggregated": false,
+  "historical_probe": {
+    "client": "codex-cli 0.147.0",
+    "observed_at": "2026-08-30T20:14:26.864158168Z",
+    "remediation_probe_launched": false,
+    "disposition": "UNKNOWN",
+    "source_class": "UNKNOWN",
+    "confidence": "UNKNOWN",
+    "executable_identity_captured": false,
+    "observation_digest": "sha256:ae0da1931218b4eee91052c316856c1737d32f7d039ee8dca37c7a5fa4bf9d86",
+    "policy_digest": "sha256:7567588f6fe319430e5d83e5955c7c20ded2dcb8e5554676db9a1a6482305cb0",
+    "decision_digest": "sha256:9d17f39b44fa3c9ad64856b5c17117cccc43af6df52198d1fb2e64d62ec40da6",
+    "decision_state": "UNKNOWN",
+    "admission": "NO_NEW_WORK",
+    "reason_codes": [
+      "EXECUTABLE_IDENTITY_UNBOUND",
+      "REQUIRED_WINDOW_MISSING_FIVE_HOUR"
+    ]
+  },
+  "qualification": {
+    "rust_passed": 338,
+    "rust_failed": 0,
+    "rust_ignored_environment_dependent": 13,
+    "provider_capacity_tests_passed": 19,
+    "schema_report_tests_passed": 13,
+    "format_passed": true,
+    "clippy_warnings_denied_passed": true,
+    "structural_gates_and_negative_controls_passed": true
+  },
+  "human_questions": [],
+  "timers_enabled": false,
+  "services_enabled": false,
+  "limitations": [
+    "Usable Codex testimony requires a canonical native executable path, exact executable digest, and matching codex_cli_rs initialize version.",
+    "The historical snapshot supplied no separate short-window value or executable identity and is retained as UNKNOWN; none was inferred.",
+    "Descriptor-pinned executable invocation is Linux-only; unsupported platforms yield UNKNOWN.",
+    "Other provider adapters remain outside this campaign.",
+    "Foreman integration belongs to CLOCKWORK-MOTH."
+  ],
+  "audit_remediation": {
+    "required_windows_fail_closed": true,
+    "decision_state_invariants_closed": true,
+    "incremental_response_bound": true,
+    "executable_and_protocol_identity_bound": true
+  },
+  "successor_base_policy": "exact_result_ancestry"
+}

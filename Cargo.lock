@@ -514,6 +514,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightshift-provider-capacity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "nightshiftd"
 version = "0.1.0"
 dependencies = [

@@ -24,6 +24,7 @@ Start with the canonical runtime record, then use `architecture/` and
 - [`GENERIC_PROJECT_PREDICATE_ATTENTION_V1.md`](GENERIC_PROJECT_PREDICATE_ATTENTION_V1.md) — operator-owned generic proposition/assurance attention, distinct-evidence recurrence, Pulse replay, and currentness boundary
 - [`CONTINUITY_AUTHORITY_CARRIER_V1.md`](CONTINUITY_AUTHORITY_CARRIER_V1.md) — signed Standing warrant, pre-provider NQ commitment, and Nightshift applicability boundary
 - [`BASE_ADMISSION_AND_QUALIFIED_LINEAGE_V1.md`](BASE_ADMISSION_AND_QUALIFIED_LINEAGE_V1.md) — qualified subject, campaign result, successor-base identity, and exact ancestry/content-equivalence admission law
+- [`PROVIDER-CAPACITY-OBSERVATION-V1.md`](PROVIDER-CAPACITY-OBSERVATION-V1.md) — provider-neutral capacity testimony, bounded Codex App Server read probe, and deterministic scheduling policy
 - [`architecture/DESIGN.md`](architecture/DESIGN.md) — historical pre-C1 architecture and MVP scope
 - [`architecture/FLOW-tolerability-horizon.md`](architecture/FLOW-tolerability-horizon.md) — historical Governor-shaped horizon flow; temporal hold policy survives in the canonical store
 - [`architecture/SCHEMA-agenda.md`](architecture/SCHEMA-agenda.md) — historical agenda draft

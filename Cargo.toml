@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/nightshiftd", "crates/nightshift-casework", "crates/nightshift-foreman"]
+members = [
+    "crates/nightshiftd",
+    "crates/nightshift-casework",
+    "crates/nightshift-foreman",
+    "crates/nightshift-provider-capacity",
+]
 
 [workspace.package]
 version = "0.1.0"
