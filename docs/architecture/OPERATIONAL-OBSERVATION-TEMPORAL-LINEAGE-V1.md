@@ -56,4 +56,6 @@ The compatibility parser mirrors FIELD Monitor v1 limits: closed locator kinds, 
 
 Every NQ input is validated, not only the selected input. The accepted graph mirrors NQ qualify_one: a record-reopening refusal has no Monitor identity tuple or other finding; a later refusal has a complete reopened tuple and no support or cannot-testify; a non-refused input has a complete tuple and at least one support or cannot-testify finding; acquisition failures carry cannot-testify only; and contradictions equal the deterministic graph derived from supported claims. Optional identity, outcome, time, and payload-schema fields cannot form partial alternate shapes.
 
+The pinned qualify_one refusal vocabulary is branch-closed: reopening failures cannot be relabeled as post-reopening profile/time/custody refusals, and post-reopening refusals cannot use reopening-failure codes. Every refusal retains the exact raw input digest. Non-refused reopened inputs retain one canonical complete profile claim-ID domain across support and cannot-testify, and each acquisition-failure reason is the exact outcome-derived NQ string. Contradiction fixtures use separately signed Monitor observations with distinct exact payload custody rather than content mutation inside one reopened input.
+
 No aggregate result exists.

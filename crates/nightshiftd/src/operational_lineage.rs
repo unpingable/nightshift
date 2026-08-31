@@ -41,6 +41,55 @@ const NQ_NONCLAIMS: [&str; 3] = [
     "NQ qualification does not establish Nightshift temporal currentness",
     "producer class alone grants no evidentiary precedence",
 ];
+const NQ_REOPENED_REFUSAL_CODES: [&str; 5] = [
+    "receiver_custody_inversion",
+    "evaluation_time_inversion",
+    "subject_identity_mismatch",
+    "producer_identity_mismatch",
+    "payload_custody_missing",
+];
+const NQ_UNOPENED_REFUSAL_CODES: [&str; 40] = [
+    "record_oversized",
+    "record_malformed",
+    "field_malformed",
+    "closed_schema_violation",
+    "field_missing",
+    "field_type",
+    "object_expected",
+    "body_malformed",
+    "schema_unknown",
+    "authority_present",
+    "invalid_token",
+    "invalid_text",
+    "subject_kind_unknown",
+    "unsupported_subject_basis_contract",
+    "subject_basis_kind_mismatch",
+    "invalid_collection",
+    "locator_kind_unknown",
+    "timestamp_invalid",
+    "timestamp_noncanonical",
+    "digest_invalid",
+    "timestamp_inversion",
+    "acquisition_outcome_unknown",
+    "lineage_invalid",
+    "coverage_invalid",
+    "coverage_incomplete",
+    "content_length_invalid",
+    "observation_time_missing",
+    "observation_time_inversion",
+    "failure_as_world_claim",
+    "key_algorithm_unknown",
+    "public_key_malformed",
+    "producer_key_mismatch",
+    "signer_identity_mismatch",
+    "signature_domain_mismatch",
+    "signature_malformed",
+    "signature_invalid",
+    "payload_digest_law_unknown",
+    "payload_missing",
+    "payload_malformed",
+    "payload_substitution",
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -989,6 +1038,34 @@ fn validate_nq(value: &NqArtifactV1) -> Result<(), String> {
         }
         validate_nq_findings(input, value.evaluated_at)?;
     }
+    let mut complete_claim_domain: Option<Vec<&str>> = None;
+    for input in &value.inputs {
+        if nq_input_is_reopened(input) && input.refusals.is_empty() {
+            let domain = input
+                .claim_support
+                .iter()
+                .map(|claim| claim.claim_id.as_str())
+                .chain(
+                    input
+                        .cannot_testify
+                        .iter()
+                        .map(|finding| finding.claim_id.as_str()),
+                )
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            match &complete_claim_domain {
+                Some(expected) if *expected != domain => {
+                    return Err(
+                        "NQ non-refused inputs differ from the complete ordered claim domain"
+                            .into(),
+                    )
+                }
+                None => complete_claim_domain = Some(domain),
+                _ => {}
+            }
+        }
+    }
     let mut contradiction_ids = BTreeSet::new();
     for item in &value.contradictions {
         token("contradiction.claim_id", &item.claim_id)?;
@@ -1134,6 +1211,33 @@ fn validate_nq_findings(input: &NqInputV1, evaluated_at: DateTime<Utc>) -> Resul
         }
     }
     let is_reopened = reopened.iter().all(|present| *present);
+    if let Some(refusal) = input.refusals.first() {
+        let admitted_codes = if is_reopened {
+            NQ_REOPENED_REFUSAL_CODES.as_slice()
+        } else {
+            NQ_UNOPENED_REFUSAL_CODES.as_slice()
+        };
+        if !admitted_codes.contains(&refusal.code.as_str()) {
+            return Err("NQ refusal code does not match its reopened/unopened branch".into());
+        }
+        let expected_detail = match refusal.code.as_str() {
+            "receiver_custody_inversion" => {
+                Some("receiver custody precedes completion of the signed acquisition")
+            }
+            "evaluation_time_inversion" => Some("NQ evaluation precedes receiver custody"),
+            "subject_identity_mismatch" => {
+                Some("subject is outside the exact qualification profile")
+            }
+            "producer_identity_mismatch" => {
+                Some("producer is outside the exact qualification profile")
+            }
+            "payload_custody_missing" => Some("produced observation lacks reopened payload bytes"),
+            _ => None,
+        };
+        if expected_detail.is_some_and(|detail| refusal.detail != detail) {
+            return Err("NQ reopened refusal detail differs from qualify_one".into());
+        }
+    }
     let evaluation_inverted = evaluated_at < input.receiver_custody_at;
     let evaluation_refusal = input
         .refusals
@@ -1165,9 +1269,32 @@ fn validate_nq_findings(input: &NqInputV1, evaluated_at: DateTime<Utc>) -> Resul
             {
                 return Err("NQ failed acquisition has an impossible finding shape".into());
             }
+            if let Some(outcome) = outcome.filter(|value| *value != "observation_produced") {
+                let expected =
+                    format!("Monitor acquisition outcome {outcome} produced no world testimony");
+                if input
+                    .cannot_testify
+                    .iter()
+                    .any(|finding| finding.reason != expected)
+                {
+                    return Err(
+                        "NQ failed-acquisition cannot-testify reason differs from qualify_one"
+                            .into(),
+                    );
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn nq_input_is_reopened(input: &NqInputV1) -> bool {
+    input.monitor_record_digest.is_some()
+        && input.subject_identity_digest.is_some()
+        && input.producer_identity_digest.is_some()
+        && input.producer_principal_id.is_some()
+        && input.producer_class.is_some()
+        && input.acquisition_outcome.is_some()
 }
 
 fn claim_value_is(input: &NqInputV1, claim_id: &str, value_digest: &str) -> bool {
@@ -1233,6 +1360,17 @@ fn bind_input(
         .transpose()?;
     if input.producer_observed_at != observed {
         return Err("NQ producer time differs from Monitor".into());
+    }
+    let acquisition_ended = time("acquisition_ended_at", &body.acquisition.ended_at)?;
+    let receiver_inverted = input.receiver_custody_at < acquisition_ended;
+    let receiver_refusal = input
+        .refusals
+        .first()
+        .is_some_and(|refusal| refusal.code == "receiver_custody_inversion");
+    if receiver_inverted != receiver_refusal {
+        return Err(
+            "NQ receiver/acquisition time ordering does not match qualify_one refusal".into(),
+        );
     }
     for claim in &input.claim_support {
         token("claim_id", &claim.claim_id)?;
@@ -1741,6 +1879,16 @@ mod tests {
         sign_exact_body(&body_bytes, &signed.body.producer)
     }
 
+    fn monitor_with_payload(payload: &[u8]) -> Vec<u8> {
+        let canonical = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
+        let mut signed: SignedMonitorV1 = serde_json::from_slice(&canonical).unwrap();
+        let reference = signed.body.payload.as_mut().unwrap();
+        reference.digest = monitor_digest(MONITOR_CONTENT_DIGEST_DOMAIN_V1, &[payload]);
+        reference.byte_length = payload.len() as u64;
+        let body_bytes = serde_json::to_vec(&signed.body).unwrap();
+        sign_exact_body(&body_bytes, &signed.body.producer)
+    }
+
     fn validate_monitor_fixture(signed: &SignedMonitorV1) -> Result<(), String> {
         let bytes = serde_json::to_vec(signed).unwrap();
         let body = extract_object_field(&bytes, "body").unwrap();
@@ -1782,14 +1930,17 @@ mod tests {
             } else {
                 vec![CannotTestifyV1 {
                     claim_id: "claim:stage".into(),
-                    reason: "no world testimony".into(),
+                    reason: format!(
+                        "Monitor acquisition outcome {} produced no world testimony",
+                        signed.body.acquisition.outcome.text()
+                    ),
                 }]
             },
             refusals: if refused {
                 vec![RefusalV1 {
-                    code: "profile_refusal".into(),
+                    code: "subject_identity_mismatch".into(),
                     exact_basis_digest: sha256(raw),
-                    detail: "fixture refusal".into(),
+                    detail: "subject is outside the exact qualification profile".into(),
                 }]
             } else {
                 vec![]
@@ -1972,20 +2123,17 @@ mod tests {
 
     #[test]
     fn contradiction_is_preserved_without_precedence_or_authority() {
-        let raw = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
+        let raw = monitor_with_payload(br#"{"stage":"ready"}"#);
         let mut qualified: NqArtifactV1 = serde_json::from_slice(&nq(&raw, false)).unwrap();
-        let mut other = qualified.inputs[0].clone();
+        qualified.inputs[0].claim_support[0].value_digest =
+            jcs_digest(&serde_json::json!("ready")).unwrap();
+        let other_raw = monitor_with_payload(br#"{"stage":"blocked"}"#);
+        let other_artifact: NqArtifactV1 = serde_json::from_slice(&nq(&other_raw, false)).unwrap();
+        let mut other = other_artifact.inputs[0].clone();
         other.input_id = "input:other".into();
-        other.claim_support[0].value_digest = d("other");
+        other.claim_support[0].value_digest = jcs_digest(&serde_json::json!("blocked")).unwrap();
         qualified.inputs.push(other);
-        qualified.contradictions.push(ContradictionV1 {
-            subject_identity_digest: qualified.inputs[0].subject_identity_digest.clone().unwrap(),
-            claim_id: "claim:stage".into(),
-            first_input_id: "input:fixture".into(),
-            first_value_digest: d("value"),
-            second_input_id: "input:other".into(),
-            second_value_digest: d("other"),
-        });
+        qualified.contradictions = expected_nq_contradictions(&qualified.inputs);
         let lineage = admit(&raw, &serde_json::to_vec(&qualified).unwrap(), &[]).unwrap();
         let profile = ReobservationProfileV1 {
             profile_id: "profile:hour".into(),
@@ -2243,9 +2391,9 @@ mod tests {
         });
         let mixed_raw_digest = mixed.inputs[0].raw_record_digest.clone();
         mixed.inputs[0].refusals.push(RefusalV1 {
-            code: "fixture_refusal".into(),
+            code: "subject_identity_mismatch".into(),
             exact_basis_digest: mixed_raw_digest,
-            detail: "fixture refusal".into(),
+            detail: "subject is outside the exact qualification profile".into(),
         });
         assert!(validate_nq(&mixed)
             .unwrap_err()
@@ -2277,6 +2425,27 @@ mod tests {
             }];
         }
         validate_nq(&unopened).unwrap();
+
+        let mut wrong_unopened_branch = unopened.clone();
+        wrong_unopened_branch.inputs[0].refusals[0].code = "subject_identity_mismatch".into();
+        wrong_unopened_branch.inputs[0].refusals[0].detail =
+            "subject is outside the exact qualification profile".into();
+        assert!(validate_nq(&wrong_unopened_branch)
+            .unwrap_err()
+            .contains("reopened/unopened branch"));
+
+        let mut wrong_reopened_branch = qualified.clone();
+        wrong_reopened_branch.inputs[0].claim_support.clear();
+        let exact_basis = wrong_reopened_branch.inputs[0].raw_record_digest.clone();
+        wrong_reopened_branch.inputs[0].refusals = vec![RefusalV1 {
+            code: "record_malformed".into(),
+            exact_basis_digest: exact_basis,
+            detail: "exact Monitor bytes could not be reopened".into(),
+        }];
+        assert!(validate_nq(&wrong_reopened_branch)
+            .unwrap_err()
+            .contains("reopened/unopened branch"));
+
         let mut partial = unopened.clone();
         partial.inputs[0].producer_class = Some("instrumented_monitor".into());
         assert!(validate_nq(&partial)
@@ -2313,6 +2482,11 @@ mod tests {
         let failure_raw = monitor(AcquisitionOutcomeV1::NoResponse, 0, None);
         let mut failure: NqArtifactV1 = serde_json::from_slice(&nq(&failure_raw, false)).unwrap();
         validate_nq(&failure).unwrap();
+        failure.inputs[0].cannot_testify[0].reason = "generic failure".into();
+        assert!(validate_nq(&failure)
+            .unwrap_err()
+            .contains("reason differs"));
+        failure = serde_json::from_slice(&nq(&failure_raw, false)).unwrap();
         failure.inputs[0].cannot_testify.clear();
         assert!(validate_nq(&failure)
             .unwrap_err()
@@ -2328,6 +2502,15 @@ mod tests {
         assert!(validate_nq(&multiple_refusals)
             .unwrap_err()
             .contains("refusal count"));
+
+        let mut wrong_claim_domain = qualified.clone();
+        let mut other = wrong_claim_domain.inputs[0].clone();
+        other.input_id = "input:other-domain".into();
+        other.claim_support[0].claim_id = "claim:other".into();
+        wrong_claim_domain.inputs.push(other);
+        assert!(validate_nq(&wrong_claim_domain)
+            .unwrap_err()
+            .contains("complete ordered claim domain"));
 
         let mut missing_contradiction = qualified;
         let mut other = missing_contradiction.inputs[0].clone();

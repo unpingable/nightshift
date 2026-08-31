@@ -21,6 +21,9 @@ The checkpoint directly exercises:
 - exact Monitor and NQ raw-byte custody plus independent semantic digests;
 - closed typed stable-basis identity and exact producer key binding;
 - produced testimony, no-response/failure, refusal, cannot-testify, and contradiction paths;
+- reopened versus unopened refusal-code and exact-basis correlation;
+- cross-input complete claim-domain equality and exact outcome-derived failure reasons;
+- owner-possible contradiction inputs with separate signed Monitor and payload identities;
 - independent acquisition, producer, receiver, NQ, admission, and evaluation time ordering;
 - profile-owned max age and half-open currentness horizon;
 - exact replay convergence, fork refusal, missing predecessor refusal, and successor admission;
@@ -62,6 +65,8 @@ Corrected focused Nightshift owner qualification: 13 passed, 0 failed. Executabl
 Checkpoint 17d0743909eff79d2b95cfdd40477712e23a8a37 remains immutable but is not an accepted predecessor. Its successor verifies the Ed25519 transcript over the exact supplied raw Monitor body slice, preserves fractional RFC3339 precision, mirrors FIELD Monitor 512-byte and 32-item limits plus the closed locator enum, recomputes embedded identities, cross-binds NQ finding references and values, and executes exact family-specific JSON Schema parity tests. Independently fixed accepted FIELD Monitor and NQ bytes plus four refused Monitor vectors are retained under crates/nightshiftd/tests/fixtures/operational_lineage.
 
 Checkpoint bf64f4d6ef4d9291f0c4ca6d471698364bbc45da also remains immutable and is not an accepted predecessor. Its successor makes the runtime and executable schemas share an explicit printable-ASCII metadata subset without widening FIELD, and mirrors the exact NQ qualify_one closure across every input: unopened refusal, reopened refusal, produced support/cannot-testify, acquisition-failure cannot-testify, and exact contradiction derivation remain mutually constrained.
+
+Checkpoint 0af305c920d55c868dbd6fc5acefb3f0a2e05461 likewise remains immutable and is not an accepted predecessor. Its successor closes the pinned refusal vocabulary by reopened/unopened branch, retains exact basis correlation, requires one complete claim domain across non-refused inputs, binds failure reasons to the exact Monitor outcome, and replaces the content-mutated contradiction fixture with two separately signed payload-bound observations.
 
 ## Custody and scope
 
