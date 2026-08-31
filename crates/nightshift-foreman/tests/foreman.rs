@@ -2905,3 +2905,496 @@ fn capacity_required_run_is_atomic_restartable_and_legacy_path_cannot_win() {
         .iter()
         .all(|event| event.raw_digest.starts_with("sha256:")));
 }
+#[test]
+fn midnight_rail_four_item_deterministic_dogfood_qualifies_without_provider() {
+    fn event(
+        packet: &NightshiftPacketV1,
+        request: &WorkerStartRequestV2,
+        event_id: &str,
+        kind: AdapterEventKindV1,
+        at: chrono::DateTime<Utc>,
+    ) -> AdapterEventV1 {
+        let mut event = AdapterEventV1 {
+            schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+            event_digest: format!("sha256:{}", "0".repeat(64)),
+            event_id: event_id.into(),
+            packet_digest: packet.packet_digest.clone(),
+            run_id: request.run_id.clone(),
+            work_item_id: request.work_item_id.clone(),
+            attempt_id: request.attempt_id.clone(),
+            adapter_id: request.adapter_id.clone(),
+            adapter_version: request.adapter_version.clone(),
+            occurred_at: at,
+            kind,
+            provider_identity: Some("provider:fixture".into()),
+            model_identity: Some("model:fixture".into()),
+            session_identity: Some("session:fixture".into()),
+            thread_identity: None,
+            turn_identity: None,
+            queue_identity: None,
+            message: None,
+            human_question: None,
+            extensions: BTreeMap::new(),
+        };
+        if !matches!(event.kind, AdapterEventKindV1::HumanQuestion) {
+            event.seal().unwrap();
+        }
+        event
+    }
+
+    fn bound_terminal(
+        packet: &NightshiftPacketV1,
+        request: &WorkerStartRequestV2,
+        state: &str,
+        classification: &str,
+        started_at: chrono::DateTime<Utc>,
+        ended_at: chrono::DateTime<Utc>,
+    ) -> TerminalReceiptV1 {
+        let mut receipt = terminal(packet, request, state, classification);
+        receipt.started_at = started_at;
+        receipt.ended_at = ended_at;
+        receipt.seal().unwrap();
+        receipt
+    }
+
+    let fixture = capacity_run_fixture();
+    let root_a = prepare_capacity_fixture(&fixture, "root-a", instant(1));
+    let root_b = prepare_capacity_fixture(&fixture, "root-b", instant(2));
+    assert_ne!(root_a.attempt_id, root_b.attempt_id);
+
+    let root_c_bundle = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &fixture.packet,
+            admission: &fixture.admission,
+            profile: &fixture.profile,
+            requirement: &fixture.requirement,
+            policy: &fixture.policy,
+        },
+        "root-c",
+        instant(3),
+        0.60,
+    );
+    assert!(matches!(
+        fixture.store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-c",
+            capacity_evidence(
+                &root_c_bundle.0,
+                &root_c_bundle.1,
+                &root_c_bundle.2,
+                &root_c_bundle.3,
+            ),
+            instant(3),
+        ),
+        Err(ForemanError::ResourceUnavailable(_))
+    ));
+    fixture
+        .store
+        .record_dispatch_requested("run-fixture", "root-a", &root_a.attempt_id, instant(2))
+        .unwrap();
+    fixture
+        .store
+        .record_dispatch_requested("run-fixture", "root-b", &root_b.attempt_id, instant(3))
+        .unwrap();
+
+    let before_restart =
+        nightshift_casework::load_live_run_at(&fixture.path, "run-fixture", instant(3)).unwrap();
+    assert_eq!(before_restart.projection.resource_claims.len(), 2);
+    assert_eq!(
+        before_restart.projection.provider_capacity.attempts.len(),
+        2
+    );
+    assert_eq!(
+        before_restart.projection.provider_capacity.status,
+        "EXACT_RECORDED_BY_FOREMAN"
+    );
+    assert!(before_restart
+        .projection
+        .provider_capacity
+        .attempts
+        .windows(2)
+        .all(|pair| pair[0].observed_at < pair[1].observed_at));
+
+    let CapacityRunFixture {
+        _directory: directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        requirement,
+        policy,
+    } = fixture;
+    drop(store);
+    let store = ForemanStore::open(&path).unwrap();
+    assert_eq!(
+        store
+            .projection("run-fixture")
+            .unwrap()
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "root-a")
+            .unwrap()
+            .active_attempt_id
+            .as_deref(),
+        Some(root_a.attempt_id.as_str())
+    );
+    store
+        .record_resume_requested("run-fixture", "root-a", &root_a.attempt_id, instant(4))
+        .unwrap();
+    store
+        .accept_adapter_event(
+            &serde_jcs::to_vec(&event(
+                &packet,
+                &root_a,
+                "midnight-root-a-checkpoint",
+                AdapterEventKindV1::Checkpoint,
+                instant(4),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    store
+        .accept_adapter_event(
+            &serde_jcs::to_vec(&event(
+                &packet,
+                &root_b,
+                "midnight-root-b-started",
+                AdapterEventKindV1::WorkerStarted,
+                instant(4),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+    let root_a_receipt = bound_terminal(
+        &packet,
+        &root_a,
+        "IMPLEMENTATION-EVIDENCE-RETAINED",
+        "MIDNIGHT-DETERMINISTIC-IMPLEMENTATION-FIXTURE",
+        instant(1),
+        instant(5),
+    );
+    let root_a_raw = serde_jcs::to_vec(&root_a_receipt).unwrap();
+    store.accept_terminal_receipt(&root_a_raw).unwrap();
+    let root_b_receipt = bound_terminal(
+        &packet,
+        &root_b,
+        "AUDIT-EVIDENCE-RETAINED",
+        "MIDNIGHT-DETERMINISTIC-AUDIT-FIXTURE",
+        instant(2),
+        instant(6),
+    );
+    store
+        .accept_terminal_receipt(&serde_jcs::to_vec(&root_b_receipt).unwrap())
+        .unwrap();
+
+    let dependent_bundle = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &packet,
+            admission: &admission,
+            profile: &profile,
+            requirement: &requirement,
+            policy: &policy,
+        },
+        "dependent",
+        instant(8),
+        0.30,
+    );
+    let dependent = store
+        .prepare_attempt_with_capacity(
+            "run-fixture",
+            "dependent",
+            capacity_evidence(
+                &dependent_bundle.0,
+                &dependent_bundle.1,
+                &dependent_bundle.2,
+                &dependent_bundle.3,
+            ),
+            instant(8),
+        )
+        .unwrap();
+    let dependent_brief = store.worker_brief("run-fixture", "dependent").unwrap();
+    WorkerBriefV2::from_slice_for_start(&dependent_brief, &dependent).unwrap();
+    let brief: Value = serde_json::from_slice(&dependent_brief).unwrap();
+    assert_eq!(
+        hex::decode(
+            brief["predecessor_receipts"]["root-a"]["bytes_hex"]
+                .as_str()
+                .unwrap()
+        )
+        .unwrap(),
+        root_a_raw
+    );
+    store
+        .accept_adapter_event(
+            &serde_jcs::to_vec(&event(
+                &packet,
+                &dependent,
+                "midnight-dependent-started",
+                AdapterEventKindV1::WorkerStarted,
+                instant(9),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    store
+        .accept_terminal_receipt(
+            &serde_jcs::to_vec(&bound_terminal(
+                &packet,
+                &dependent,
+                "ENTRY-EVALUATED-EXACT-PREDECESSOR",
+                "MIDNIGHT-DETERMINISTIC-DEPENDENT-FIXTURE",
+                instant(8),
+                instant(10),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+    let root_c_bundle = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &packet,
+            admission: &admission,
+            profile: &profile,
+            requirement: &requirement,
+            policy: &policy,
+        },
+        "root-c",
+        instant(11),
+        0.60,
+    );
+    let root_c = store
+        .prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-c",
+            capacity_evidence(
+                &root_c_bundle.0,
+                &root_c_bundle.1,
+                &root_c_bundle.2,
+                &root_c_bundle.3,
+            ),
+            instant(11),
+        )
+        .unwrap();
+    store
+        .record_dispatch_requested("run-fixture", "root-c", &root_c.attempt_id, instant(11))
+        .unwrap();
+    let question = HumanQuestionV1 {
+        question_id: "midnight-fixture-authority".into(),
+        question: "Is protected target-effect authority present for this fixture lane?".into(),
+        exhausted_evidence: "The deterministic fixture carries no target-effect authority.".into(),
+        safe_default: "Do not perform the protected effect.".into(),
+        consequences: "Only this lane terminates blocked; independent lanes retain receipts."
+            .into(),
+        resume_point: "Create a successor occurrence after exact authority exists.".into(),
+    };
+    let mut question_event = event(
+        &packet,
+        &root_c,
+        "midnight-root-c-human-question",
+        AdapterEventKindV1::HumanQuestion,
+        instant(12),
+    );
+    question_event.human_question = Some(question.clone());
+    question_event.seal().unwrap();
+    store
+        .accept_adapter_event(&serde_jcs::to_vec(&question_event).unwrap())
+        .unwrap();
+    let mut lane_receipt = bound_terminal(
+        &packet,
+        &root_c,
+        "BLOCKED-HUMAN-EXACT",
+        "MIDNIGHT-LANE-LOCAL-QUESTION",
+        instant(11),
+        instant(13),
+    );
+    lane_receipt.human_questions = vec![question];
+    lane_receipt.seal().unwrap();
+    store
+        .accept_terminal_receipt(&serde_jcs::to_vec(&lane_receipt).unwrap())
+        .unwrap();
+
+    let live = nightshift_casework::load_live_run_at(&path, "run-fixture", instant(14)).unwrap();
+    assert_eq!(live.projection.work_items.len(), 4);
+    assert_eq!(live.projection.provider_capacity.attempts.len(), 4);
+    assert_eq!(
+        live.projection
+            .work_items
+            .iter()
+            .flat_map(|item| &item.human_questions)
+            .count(),
+        1
+    );
+    assert!(serde_json::to_value(&live.projection)
+        .unwrap()
+        .get("aggregate_result")
+        .is_none());
+
+    let final_receipts = store.close("run-fixture", instant(15)).unwrap();
+    assert_eq!(
+        final_receipts,
+        store.close("run-fixture", instant(30)).unwrap()
+    );
+    let events = serde_jcs::to_vec(&store.export_events("run-fixture").unwrap()).unwrap();
+    drop(store);
+    let closed = nightshift_casework::load_live_run_at(&path, "run-fixture", instant(15)).unwrap();
+    assert_eq!(
+        closed.projection.foreman.lifecycle,
+        "CLOSED_EXACT_FINAL_SNAPSHOT_RETAINED"
+    );
+    assert_eq!(closed.projection.foreman.terminal_receipt_count, 4);
+    assert_eq!(closed.projection.foreman.not_started_receipt_count, 0);
+
+    let sealed = directory.path().join("sealed-case");
+    fs::create_dir(&sealed).unwrap();
+    let packet_bytes = packet.canonical_bytes().unwrap();
+    fs::write(sealed.join("packet.v1.json"), &packet_bytes).unwrap();
+    fs::write(sealed.join("run-receipts.v1.json"), &final_receipts).unwrap();
+    let final_case = nightshift_casework::load_run_at(&sealed, instant(12)).unwrap();
+    assert_eq!(final_case.receipt_bytes, final_receipts);
+    assert_eq!(final_case.projection.work_items.len(), 4);
+    assert!(serde_json::to_value(&final_case.projection)
+        .unwrap()
+        .get("aggregate_result")
+        .is_none());
+
+    let approval = capacity_run_fixture();
+    let waiting_request = prepare_capacity_fixture(&approval, "root-a", instant(1));
+    let independent_request = prepare_capacity_fixture(&approval, "root-b", instant(2));
+    approval
+        .store
+        .record_dispatch_requested(
+            "run-fixture",
+            "root-a",
+            &waiting_request.attempt_id,
+            instant(2),
+        )
+        .unwrap();
+    approval
+        .store
+        .record_dispatch_requested(
+            "run-fixture",
+            "root-b",
+            &independent_request.attempt_id,
+            instant(2),
+        )
+        .unwrap();
+    let mut waiting = event(
+        &approval.packet,
+        &waiting_request,
+        "midnight-waiting-approval",
+        AdapterEventKindV1::WaitingApproval,
+        instant(3),
+    );
+    waiting.message = Some("Protected fixture effect requires authority; no response sent.".into());
+    waiting.extensions = BTreeMap::from([
+        ("approval_response_sent".into(), Value::Bool(false)),
+        ("protected_effect_absent".into(), Value::Bool(true)),
+    ]);
+    waiting.seal().unwrap();
+    let waiting_raw = serde_jcs::to_vec(&waiting).unwrap();
+    approval.store.accept_adapter_event(&waiting_raw).unwrap();
+    approval
+        .store
+        .accept_adapter_event(
+            &serde_jcs::to_vec(&event(
+                &approval.packet,
+                &independent_request,
+                "midnight-independent-started",
+                AdapterEventKindV1::WorkerStarted,
+                instant(3),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    approval
+        .store
+        .accept_terminal_receipt(
+            &serde_jcs::to_vec(&bound_terminal(
+                &approval.packet,
+                &independent_request,
+                "INDEPENDENT-LANE-COMPLETE",
+                "MIDNIGHT-APPROVAL-INDEPENDENCE-FIXTURE",
+                instant(2),
+                instant(5),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    let approval_live =
+        nightshift_casework::load_live_run_at(&approval.path, "run-fixture", instant(6)).unwrap();
+    assert_eq!(
+        approval_live
+            .projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "root-a")
+            .unwrap()
+            .scheduler_state,
+        "WAITING_APPROVAL"
+    );
+    assert!(approval_live
+        .projection
+        .work_items
+        .iter()
+        .find(|item| item.work_item_id == "root-b")
+        .unwrap()
+        .accepted_outcome
+        .is_some());
+    assert!(matches!(
+        approval.store.close("run-fixture", instant(7)),
+        Err(ForemanError::IncompleteCloseout(_))
+    ));
+    let retained_waiting = approval
+        .store
+        .export_events("run-fixture")
+        .unwrap()
+        .into_iter()
+        .any(|record| record == serde_json::from_slice::<Value>(&waiting_raw).unwrap());
+    assert!(retained_waiting);
+    let approval_events =
+        serde_jcs::to_vec(&approval.store.export_events("run-fixture").unwrap()).unwrap();
+
+    if let Some(output) = std::env::var_os("NIGHTSHIFT_MIDNIGHT_FIXTURE_DIR") {
+        let output = PathBuf::from(output);
+        assert!(output.is_dir());
+        for (name, bytes) in [
+            ("packet.v1.json", packet_bytes),
+            (
+                "foreman-admission.v1.json",
+                serde_jcs::to_vec(&admission).unwrap(),
+            ),
+            (
+                "foreman-execution-profile.v2.json",
+                serde_jcs::to_vec(&profile).unwrap(),
+            ),
+            (
+                "foreman-capacity-requirement.v1.json",
+                serde_jcs::to_vec(&requirement).unwrap(),
+            ),
+            ("foreman-events.v1.json", events),
+            (
+                "live-before-close.v1.json",
+                serde_jcs::to_vec(&live.projection).unwrap(),
+            ),
+            (
+                "live-closed.v1.json",
+                serde_jcs::to_vec(&closed.projection).unwrap(),
+            ),
+            ("run-receipts.v1.json", final_receipts),
+            (
+                "final-casework.v1.json",
+                serde_jcs::to_vec(&final_case.projection).unwrap(),
+            ),
+            (
+                "approval-waiting-live.v1.json",
+                serde_jcs::to_vec(&approval_live.projection).unwrap(),
+            ),
+            ("approval-events.v1.json", approval_events),
+            ("dependent-worker-brief.v2.json", dependent_brief),
+        ] {
+            fs::write(output.join(name), bytes).unwrap();
+        }
+    }
+}
