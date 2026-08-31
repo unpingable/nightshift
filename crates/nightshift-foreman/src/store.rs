@@ -373,7 +373,7 @@ struct FinalWorkItem {
 #[serde(deny_unknown_fields)]
 struct FinalQuestion {
     work_item: String,
-    question: String,
+    exact_question: String,
     evidence_exhausted: String,
     safe_default: String,
     consequences: String,
@@ -3040,7 +3040,7 @@ fn build_final_document(
 fn final_question(work_item_id: &str, question: &HumanQuestionV1) -> FinalQuestion {
     FinalQuestion {
         work_item: work_item_id.to_owned(),
-        question: question.question.clone(),
+        exact_question: question.question.clone(),
         evidence_exhausted: question.exhausted_evidence.clone(),
         safe_default: question.safe_default.clone(),
         consequences: question.consequences.clone(),

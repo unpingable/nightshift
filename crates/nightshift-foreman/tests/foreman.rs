@@ -2905,3 +2905,140 @@ fn capacity_required_run_is_atomic_restartable_and_legacy_path_cannot_win() {
         .iter()
         .all(|event| event.raw_digest.starts_with("sha256:")));
 }
+#[test]
+fn final_snapshot_questions_match_sealed_casework_contract_for_terminal_and_not_started() {
+    let (directory, store, packet, _, _) = setup();
+    let question = HumanQuestionV1 {
+        question_id: "question-rivet-terminal".into(),
+        question: "What exact authority would permit this bounded continuation?".into(),
+        exhausted_evidence: "No matching authority artifact is present.".into(),
+        safe_default: "Do not continue the affected lane.".into(),
+        consequences: "The affected lane remains blocked; independent receipts remain exact."
+            .into(),
+        resume_point: "Create a successor occurrence after exact authority exists.".into(),
+    };
+    let root_a = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut terminal_question = terminal(
+        &packet,
+        &root_a,
+        "BLOCKED-HUMAN-EXACT",
+        "QUESTION-RIVET-TERMINAL-FIXTURE",
+    );
+    terminal_question.human_questions = vec![question.clone()];
+    terminal_question.seal().unwrap();
+    let terminal_raw = serde_jcs::to_vec(&terminal_question).unwrap();
+    store.accept_terminal_receipt(&terminal_raw).unwrap();
+    assert_eq!(
+        store.raw_terminal_receipt("run-fixture", "root-a").unwrap(),
+        terminal_raw
+    );
+
+    let root_b = store
+        .prepare_attempt("run-fixture", "root-b", instant(1))
+        .unwrap();
+    store
+        .accept_terminal_receipt(
+            &serde_jcs::to_vec(&terminal(
+                &packet,
+                &root_b,
+                "EXACT-STATE",
+                "QUESTION-RIVET-INDEPENDENT-FIXTURE",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+    let mut not_started_question = not_started(&packet, "root-c");
+    not_started_question.human_questions = vec![HumanQuestionV1 {
+        question_id: "question-rivet-not-started".into(),
+        question: "Which exact predecessor would open this entry predicate?".into(),
+        exhausted_evidence: "The retained predecessor evidence does not establish it.".into(),
+        safe_default: "Keep this item not started.".into(),
+        consequences: "No attempt or target effect occurs.".into(),
+        resume_point: "Evaluate a successor against new exact predecessor evidence.".into(),
+    }];
+    not_started_question.seal().unwrap();
+    store
+        .accept_not_started(&serde_jcs::to_vec(&not_started_question).unwrap())
+        .unwrap();
+    store
+        .accept_not_started(&serde_jcs::to_vec(&not_started(&packet, "dependent")).unwrap())
+        .unwrap();
+
+    let final_bytes = store.close("run-fixture", instant(10)).unwrap();
+    let final_value: Value = serde_json::from_slice(&final_bytes).unwrap();
+    let questions = final_value["human_questions"].as_array().unwrap();
+    assert_eq!(questions.len(), 2);
+    for row in questions {
+        let object = row.as_object().unwrap();
+        assert_eq!(
+            object
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "consequences",
+                "evidence_exhausted",
+                "exact_question",
+                "resume_point",
+                "safe_default",
+                "work_item",
+            ]
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
+        );
+        assert!(row["exact_question"].as_str().is_some());
+        assert!(object.get("question").is_none());
+    }
+    assert_eq!(
+        questions[0]["exact_question"],
+        "What exact authority would permit this bounded continuation?"
+    );
+    assert_eq!(
+        questions[1]["exact_question"],
+        "Which exact predecessor would open this entry predicate?"
+    );
+
+    let case = directory.path().join("question-rivet-case");
+    fs::create_dir(&case).unwrap();
+    fs::write(
+        case.join("packet.v1.json"),
+        packet.canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    fs::write(case.join("run-receipts.v1.json"), &final_bytes).unwrap();
+    let loaded = nightshift_casework::load_run_at(&case, instant(10)).unwrap();
+    assert_eq!(loaded.projection.human_questions.len(), 2);
+    assert_eq!(
+        loaded.projection.human_questions[0]
+            .exact_question
+            .recognized_string
+            .as_deref(),
+        Some("What exact authority would permit this bounded continuation?")
+    );
+    assert_eq!(
+        loaded.projection.human_questions[1]
+            .exact_question
+            .recognized_string
+            .as_deref(),
+        Some("Which exact predecessor would open this entry predicate?")
+    );
+
+    let mut substituted = final_value;
+    let first = substituted["human_questions"][0].as_object_mut().unwrap();
+    let value = first.remove("exact_question").unwrap();
+    first.insert("question".into(), value);
+    fs::write(
+        case.join("run-receipts.v1.json"),
+        serde_jcs::to_vec(&substituted).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        nightshift_casework::load_run_at(&case, instant(10)),
+        Err(nightshift_casework::CaseworkError::Receipt(message))
+            if message.contains("exact_question")
+    ));
+}

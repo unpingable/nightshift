@@ -61,6 +61,34 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("FIXTURE-QUALIFIED", REPORTS.render_morning(self.packet, self.receipts))
         self.assertEqual(REPORTS.render_questions(self.receipts), "# Human questions\n\nNone.\n")
 
+    def test_exact_human_question_contract_renders_and_legacy_key_refuses(self):
+        self.receipts["human_questions"] = [
+            {
+                "work_item": "fixture-work",
+                "exact_question": "What exact authority is present?",
+                "evidence_exhausted": "No authority artifact was retained.",
+                "safe_default": "Do not continue.",
+                "consequences": "The affected lane remains blocked.",
+                "resume_point": "Evaluate a successor after exact authority exists.",
+            }
+        ]
+        REPORTS.validate(self.packet, self.receipts)
+        rendered = REPORTS.render_questions(self.receipts)
+        self.assertIn("- Exact question: What exact authority is present?", rendered)
+        self.assertIn("- Evidence exhausted: No authority artifact was retained.", rendered)
+        self.assertIn("- Safe default: Do not continue.", rendered)
+        self.assertIn("- Consequences: The affected lane remains blocked.", rendered)
+        self.assertIn(
+            "- Resume point: Evaluate a successor after exact authority exists.",
+            rendered,
+        )
+
+        self.receipts["human_questions"][0]["question"] = self.receipts[
+            "human_questions"
+        ][0].pop("exact_question")
+
+        with self.assertRaises(KeyError):
+            REPORTS.render_questions(self.receipts)
     def test_unknown_and_missing_work_items_fail_closed(self):
         self.receipts["work_items"][0]["id"] = "unknown"
         with self.assertRaisesRegex(ValueError, "unknown receipt work item"):
