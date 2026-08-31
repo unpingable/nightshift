@@ -24,11 +24,16 @@ use uuid::Uuid;
 use crate::{
     contract::{ContractError, TeardownDeclarationV1},
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
-    AdapterEventV1, CapacityCostClassV1, ExecutionProfileV2, ForemanAdmissionV1,
-    ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1, HumanQuestionV1, LiveRunProjectionV1,
-    NotStartedReceiptV1, ReceiptRepositoryV1, Scheduler, SchedulerStateV1, TerminalReceiptV1,
-    WorkerBriefV2, WorkerStartRequestV2, MAXIMUM_CAPACITY_HISTORY_BYTES,
-    MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES, WORKER_BRIEF_BASIS_SCHEMA_V2,
+    validate_execution_availability_graph, AdapterEventV1, CapacityCostClassV1,
+    DeferredProviderDispatchV1, ExecutionAvailabilityObservationV1, ExecutionAvailabilityPolicyV1,
+    ExecutionProfileV2, ForemanAdmissionV1, ForemanCapacityAdmissionV1,
+    ForemanCapacityRequirementV1, ForemanExecutionAvailabilityRequirementV1, HumanQuestionV1,
+    LiveRunProjectionV1, NotStartedReceiptV1, ParkedResourceLockPolicyV1,
+    ProviderAdmissionDispositionV1, ProviderDeferralHistoryEntryV1, ProviderDispatchOccurrenceV1,
+    ProviderExecutionIdentityV1, ProviderMechanismStateV1, ReceiptRepositoryV1, Scheduler,
+    SchedulerStateV1, TerminalReceiptV1, WorkerBriefV2, WorkerStartRequestV2, WorkerStartRequestV3,
+    MAXIMUM_CAPACITY_HISTORY_BYTES, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
+    PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2,
     WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 
@@ -36,6 +41,8 @@ const INTERNAL_EVENT_SCHEMA: &str = "nightshift.foreman-journal-event/v1";
 const BRIEF_DIGEST_DOMAIN: &[u8] = b"nightshift.worker-brief.digest/v2\0";
 const RAW_DIGEST_DOMAIN: &[u8] = b"nightshift.foreman-retained-raw.digest/v1\0";
 const MAXIMUM_CAPACITY_RECORD_BYTES: usize = 1024 * 1024;
+const MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
+const MAXIMUM_EXECUTION_AVAILABILITY_ROWS: usize = 16_384;
 
 #[derive(Debug, Error)]
 pub enum ForemanError {
@@ -86,6 +93,41 @@ pub struct CapacityAdmissionEvidenceV1<'a> {
     pub decision_bytes: &'a [u8],
 }
 
+/// Exact owner bytes accepted for one provider-dispatch disposition.
+pub struct ProviderDispositionEvidenceV1<'a> {
+    pub observation_bytes: &'a [u8],
+    pub disposition_bytes: &'a [u8],
+    pub deferred_bytes: Option<&'a [u8]>,
+}
+
+/// Exact records produced by one atomic provider-dispatch opening.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenedProviderDispatchV1 {
+    pub worker_start_request: WorkerStartRequestV3,
+    pub dispatch: ProviderDispatchOccurrenceV1,
+}
+
+/// Query-only exact HOLDING journal history. Each byte vector is the canonical
+/// owner record retained inside its enclosing canonical append-only event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyExecutionAvailabilityHistoryV1 {
+    pub requirement: ForemanExecutionAvailabilityRequirementV1,
+    pub requirement_bytes: Vec<u8>,
+    pub policy: ExecutionAvailabilityPolicyV1,
+    pub policy_bytes: Vec<u8>,
+    pub worker_start_requests: Vec<WorkerStartRequestV3>,
+    pub dispatches: Vec<ProviderDispatchOccurrenceV1>,
+    pub observations: Vec<ExecutionAvailabilityObservationV1>,
+    pub dispositions: Vec<ProviderAdmissionDispositionV1>,
+    pub deferred: Vec<DeferredProviderDispatchV1>,
+    pub wake_occurrence_ids: Vec<String>,
+    pub wake_work_attempt_ids: Vec<String>,
+    pub wake_next_dispatch_digests: Vec<String>,
+    pub resume_occurrence_ids: Vec<String>,
+    pub resume_adapter_process_occurrence_ids: Vec<String>,
+    pub resume_execution_identities: Vec<ProviderExecutionIdentityV1>,
+}
+
 struct ValidatedCapacityAdmission {
     admission: ForemanCapacityAdmissionV1,
     observation: CapacityObservationV1,
@@ -95,6 +137,29 @@ struct ValidatedCapacityAdmission {
     observation_bytes: Vec<u8>,
     policy_bytes: Vec<u8>,
     decision_bytes: Vec<u8>,
+}
+
+struct ProviderDispatchPreparation<'a> {
+    dispatch_occurrence_id: &'a str,
+    adapter_process_occurrence_id: &'a str,
+    app_server_session_identity: &'a str,
+    selected_model_ordinal: u16,
+}
+
+struct ValidatedProviderDispositionEvidence {
+    observation: ExecutionAvailabilityObservationV1,
+    observation_bytes: Vec<u8>,
+    disposition: ProviderAdmissionDispositionV1,
+    disposition_bytes: Vec<u8>,
+    deferred: Option<DeferredProviderDispatchV1>,
+    deferred_bytes: Option<Vec<u8>>,
+}
+
+struct ValidatedExecutionAvailabilityConfiguration {
+    requirement: ForemanExecutionAvailabilityRequirementV1,
+    requirement_bytes: Vec<u8>,
+    policy: ExecutionAvailabilityPolicyV1,
+    policy_bytes: Vec<u8>,
 }
 
 /// One exact event row retained by the append-only foreman journal.
@@ -157,6 +222,7 @@ pub struct ReadOnlyRunSnapshotV1 {
     pub events: Vec<ReadOnlyEventRowV1>,
     pub capacity_requirement: Option<ReadOnlyCapacityRequirementV1>,
     pub capacity_admissions: Vec<ReadOnlyCapacityAdmissionV1>,
+    pub execution_availability: Option<ReadOnlyExecutionAvailabilityHistoryV1>,
     pub terminal_receipts: Vec<ReadOnlyTerminalReceiptRowV1>,
     pub final_snapshot_bytes: Option<Vec<u8>>,
 }
@@ -188,6 +254,38 @@ enum InternalPayload {
         observation_bytes: Vec<u8>,
         policy_bytes: Vec<u8>,
         decision_bytes: Vec<u8>,
+    },
+    ExecutionAvailabilityConfigured {
+        requirement: Box<ForemanExecutionAvailabilityRequirementV1>,
+        requirement_bytes: Vec<u8>,
+        policy: Box<ExecutionAvailabilityPolicyV1>,
+        policy_bytes: Vec<u8>,
+    },
+    ProviderDispatchOpened {
+        start_request: Box<WorkerStartRequestV3>,
+        start_request_bytes: Vec<u8>,
+        dispatch: Box<ProviderDispatchOccurrenceV1>,
+        dispatch_bytes: Vec<u8>,
+    },
+    ProviderDispositionRecorded {
+        observation: Box<ExecutionAvailabilityObservationV1>,
+        observation_bytes: Vec<u8>,
+        disposition: Box<ProviderAdmissionDispositionV1>,
+        disposition_bytes: Vec<u8>,
+        deferred: Option<Box<DeferredProviderDispatchV1>>,
+        deferred_bytes: Option<Vec<u8>>,
+        reconciles_disposition_digest: Option<String>,
+    },
+    ProviderWakeOpened {
+        wake_occurrence_id: String,
+        deferred_dispatch_digest: String,
+        next_dispatch_digest: String,
+    },
+    ProviderExecutionResumeRequested {
+        resume_occurrence_id: String,
+        disposition_digest: String,
+        adapter_process_occurrence_id: String,
+        execution_identity: Box<ProviderExecutionIdentityV1>,
     },
     TerminalAccepted {
         outcome: AcceptedOutcomeV1,
@@ -452,6 +550,7 @@ impl ForemanStore {
             profile_bytes,
             evaluated_at,
             None,
+            None,
         )
     }
 
@@ -484,6 +583,28 @@ impl ForemanStore {
             profile_bytes,
             evaluated_at,
             Some((requirement, capacity_requirement_bytes.to_vec())),
+            None,
+        )
+    }
+
+    pub fn admit_with_execution_availability(
+        &self,
+        packet_bytes: &[u8],
+        admission_bytes: &[u8],
+        profile_bytes: &[u8],
+        requirement_bytes: &[u8],
+        policy_bytes: &[u8],
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<String, ForemanError> {
+        let configuration =
+            validate_execution_availability_configuration(requirement_bytes, policy_bytes)?;
+        self.admit_internal(
+            packet_bytes,
+            admission_bytes,
+            profile_bytes,
+            evaluated_at,
+            None,
+            Some(configuration),
         )
     }
 
@@ -494,6 +615,7 @@ impl ForemanStore {
         profile_bytes: &[u8],
         evaluated_at: DateTime<Utc>,
         capacity_requirement: Option<(ForemanCapacityRequirementV1, Vec<u8>)>,
+        execution_availability: Option<ValidatedExecutionAvailabilityConfiguration>,
     ) -> Result<String, ForemanError> {
         let packet = NightshiftPacketV1::from_slice(packet_bytes)
             .map_err(|error| ForemanError::Packet(error.to_string()))?;
@@ -507,6 +629,15 @@ impl ForemanStore {
         validate_bindings(&packet, &admission, &profile)?;
         if let Some((requirement, _)) = &capacity_requirement {
             validate_capacity_requirement(requirement, &packet, &admission, &profile)?;
+        }
+        if let Some(configuration) = &execution_availability {
+            validate_execution_availability_configuration_bindings(
+                configuration,
+                &packet,
+                &admission,
+                &profile,
+                evaluated_at,
+            )?;
         }
 
         let mut connection = self.connection()?;
@@ -584,6 +715,34 @@ impl ForemanStore {
                 packet.work_items.len().saturating_add(1),
             )?;
         }
+        if let Some(configuration) = execution_availability {
+            let configuration_event = InternalEvent {
+                schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                event_id: format!("execution-availability-required-{}", Uuid::new_v4()),
+                run_id: admission.run_id.clone(),
+                work_item_id: None,
+                attempt_id: None,
+                recorded_at: evaluated_at,
+                payload: InternalPayload::ExecutionAvailabilityConfigured {
+                    requirement: Box::new(configuration.requirement),
+                    requirement_bytes: configuration.requirement_bytes,
+                    policy: Box::new(configuration.policy),
+                    policy_bytes: configuration.policy_bytes,
+                },
+            };
+            append_execution_availability_bounded(
+                &transaction,
+                &configuration_event,
+                profile.maximum_event_bytes,
+            )?;
+        }
+        load_execution_availability_history(
+            &transaction,
+            &admission.run_id,
+            &packet,
+            &admission,
+            &profile,
+        )?;
         transaction.commit()?;
         Ok(admission.run_id)
     }
@@ -610,7 +769,8 @@ impl ForemanStore {
         work_item_id: &str,
         recorded_at: DateTime<Utc>,
     ) -> Result<WorkerStartRequestV2, ForemanError> {
-        self.prepare_attempt_internal(run_id, work_item_id, recorded_at, None)
+        self.prepare_attempt_internal(run_id, work_item_id, recorded_at, None, None)
+            .map(|(request, _)| request)
     }
 
     /// Atomically retain one exact FUEL decision and create the attempt it admitted.
@@ -627,7 +787,38 @@ impl ForemanStore {
             evidence.policy_bytes,
             evidence.decision_bytes,
         )?;
-        self.prepare_attempt_internal(run_id, work_item_id, recorded_at, Some(capacity))
+        self.prepare_attempt_internal(run_id, work_item_id, recorded_at, Some(capacity), None)
+            .map(|(request, _)| request)
+    }
+
+    // The exact dispatch identity fields remain explicit at this owner boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_provider_attempt(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        dispatch_occurrence_id: &str,
+        adapter_process_occurrence_id: &str,
+        app_server_session_identity: &str,
+        selected_model_ordinal: u16,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<OpenedProviderDispatchV1, ForemanError> {
+        self.prepare_attempt_internal(
+            run_id,
+            work_item_id,
+            recorded_at,
+            None,
+            Some(ProviderDispatchPreparation {
+                dispatch_occurrence_id,
+                adapter_process_occurrence_id,
+                app_server_session_identity,
+                selected_model_ordinal,
+            }),
+        )?
+        .1
+        .ok_or_else(|| {
+            ForemanError::Transition("provider attempt lacks atomic V3 dispatch".to_owned())
+        })
     }
 
     fn prepare_attempt_internal(
@@ -636,7 +827,8 @@ impl ForemanStore {
         work_item_id: &str,
         recorded_at: DateTime<Utc>,
         capacity: Option<ValidatedCapacityAdmission>,
-    ) -> Result<WorkerStartRequestV2, ForemanError> {
+        provider_dispatch: Option<ProviderDispatchPreparation<'_>>,
+    ) -> Result<(WorkerStartRequestV2, Option<OpenedProviderDispatchV1>), ForemanError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let projection = load_projection(&transaction, run_id)?;
@@ -688,6 +880,26 @@ impl ForemanStore {
         }
         let (packet, admission, profile, _) = load_contracts(&transaction, run_id)?;
         let capacity_requirement = load_capacity_requirement(&transaction, run_id)?;
+        let execution_availability = load_execution_availability_history(
+            &transaction,
+            run_id,
+            &packet,
+            &admission,
+            &profile,
+        )?;
+        match (execution_availability.as_ref(), provider_dispatch.as_ref()) {
+            (Some(_), None) => {
+                return Err(ForemanError::Transition(
+                    "availability-required run refuses legacy V2 start path".to_owned(),
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(ForemanError::Transition(
+                    "legacy run has no execution-availability requirement".to_owned(),
+                ))
+            }
+            _ => {}
+        }
         match (capacity_requirement.as_ref(), capacity.as_ref()) {
             (Some(_), None) => {
                 return Err(ForemanError::Transition(
@@ -780,7 +992,7 @@ impl ForemanStore {
                 event_id: format!("attempt-created-{}", Uuid::new_v4()),
                 run_id: run_id.to_owned(),
                 work_item_id: Some(work_item_id.to_owned()),
-                attempt_id: Some(attempt_id),
+                attempt_id: Some(attempt_id.clone()),
                 recorded_at,
                 payload: InternalPayload::AttemptCreated {
                     resource_lock_keys: execution.resource_lock_keys.clone(),
@@ -788,8 +1000,466 @@ impl ForemanStore {
                 },
             },
         )?;
+        let opened = if let Some(provider_dispatch) = provider_dispatch {
+            let requirement = &execution_availability
+                .as_ref()
+                .ok_or_else(|| {
+                    ForemanError::Transition(
+                        "execution-availability requirement disappeared".to_owned(),
+                    )
+                })?
+                .requirement;
+            let opened = build_provider_dispatch(
+                &request,
+                &profile,
+                requirement,
+                provider_dispatch.dispatch_occurrence_id,
+                provider_dispatch.adapter_process_occurrence_id,
+                provider_dispatch.app_server_session_identity,
+                provider_dispatch.selected_model_ordinal,
+                1,
+                recorded_at,
+            )?;
+            append_provider_dispatch(
+                &transaction,
+                run_id,
+                work_item_id,
+                &attempt_id,
+                &opened,
+                profile.maximum_event_bytes,
+            )?;
+            Some(opened)
+        } else {
+            None
+        };
+        load_execution_availability_history(&transaction, run_id, &packet, &admission, &profile)?;
         transaction.commit()?;
-        Ok(request)
+        Ok((request, opened))
+    }
+
+    // The recovery seam receives each independently retained dispatch identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_provider_dispatch(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        attempt_id: &str,
+        dispatch_occurrence_id: &str,
+        adapter_process_occurrence_id: &str,
+        app_server_session_identity: &str,
+        selected_model_ordinal: u16,
+        opened_at: DateTime<Utc>,
+    ) -> Result<OpenedProviderDispatchV1, ForemanError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
+        let (packet, admission, profile, _) = load_contracts(&transaction, run_id)?;
+        let history = load_execution_availability_history(
+            &transaction,
+            run_id,
+            &packet,
+            &admission,
+            &profile,
+        )?
+        .ok_or_else(|| {
+            ForemanError::Transition(
+                "run has no immutable execution-availability requirement".to_owned(),
+            )
+        })?;
+        if history
+            .dispatches
+            .iter()
+            .any(|dispatch| dispatch.work_attempt_id == attempt_id)
+        {
+            return Err(ForemanError::Transition(
+                "initial provider dispatch already exists for work attempt".to_owned(),
+            ));
+        }
+        require_attempt_resource_claims(&transaction, &profile, run_id, work_item_id, attempt_id)?;
+        let predecessor =
+            load_attempt_start_request(&transaction, run_id, work_item_id, attempt_id)?;
+        let opened = build_provider_dispatch(
+            &predecessor,
+            &profile,
+            &history.requirement,
+            dispatch_occurrence_id,
+            adapter_process_occurrence_id,
+            app_server_session_identity,
+            selected_model_ordinal,
+            1,
+            opened_at,
+        )?;
+        append_provider_dispatch(
+            &transaction,
+            run_id,
+            work_item_id,
+            attempt_id,
+            &opened,
+            profile.maximum_event_bytes,
+        )?;
+        load_execution_availability_history(&transaction, run_id, &packet, &admission, &profile)?;
+        transaction.commit()?;
+        Ok(opened)
+    }
+
+    pub fn record_provider_disposition(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        attempt_id: &str,
+        evidence: ProviderDispositionEvidenceV1<'_>,
+        predecessor_disposition_digest: Option<&str>,
+    ) -> Result<ProviderAdmissionDispositionV1, ForemanError> {
+        let accepted = validate_provider_disposition_evidence(evidence)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
+        let (packet, admission, profile, _) = load_contracts(&transaction, run_id)?;
+        let history = load_execution_availability_history(
+            &transaction,
+            run_id,
+            &packet,
+            &admission,
+            &profile,
+        )?
+        .ok_or_else(|| {
+            ForemanError::Transition(
+                "run has no immutable execution-availability requirement".to_owned(),
+            )
+        })?;
+        let dispatch = history
+            .dispatches
+            .iter()
+            .find(|dispatch| {
+                dispatch.work_attempt_id == attempt_id
+                    && dispatch.dispatch_digest == accepted.disposition.dispatch_digest
+            })
+            .ok_or_else(|| ForemanError::IdentityMismatch("dispatch_digest"))?;
+        let lane_dispositions: Vec<&_> = history
+            .dispositions
+            .iter()
+            .filter(|disposition| disposition.dispatch_digest == dispatch.dispatch_digest)
+            .collect();
+        match (lane_dispositions.last(), predecessor_disposition_digest) {
+            (None, None) => {}
+            (Some(previous), Some(expected)) if previous.disposition_digest == expected => {
+                validate_provider_disposition_transition(previous, &accepted.disposition)?;
+            }
+            (None, Some(_)) | (Some(_), None) | (Some(_), Some(_)) => {
+                return Err(ForemanError::Transition(
+                    "provider disposition predecessor mismatch".to_owned(),
+                ))
+            }
+        }
+        let prior_history =
+            provider_deferral_history(&history, attempt_id, dispatch.dispatch_ordinal)?;
+        validate_execution_availability_graph(
+            &history.requirement,
+            &history.policy,
+            dispatch,
+            &accepted.observation,
+            &accepted.disposition,
+            &prior_history,
+            accepted.deferred.as_ref(),
+        )?;
+        append_provider_disposition(
+            &transaction,
+            run_id,
+            work_item_id,
+            attempt_id,
+            &accepted,
+            predecessor_disposition_digest,
+            profile.maximum_event_bytes,
+        )?;
+        if accepted.disposition.disposition.permits_automatic_park()
+            && history.policy.parked_resource_lock_policy
+                == ParkedResourceLockPolicyV1::ReleaseAndReacquire
+        {
+            transaction.execute(
+                "DELETE FROM resource_claims
+                 WHERE run_id = ?1 AND work_item_id = ?2 AND attempt_id = ?3",
+                params![run_id, work_item_id, attempt_id],
+            )?;
+        }
+        load_execution_availability_history(&transaction, run_id, &packet, &admission, &profile)?;
+        transaction.commit()?;
+        Ok(accepted.disposition)
+    }
+
+    // Wake and fresh-dispatch occurrence identities are intentionally separate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wake_provider_dispatch(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        attempt_id: &str,
+        wake_occurrence_id: &str,
+        dispatch_occurrence_id: &str,
+        adapter_process_occurrence_id: &str,
+        app_server_session_identity: &str,
+        selected_model_ordinal: u16,
+        opened_at: DateTime<Utc>,
+    ) -> Result<OpenedProviderDispatchV1, ForemanError> {
+        validate_local_occurrence_id(wake_occurrence_id, "wake_occurrence_id")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
+        let (packet, admission, profile, _) = load_contracts(&transaction, run_id)?;
+        let history = load_execution_availability_history(
+            &transaction,
+            run_id,
+            &packet,
+            &admission,
+            &profile,
+        )?
+        .ok_or_else(|| {
+            ForemanError::Transition(
+                "run has no immutable execution-availability requirement".to_owned(),
+            )
+        })?;
+        if let Some(position) = history
+            .wake_occurrence_ids
+            .iter()
+            .position(|value| value == wake_occurrence_id)
+        {
+            if history
+                .wake_work_attempt_ids
+                .get(position)
+                .map(String::as_str)
+                != Some(attempt_id)
+            {
+                return Err(ForemanError::DuplicateEvent(wake_occurrence_id.to_owned()));
+            }
+            let next_digest = history
+                .wake_next_dispatch_digests
+                .get(position)
+                .ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "wake occurrence lacks exact next dispatch digest".to_owned(),
+                    )
+                })?;
+            let global_index = history
+                .dispatches
+                .iter()
+                .position(|dispatch| &dispatch.dispatch_digest == next_digest)
+                .ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "wake occurrence lacks exact next dispatch".to_owned(),
+                    )
+                })?;
+            let dispatch = &history.dispatches[global_index];
+            let start_request = history.worker_start_requests[global_index].clone();
+            if dispatch.dispatch_occurrence_id != dispatch_occurrence_id
+                || dispatch.adapter_process_occurrence_id != adapter_process_occurrence_id
+                || dispatch.app_server_session_identity != app_server_session_identity
+                || dispatch.selected_model_ordinal != selected_model_ordinal
+                || dispatch.opened_at != opened_at
+            {
+                return Err(ForemanError::DuplicateEvent(wake_occurrence_id.to_owned()));
+            }
+            transaction.commit()?;
+            return Ok(OpenedProviderDispatchV1 {
+                worker_start_request: start_request,
+                dispatch: dispatch.clone(),
+            });
+        }
+        let lane_dispatches: Vec<&_> = history
+            .dispatches
+            .iter()
+            .filter(|dispatch| dispatch.work_attempt_id == attempt_id)
+            .collect();
+        let last_dispatch = lane_dispatches.last().copied().ok_or_else(|| {
+            ForemanError::Transition("wake requires a prior provider dispatch".to_owned())
+        })?;
+        let last_disposition = history
+            .dispositions
+            .iter()
+            .rev()
+            .find(|disposition| disposition.dispatch_digest == last_dispatch.dispatch_digest)
+            .ok_or_else(|| {
+                ForemanError::Transition("wake requires a prior provider disposition".to_owned())
+            })?;
+        let deferred = history
+            .deferred
+            .iter()
+            .find(|deferred| deferred.disposition_digest == last_disposition.disposition_digest)
+            .ok_or_else(|| {
+                ForemanError::Transition("wake requires exact parked deferral".to_owned())
+            })?;
+        if last_disposition.mechanism_state != ProviderMechanismStateV1::ParkedNotAdmitted
+            || opened_at < deferred.wake_at
+        {
+            return Err(ForemanError::Transition(
+                "parked dispatch is not yet wake eligible".to_owned(),
+            ));
+        }
+        let selected_is_lawful = selected_model_ordinal == deferred.selected_model_ordinal
+            || (history.policy.allow_ordered_model_fallback
+                && deferred.remaining_model_ordinals.first().copied()
+                    == Some(selected_model_ordinal));
+        if !selected_is_lawful
+            || lane_dispatches.len()
+                >= usize::from(history.policy.maximum_dispatch_occurrences_per_attempt)
+            || history.dispatches.iter().any(|dispatch| {
+                dispatch.adapter_process_occurrence_id == adapter_process_occurrence_id
+            })
+        {
+            return Err(ForemanError::Transition(
+                "wake model, dispatch bound, or process occurrence is not lawful".to_owned(),
+            ));
+        }
+        match history.policy.parked_resource_lock_policy {
+            ParkedResourceLockPolicyV1::ReleaseAndReacquire => reacquire_attempt_resource_claims(
+                &transaction,
+                &profile,
+                run_id,
+                work_item_id,
+                attempt_id,
+            )?,
+            ParkedResourceLockPolicyV1::RetainWhileParked => require_attempt_resource_claims(
+                &transaction,
+                &profile,
+                run_id,
+                work_item_id,
+                attempt_id,
+            )?,
+        }
+        let predecessor =
+            load_attempt_start_request(&transaction, run_id, work_item_id, attempt_id)?;
+        let dispatch_ordinal = u16::try_from(lane_dispatches.len() + 1)
+            .map_err(|_| ForemanError::Transition("dispatch ordinal overflow".to_owned()))?;
+        let opened = build_provider_dispatch(
+            &predecessor,
+            &profile,
+            &history.requirement,
+            dispatch_occurrence_id,
+            adapter_process_occurrence_id,
+            app_server_session_identity,
+            selected_model_ordinal,
+            dispatch_ordinal,
+            opened_at,
+        )?;
+        append_execution_availability_bounded(
+            &transaction,
+            &InternalEvent {
+                schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                event_id: format!("provider-wake-{wake_occurrence_id}"),
+                run_id: run_id.to_owned(),
+                work_item_id: Some(work_item_id.to_owned()),
+                attempt_id: Some(attempt_id.to_owned()),
+                recorded_at: opened_at,
+                payload: InternalPayload::ProviderWakeOpened {
+                    wake_occurrence_id: wake_occurrence_id.to_owned(),
+                    deferred_dispatch_digest: deferred.deferred_dispatch_digest.clone(),
+                    next_dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+                },
+            },
+            profile.maximum_event_bytes,
+        )?;
+        append_provider_dispatch(
+            &transaction,
+            run_id,
+            work_item_id,
+            attempt_id,
+            &opened,
+            profile.maximum_event_bytes,
+        )?;
+        load_execution_availability_history(&transaction, run_id, &packet, &admission, &profile)?;
+        transaction.commit()?;
+        Ok(opened)
+    }
+
+    // Resume binds every exact prior execution and fresh process occurrence field.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resume_provider_execution(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        attempt_id: &str,
+        resume_occurrence_id: &str,
+        disposition_digest: &str,
+        adapter_process_occurrence_id: &str,
+        execution_identity: &ProviderExecutionIdentityV1,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<(), ForemanError> {
+        validate_local_occurrence_id(resume_occurrence_id, "resume_occurrence_id")?;
+        validate_local_occurrence_id(
+            adapter_process_occurrence_id,
+            "adapter_process_occurrence_id",
+        )?;
+        execution_identity.validate()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
+        let (packet, admission, profile, _) = load_contracts(&transaction, run_id)?;
+        let history = load_execution_availability_history(
+            &transaction,
+            run_id,
+            &packet,
+            &admission,
+            &profile,
+        )?
+        .ok_or_else(|| {
+            ForemanError::Transition(
+                "run has no immutable execution-availability requirement".to_owned(),
+            )
+        })?;
+        if let Some(position) = history
+            .resume_occurrence_ids
+            .iter()
+            .position(|value| value == resume_occurrence_id)
+        {
+            if history.resume_execution_identities.get(position) != Some(execution_identity) {
+                return Err(ForemanError::DuplicateEvent(
+                    resume_occurrence_id.to_owned(),
+                ));
+            }
+            transaction.commit()?;
+            return Ok(());
+        }
+        let disposition = history
+            .dispositions
+            .iter()
+            .rev()
+            .find(|value| value.work_attempt_id == attempt_id)
+            .ok_or_else(|| {
+                ForemanError::Transition(
+                    "resume requires exact post-admission disposition".to_owned(),
+                )
+            })?;
+        if disposition.disposition_digest != disposition_digest
+            || disposition.mechanism_state != ProviderMechanismStateV1::PostAdmissionInterrupted
+            || disposition.provider_execution.as_ref() != Some(execution_identity)
+            || execution_identity.app_server_session_identity
+                != disposition.app_server_session_identity
+            || recorded_at < disposition.received_at
+        {
+            return Err(ForemanError::Transition(
+                "resume is not bound to exact interrupted execution".to_owned(),
+            ));
+        }
+        require_attempt_resource_claims(&transaction, &profile, run_id, work_item_id, attempt_id)?;
+        append_execution_availability_bounded(
+            &transaction,
+            &InternalEvent {
+                schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                event_id: format!("provider-resume-{resume_occurrence_id}"),
+                run_id: run_id.to_owned(),
+                work_item_id: Some(work_item_id.to_owned()),
+                attempt_id: Some(attempt_id.to_owned()),
+                recorded_at,
+                payload: InternalPayload::ProviderExecutionResumeRequested {
+                    resume_occurrence_id: resume_occurrence_id.to_owned(),
+                    disposition_digest: disposition_digest.to_owned(),
+                    adapter_process_occurrence_id: adapter_process_occurrence_id.to_owned(),
+                    execution_identity: Box::new(execution_identity.clone()),
+                },
+            },
+            profile.maximum_event_bytes,
+        )?;
+        load_execution_availability_history(&transaction, run_id, &packet, &admission, &profile)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn record_dispatch_requested(
@@ -1225,7 +1895,7 @@ impl ForemanStore {
     pub fn export_events(&self, run_id: &str) -> Result<Vec<Value>, ForemanError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        ensure_run(&transaction, run_id)?;
+        load_projection(&transaction, run_id)?;
         let events = {
             let mut statement = transaction
                 .prepare("SELECT raw_bytes FROM events WHERE run_id = ?1 ORDER BY sequence ASC")?;
@@ -1278,6 +1948,11 @@ impl ForemanStore {
             profile.maximum_event_bytes,
             packet.work_items.len().saturating_add(1),
         )?;
+        validate_execution_availability_history_size(
+            &transaction,
+            run_id,
+            profile.maximum_event_bytes,
+        )?;
         let events = {
             let mut statement = transaction.prepare(
                 "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
@@ -1300,6 +1975,8 @@ impl ForemanStore {
         };
         let capacity_history =
             validate_capacity_history(&transaction, &events, &packet, &admission, &profile)?;
+        let execution_availability =
+            validate_execution_availability_history_rows(&events, &packet, &admission, &profile)?;
         let capacity_requirement = capacity_history.requirement;
         let capacity_admissions = capacity_history.admissions;
         let run_closed = validate_read_only_run_closed_binding(&events)?;
@@ -1403,6 +2080,7 @@ impl ForemanStore {
             events,
             capacity_requirement,
             capacity_admissions,
+            execution_availability,
             terminal_receipts,
             final_snapshot_bytes,
         })
@@ -1527,7 +2205,14 @@ fn validate_read_only_event_row(
         }
     } else if matches!(
         row.kind.as_str(),
-        "internal" | "capacity_requirement" | "capacity_admission"
+        "internal"
+            | "capacity_requirement"
+            | "capacity_admission"
+            | "execution_availability_requirement"
+            | "provider_dispatch"
+            | "provider_disposition"
+            | "provider_wake"
+            | "provider_resume"
     ) {
         let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
             .map_err(|error| ForemanError::Serialization(error.to_string()))?;
@@ -1549,6 +2234,23 @@ fn validate_read_only_event_row(
                 | (
                     "capacity_admission",
                     InternalPayload::CapacityAdmissionAccepted { .. }
+                )
+                | (
+                    "execution_availability_requirement",
+                    InternalPayload::ExecutionAvailabilityConfigured { .. }
+                )
+                | (
+                    "provider_dispatch",
+                    InternalPayload::ProviderDispatchOpened { .. }
+                )
+                | (
+                    "provider_disposition",
+                    InternalPayload::ProviderDispositionRecorded { .. }
+                )
+                | ("provider_wake", InternalPayload::ProviderWakeOpened { .. })
+                | (
+                    "provider_resume",
+                    InternalPayload::ProviderExecutionResumeRequested { .. }
                 )
         );
         if !kind_matches_payload
@@ -2135,6 +2837,121 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
     Ok(())
 }
 
+fn validate_execution_availability_configuration(
+    requirement_bytes: &[u8],
+    policy_bytes: &[u8],
+) -> Result<ValidatedExecutionAvailabilityConfiguration, ForemanError> {
+    if requirement_bytes.is_empty()
+        || policy_bytes.is_empty()
+        || requirement_bytes.len() > MAXIMUM_CAPACITY_RECORD_BYTES
+        || policy_bytes.len() > MAXIMUM_CAPACITY_RECORD_BYTES
+    {
+        return Err(ForemanError::InputTooLarge(
+            "execution availability configuration",
+        ));
+    }
+    let requirement = ForemanExecutionAvailabilityRequirementV1::from_slice(requirement_bytes)?;
+    let policy = ExecutionAvailabilityPolicyV1::from_slice(policy_bytes)?;
+    requirement.validate()?;
+    policy.validate()?;
+    if serde_jcs::to_vec(&requirement)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?
+        != requirement_bytes
+        || serde_jcs::to_vec(&policy)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != policy_bytes
+    {
+        return Err(ForemanError::Transition(
+            "execution availability configuration is not exact canonical owner bytes".to_owned(),
+        ));
+    }
+    Ok(ValidatedExecutionAvailabilityConfiguration {
+        requirement,
+        requirement_bytes: requirement_bytes.to_vec(),
+        policy,
+        policy_bytes: policy_bytes.to_vec(),
+    })
+}
+
+fn validate_execution_availability_configuration_bindings(
+    configuration: &ValidatedExecutionAvailabilityConfiguration,
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+    recorded_at: DateTime<Utc>,
+) -> Result<(), ForemanError> {
+    let requirement = &configuration.requirement;
+    let policy = &configuration.policy;
+    if requirement.packet_digest != packet.packet_digest
+        || requirement.admission_digest != admission.admission_digest
+        || requirement.profile_digest != profile.profile_digest
+        || requirement.run_id != admission.run_id
+        || requirement.admitted_at != recorded_at
+        || requirement.admitted_at != admission.admitted_at
+        || requirement.policy_id != policy.policy_id
+        || requirement.policy_digest != policy.policy_digest
+    {
+        return Err(ForemanError::IdentityMismatch(
+            "execution availability run requirement",
+        ));
+    }
+    let adapter =
+        profile
+            .adapters
+            .get(&requirement.adapter_id)
+            .ok_or(ForemanError::IdentityMismatch(
+                "execution availability adapter",
+            ))?;
+    if requirement.adapter_id != adapter.adapter_id
+        || requirement.adapter_protocol != adapter.protocol
+        || requirement.adapter_version != adapter.adapter_version
+        || requirement.adapter_executable_identity != adapter.executable_identity
+    {
+        return Err(ForemanError::IdentityMismatch(
+            "execution availability adapter registration",
+        ));
+    }
+    let packet_items: BTreeSet<&_> = packet.work_items.iter().map(|item| &item.id).collect();
+    let selection_items: BTreeSet<&_> = requirement.work_item_model_selections.keys().collect();
+    if packet_items != selection_items {
+        return Err(ForemanError::IdentityMismatch(
+            "execution availability work-item domain",
+        ));
+    }
+    let mut provider_id: Option<&str> = None;
+    for item in &packet.work_items {
+        let execution = profile
+            .work_items
+            .get(&item.id)
+            .ok_or_else(|| ForemanError::UnknownWorkItem(item.id.clone()))?;
+        let selections = requirement.work_item_model_selections.get(&item.id).ok_or(
+            ForemanError::IdentityMismatch("execution availability selection"),
+        )?;
+        if execution.adapter_id != requirement.adapter_id
+            || item.model_routing.class != execution.provider_model_class
+            || selections
+                .iter()
+                .any(|selection| selection.model_class != execution.provider_model_class)
+        {
+            return Err(ForemanError::IdentityMismatch(
+                "execution availability profile selection",
+            ));
+        }
+        for selection in selections {
+            match provider_id {
+                None => provider_id = Some(&selection.provider_id),
+                Some(expected) if expected == selection.provider_id => {}
+                Some(_) => {
+                    return Err(ForemanError::IdentityMismatch(
+                        "execution availability provider identity",
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_bindings(
     packet: &NightshiftPacketV1,
     admission: &ForemanAdmissionV1,
@@ -2427,6 +3244,317 @@ fn validate_capacity_bindings(
     }
 }
 
+fn validate_provider_disposition_evidence(
+    evidence: ProviderDispositionEvidenceV1<'_>,
+) -> Result<ValidatedProviderDispositionEvidence, ForemanError> {
+    let lengths = [
+        evidence.observation_bytes.len(),
+        evidence.disposition_bytes.len(),
+        evidence.deferred_bytes.map_or(0, <[u8]>::len),
+    ];
+    let total = lengths
+        .iter()
+        .try_fold(0_usize, |sum, value| sum.checked_add(*value));
+    if lengths[0] == 0
+        || lengths[1] == 0
+        || total.is_none_or(|value| value > MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES as usize)
+    {
+        return Err(ForemanError::InputTooLarge("provider disposition evidence"));
+    }
+    let observation = ExecutionAvailabilityObservationV1::from_slice(evidence.observation_bytes)?;
+    let disposition = ProviderAdmissionDispositionV1::from_slice(evidence.disposition_bytes)?;
+    let deferred = evidence
+        .deferred_bytes
+        .map(DeferredProviderDispatchV1::from_slice)
+        .transpose()?;
+    observation.validate()?;
+    disposition.validate()?;
+    if let Some(value) = &deferred {
+        value.validate()?;
+    }
+    if serde_jcs::to_vec(&observation)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?
+        != evidence.observation_bytes
+        || serde_jcs::to_vec(&disposition)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != evidence.disposition_bytes
+        || match (&deferred, evidence.deferred_bytes) {
+            (None, None) => false,
+            (Some(value), Some(bytes)) => {
+                serde_jcs::to_vec(value)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != bytes
+            }
+            _ => true,
+        }
+    {
+        return Err(ForemanError::Transition(
+            "provider disposition evidence is not exact canonical owner bytes".to_owned(),
+        ));
+    }
+    Ok(ValidatedProviderDispositionEvidence {
+        observation,
+        observation_bytes: evidence.observation_bytes.to_vec(),
+        disposition,
+        disposition_bytes: evidence.disposition_bytes.to_vec(),
+        deferred,
+        deferred_bytes: evidence.deferred_bytes.map(<[u8]>::to_vec),
+    })
+}
+
+// Construction keeps the V2/profile/requirement and fresh dispatch identities explicit.
+#[allow(clippy::too_many_arguments)]
+fn build_provider_dispatch(
+    predecessor: &WorkerStartRequestV2,
+    profile: &ExecutionProfileV2,
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    dispatch_occurrence_id: &str,
+    adapter_process_occurrence_id: &str,
+    app_server_session_identity: &str,
+    selected_model_ordinal: u16,
+    dispatch_ordinal: u16,
+    opened_at: DateTime<Utc>,
+) -> Result<OpenedProviderDispatchV1, ForemanError> {
+    validate_local_occurrence_id(dispatch_occurrence_id, "dispatch_occurrence_id")?;
+    validate_local_occurrence_id(
+        adapter_process_occurrence_id,
+        "adapter_process_occurrence_id",
+    )?;
+    validate_local_occurrence_id(app_server_session_identity, "app_server_session_identity")?;
+    let predecessor_bytes = serde_jcs::to_vec(predecessor)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    let start = WorkerStartRequestV3::from_v2_for_dispatch(
+        &predecessor_bytes,
+        profile,
+        requirement,
+        dispatch_occurrence_id,
+        selected_model_ordinal,
+    )?;
+    let mut dispatch = ProviderDispatchOccurrenceV1 {
+        schema: PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1.to_owned(),
+        dispatch_digest: placeholder_digest(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: requirement.policy_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: start.run_id.clone(),
+        work_item_id: start.work_item_id.clone(),
+        work_attempt_id: start.work_attempt_id.clone(),
+        dispatch_occurrence_id: dispatch_occurrence_id.to_owned(),
+        dispatch_ordinal,
+        selected_model_ordinal,
+        selection: crate::ProviderModelSelectionV1 {
+            provider_id: start.provider_id.clone(),
+            model_id: start.model_id.clone(),
+            model_class: start.model_class.clone(),
+        },
+        adapter_id: start.adapter_id.clone(),
+        adapter_version: start.adapter_version.clone(),
+        adapter_protocol: start.adapter_protocol.clone(),
+        adapter_process_occurrence_id: adapter_process_occurrence_id.to_owned(),
+        app_server_session_identity: app_server_session_identity.to_owned(),
+        worker_start_request_schema: start.schema.clone(),
+        worker_start_request_digest: start.request_digest.clone(),
+        worker_brief_digest: start.worker_brief_digest.clone(),
+        opened_at,
+        internal_provider_retry_count: 0,
+        provider_execution_id: None,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    dispatch.seal()?;
+    start.validate_dispatch_graph(profile, requirement, &dispatch)?;
+    Ok(OpenedProviderDispatchV1 {
+        worker_start_request: start,
+        dispatch,
+    })
+}
+
+fn append_provider_dispatch(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    work_item_id: &str,
+    attempt_id: &str,
+    opened: &OpenedProviderDispatchV1,
+    maximum_event_bytes: u64,
+) -> Result<(), ForemanError> {
+    let start_request_bytes = serde_jcs::to_vec(&opened.worker_start_request)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    let dispatch_bytes = serde_jcs::to_vec(&opened.dispatch)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    append_execution_availability_bounded(
+        transaction,
+        &InternalEvent {
+            schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+            event_id: format!(
+                "provider-dispatch-{}",
+                opened.dispatch.dispatch_occurrence_id
+            ),
+            run_id: run_id.to_owned(),
+            work_item_id: Some(work_item_id.to_owned()),
+            attempt_id: Some(attempt_id.to_owned()),
+            recorded_at: opened.dispatch.opened_at,
+            payload: InternalPayload::ProviderDispatchOpened {
+                start_request: Box::new(opened.worker_start_request.clone()),
+                start_request_bytes,
+                dispatch: Box::new(opened.dispatch.clone()),
+                dispatch_bytes,
+            },
+        },
+        maximum_event_bytes,
+    )
+}
+
+fn append_provider_disposition(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    work_item_id: &str,
+    attempt_id: &str,
+    evidence: &ValidatedProviderDispositionEvidence,
+    predecessor_disposition_digest: Option<&str>,
+    maximum_event_bytes: u64,
+) -> Result<(), ForemanError> {
+    append_execution_availability_bounded(
+        transaction,
+        &InternalEvent {
+            schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+            event_id: format!(
+                "provider-disposition-{}",
+                evidence.disposition.disposition_digest
+            ),
+            run_id: run_id.to_owned(),
+            work_item_id: Some(work_item_id.to_owned()),
+            attempt_id: Some(attempt_id.to_owned()),
+            recorded_at: evidence.disposition.received_at,
+            payload: InternalPayload::ProviderDispositionRecorded {
+                observation: Box::new(evidence.observation.clone()),
+                observation_bytes: evidence.observation_bytes.clone(),
+                disposition: Box::new(evidence.disposition.clone()),
+                disposition_bytes: evidence.disposition_bytes.clone(),
+                deferred: evidence.deferred.clone().map(Box::new),
+                deferred_bytes: evidence.deferred_bytes.clone(),
+                reconciles_disposition_digest: predecessor_disposition_digest.map(str::to_owned),
+            },
+        },
+        maximum_event_bytes,
+    )
+}
+
+fn load_attempt_start_request(
+    connection: &Connection,
+    run_id: &str,
+    work_item_id: &str,
+    attempt_id: &str,
+) -> Result<WorkerStartRequestV2, ForemanError> {
+    let mut statement = connection.prepare(
+        "SELECT raw_bytes FROM events
+         WHERE run_id = ?1 AND work_item_id = ?2 AND attempt_id = ?3 AND kind = \x27internal\x27
+         ORDER BY sequence ASC",
+    )?;
+    let rows = statement.query_map(params![run_id, work_item_id, attempt_id], |row| {
+        row.get::<_, Vec<u8>>(0)
+    })?;
+    let mut found = None;
+    for raw in rows {
+        let event: InternalEvent = serde_json::from_slice(&raw?)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        if let InternalPayload::AttemptCreated { start_request, .. } = event.payload {
+            if found.replace(*start_request).is_some() {
+                return Err(ForemanError::ReadOnlyStore(
+                    "duplicate exact work-attempt start request".to_owned(),
+                ));
+            }
+        }
+    }
+    found.ok_or_else(|| {
+        ForemanError::Transition("work attempt lacks exact V2 start predecessor".to_owned())
+    })
+}
+
+fn require_attempt_resource_claims(
+    connection: &Connection,
+    profile: &ExecutionProfileV2,
+    run_id: &str,
+    work_item_id: &str,
+    attempt_id: &str,
+) -> Result<(), ForemanError> {
+    let execution = profile
+        .work_items
+        .get(work_item_id)
+        .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?;
+    for lock in &execution.resource_lock_keys {
+        let owner: Option<(String, String)> = connection
+            .query_row(
+                "SELECT work_item_id, attempt_id FROM resource_claims
+                 WHERE run_id = ?1 AND resource_lock_key = ?2",
+                params![run_id, lock],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if owner
+            .as_ref()
+            .map(|(work, attempt)| (work.as_str(), attempt.as_str()))
+            != Some((work_item_id, attempt_id))
+        {
+            return Err(ForemanError::ResourceUnavailable(format!(
+                "required lock {lock} is not held by exact work attempt"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn reacquire_attempt_resource_claims(
+    transaction: &Transaction<'_>,
+    profile: &ExecutionProfileV2,
+    run_id: &str,
+    work_item_id: &str,
+    attempt_id: &str,
+) -> Result<(), ForemanError> {
+    let execution = profile
+        .work_items
+        .get(work_item_id)
+        .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?;
+    for lock in &execution.resource_lock_keys {
+        let owner: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT work_item_id, attempt_id FROM resource_claims
+                 WHERE run_id = ?1 AND resource_lock_key = ?2",
+                params![run_id, lock],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        match owner {
+            Some((owner_work, owner_attempt))
+                if owner_work == work_item_id && owner_attempt == attempt_id => {}
+            Some((owner_work, _)) => {
+                return Err(ForemanError::ResourceUnavailable(format!(
+                    "{lock} held by {owner_work}"
+                )))
+            }
+            None => {
+                transaction.execute(
+                    "INSERT INTO resource_claims
+                     (run_id, resource_lock_key, work_item_id, attempt_id)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![run_id, lock, work_item_id, attempt_id],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_occurrence_id(value: &str, field: &'static str) -> Result<(), ForemanError> {
+    if value.is_empty()
+        || value.len() > 256
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return Err(ForemanError::Transition(format!("invalid {field}")));
+    }
+    Ok(())
+}
+
 fn append_internal(
     transaction: &Transaction<'_>,
     event: &InternalEvent,
@@ -2470,6 +3598,55 @@ fn append_internal_bounded(
             .is_none_or(|total| total > MAXIMUM_CAPACITY_HISTORY_BYTES)
     {
         return Err(ForemanError::InputTooLarge("capacity journal history"));
+    }
+    append_internal_raw(transaction, event, kind, &raw)
+}
+
+fn execution_availability_row_kind(payload: &InternalPayload) -> Option<&'static str> {
+    match payload {
+        InternalPayload::ExecutionAvailabilityConfigured { .. } => {
+            Some("execution_availability_requirement")
+        }
+        InternalPayload::ProviderDispatchOpened { .. } => Some("provider_dispatch"),
+        InternalPayload::ProviderDispositionRecorded { .. } => Some("provider_disposition"),
+        InternalPayload::ProviderWakeOpened { .. } => Some("provider_wake"),
+        InternalPayload::ProviderExecutionResumeRequested { .. } => Some("provider_resume"),
+        _ => None,
+    }
+}
+
+fn append_execution_availability_bounded(
+    transaction: &Transaction<'_>,
+    event: &InternalEvent,
+    maximum_event_bytes: u64,
+) -> Result<(), ForemanError> {
+    let kind = execution_availability_row_kind(&event.payload).ok_or_else(|| {
+        ForemanError::Transition(
+            "bounded execution-availability append received unrelated event".to_owned(),
+        )
+    })?;
+    let raw =
+        serde_jcs::to_vec(event).map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    if raw.is_empty() || raw.len() > maximum_event_bytes as usize {
+        return Err(ForemanError::InputTooLarge(
+            "execution availability journal event",
+        ));
+    }
+    let (retained, retained_count) = validate_execution_availability_history_size(
+        transaction,
+        &event.run_id,
+        maximum_event_bytes,
+    )?;
+    if retained_count
+        .checked_add(1)
+        .is_none_or(|count| count > MAXIMUM_EXECUTION_AVAILABILITY_ROWS)
+        || retained
+            .checked_add(raw.len() as u64)
+            .is_none_or(|total| total > MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES)
+    {
+        return Err(ForemanError::InputTooLarge(
+            "execution availability journal history",
+        ));
     }
     append_internal_raw(transaction, event, kind, &raw)
 }
@@ -2617,6 +3794,568 @@ fn validate_capacity_history_size(
     Ok((total, count))
 }
 
+fn validate_execution_availability_history_size(
+    connection: &Connection,
+    run_id: &str,
+    maximum_event_bytes: u64,
+) -> Result<(u64, usize), ForemanError> {
+    let mut statement = connection.prepare(
+        "SELECT sequence, length(raw_bytes) FROM events
+         WHERE run_id = ?1 AND kind IN (
+             'execution_availability_requirement', 'provider_dispatch',
+             'provider_disposition', 'provider_wake', 'provider_resume'
+         ) ORDER BY sequence ASC",
+    )?;
+    let rows = statement.query_map([run_id], |row| {
+        Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
+    })?;
+    let mut total = 0_u64;
+    let mut count = 0_usize;
+    for row in rows {
+        count = count.checked_add(1).ok_or(ForemanError::InputTooLarge(
+            "execution availability journal history",
+        ))?;
+        if count > MAXIMUM_EXECUTION_AVAILABILITY_ROWS {
+            return Err(ForemanError::InputTooLarge(
+                "execution availability journal history",
+            ));
+        }
+        let (_sequence, length) = row?;
+        if length == 0 || length > maximum_event_bytes {
+            return Err(ForemanError::InputTooLarge(
+                "execution availability journal event",
+            ));
+        }
+        total = total
+            .checked_add(length)
+            .ok_or(ForemanError::InputTooLarge(
+                "execution availability journal history",
+            ))?;
+        if total > MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES {
+            return Err(ForemanError::InputTooLarge(
+                "execution availability journal history",
+            ));
+        }
+    }
+    Ok((total, count))
+}
+
+#[derive(Clone)]
+enum AvailabilityLaneEvent {
+    Dispatch(String),
+    Disposition(String),
+    Wake(String),
+    Resume,
+}
+
+fn load_execution_availability_history(
+    connection: &Connection,
+    run_id: &str,
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+) -> Result<Option<ReadOnlyExecutionAvailabilityHistoryV1>, ForemanError> {
+    validate_execution_availability_history_size(connection, run_id, profile.maximum_event_bytes)?;
+    let mut statement = connection.prepare(
+        "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
+                raw_bytes, raw_digest
+         FROM events WHERE run_id = ?1 ORDER BY sequence ASC",
+    )?;
+    let rows = statement.query_map([run_id], |row| {
+        Ok(ReadOnlyEventRowV1 {
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            work_item_id: row.get(2)?,
+            attempt_id: row.get(3)?,
+            kind: row.get(4)?,
+            recorded_at: row.get(5)?,
+            raw_bytes: row.get(6)?,
+            raw_digest: row.get(7)?,
+        })
+    })?;
+    let rows = rows.collect::<Result<Vec<_>, _>>()?;
+    validate_execution_availability_history_rows(&rows, packet, admission, profile)
+}
+
+fn validate_execution_availability_history_rows(
+    rows: &[ReadOnlyEventRowV1],
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+) -> Result<Option<ReadOnlyExecutionAvailabilityHistoryV1>, ForemanError> {
+    let mut run_admitted: Option<(u64, DateTime<Utc>)> = None;
+    let mut attempts: BTreeMap<(String, String), WorkerStartRequestV2> = BTreeMap::new();
+    let mut lane_last: BTreeMap<(String, String), AvailabilityLaneEvent> = BTreeMap::new();
+    let mut history: Option<ReadOnlyExecutionAvailabilityHistoryV1> = None;
+    let mut dispatch_ids = BTreeSet::new();
+    let mut dispatch_digests = BTreeSet::new();
+    let mut wake_ids = BTreeSet::new();
+    let mut resume_ids = BTreeSet::new();
+
+    for row in rows {
+        validate_read_only_event_row(row, &admission.run_id, &packet.packet_digest, profile)?;
+        if row.kind == "adapter_event" {
+            continue;
+        }
+        let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        match event.payload {
+            InternalPayload::RunAdmitted => {
+                if run_admitted
+                    .replace((row.sequence, event.recorded_at))
+                    .is_some()
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "execution availability history has duplicate run admission".to_owned(),
+                    ));
+                }
+            }
+            InternalPayload::AttemptCreated { start_request, .. } => {
+                let work_item_id = event.work_item_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("attempt lacks work-item identity".to_owned())
+                })?;
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("attempt lacks attempt identity".to_owned())
+                })?;
+                if attempts
+                    .insert((work_item_id, attempt_id), *start_request)
+                    .is_some()
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "duplicate work-attempt identity".to_owned(),
+                    ));
+                }
+            }
+            InternalPayload::ExecutionAvailabilityConfigured {
+                requirement,
+                requirement_bytes,
+                policy,
+                policy_bytes,
+            } => {
+                if history.is_some() || event.work_item_id.is_some() || event.attempt_id.is_some() {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "execution availability requirement is not singular run-level state"
+                            .to_owned(),
+                    ));
+                }
+                let (run_sequence, run_time) = run_admitted.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "execution availability requirement precedes run admission".to_owned(),
+                    )
+                })?;
+                if row.sequence != run_sequence + 1 || event.recorded_at != run_time {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "execution availability requirement is not adjacent to run admission"
+                            .to_owned(),
+                    ));
+                }
+                let configuration = validate_execution_availability_configuration(
+                    &requirement_bytes,
+                    &policy_bytes,
+                )?;
+                if configuration.requirement != *requirement || configuration.policy != *policy {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "execution availability typed/raw configuration split".to_owned(),
+                    ));
+                }
+                validate_execution_availability_configuration_bindings(
+                    &configuration,
+                    packet,
+                    admission,
+                    profile,
+                    event.recorded_at,
+                )?;
+                history = Some(ReadOnlyExecutionAvailabilityHistoryV1 {
+                    requirement: configuration.requirement,
+                    requirement_bytes: configuration.requirement_bytes,
+                    policy: configuration.policy,
+                    policy_bytes: configuration.policy_bytes,
+                    worker_start_requests: Vec::new(),
+                    dispatches: Vec::new(),
+                    observations: Vec::new(),
+                    dispositions: Vec::new(),
+                    deferred: Vec::new(),
+                    wake_occurrence_ids: Vec::new(),
+                    wake_work_attempt_ids: Vec::new(),
+                    wake_next_dispatch_digests: Vec::new(),
+                    resume_occurrence_ids: Vec::new(),
+                    resume_adapter_process_occurrence_ids: Vec::new(),
+                    resume_execution_identities: Vec::new(),
+                });
+            }
+            InternalPayload::ProviderDispatchOpened {
+                start_request,
+                start_request_bytes,
+                dispatch,
+                dispatch_bytes,
+            } => {
+                let history = history.as_mut().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "provider dispatch lacks immutable availability requirement".to_owned(),
+                    )
+                })?;
+                start_request.validate()?;
+                dispatch.validate()?;
+                if serde_jcs::to_vec(&*start_request)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != start_request_bytes
+                    || serde_jcs::to_vec(&*dispatch)
+                        .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                        != dispatch_bytes
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider dispatch typed/raw custody split".to_owned(),
+                    ));
+                }
+                start_request.validate_dispatch_graph(profile, &history.requirement, &dispatch)?;
+                if event.work_item_id.as_deref() != Some(dispatch.work_item_id.as_str())
+                    || event.attempt_id.as_deref() != Some(dispatch.work_attempt_id.as_str())
+                    || event.recorded_at != dispatch.opened_at
+                    || !dispatch_ids.insert(dispatch.dispatch_occurrence_id.clone())
+                    || !dispatch_digests.insert(dispatch.dispatch_digest.clone())
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider dispatch journal identity mismatch".to_owned(),
+                    ));
+                }
+                let key = (
+                    dispatch.work_item_id.clone(),
+                    dispatch.work_attempt_id.clone(),
+                );
+                let predecessor = attempts.get(&key).ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "provider dispatch lacks exact work-attempt predecessor".to_owned(),
+                    )
+                })?;
+                if start_request.predecessor_v2()? != *predecessor
+                    || usize::from(dispatch.dispatch_ordinal)
+                        != history
+                            .dispatches
+                            .iter()
+                            .filter(|value| value.work_attempt_id == dispatch.work_attempt_id)
+                            .count()
+                            + 1
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider dispatch attempt or ordinal discontinuity".to_owned(),
+                    ));
+                }
+                match lane_last.get(&key) {
+                    None if dispatch.dispatch_ordinal == 1 => {}
+                    Some(AvailabilityLaneEvent::Wake(expected))
+                        if expected == &dispatch.dispatch_digest => {}
+                    _ => {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "provider dispatch lacks exact attempt/wake predecessor".to_owned(),
+                        ))
+                    }
+                }
+                lane_last.insert(
+                    key,
+                    AvailabilityLaneEvent::Dispatch(dispatch.dispatch_digest.clone()),
+                );
+                history.worker_start_requests.push(*start_request);
+                history.dispatches.push(*dispatch);
+            }
+            InternalPayload::ProviderDispositionRecorded {
+                observation,
+                observation_bytes,
+                disposition,
+                disposition_bytes,
+                deferred,
+                deferred_bytes,
+                reconciles_disposition_digest,
+            } => {
+                let history = history.as_mut().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "provider disposition lacks immutable availability requirement".to_owned(),
+                    )
+                })?;
+                let accepted =
+                    validate_provider_disposition_evidence(ProviderDispositionEvidenceV1 {
+                        observation_bytes: &observation_bytes,
+                        disposition_bytes: &disposition_bytes,
+                        deferred_bytes: deferred_bytes.as_deref(),
+                    })?;
+                if accepted.observation != *observation
+                    || accepted.disposition != *disposition
+                    || accepted.deferred.as_ref() != deferred.as_deref()
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider disposition nested typed/raw custody split".to_owned(),
+                    ));
+                }
+                let dispatch = history
+                    .dispatches
+                    .iter()
+                    .find(|value| value.dispatch_digest == disposition.dispatch_digest)
+                    .ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "provider disposition lacks exact dispatch".to_owned(),
+                        )
+                    })?;
+                if event.work_item_id.as_deref() != Some(disposition.work_item_id.as_str())
+                    || event.attempt_id.as_deref() != Some(disposition.work_attempt_id.as_str())
+                    || event.recorded_at != disposition.received_at
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider disposition journal identity mismatch".to_owned(),
+                    ));
+                }
+                let key = (
+                    disposition.work_item_id.clone(),
+                    disposition.work_attempt_id.clone(),
+                );
+                let previous = history
+                    .dispositions
+                    .iter()
+                    .rev()
+                    .find(|value| value.dispatch_digest == disposition.dispatch_digest);
+                match (previous, reconciles_disposition_digest.as_deref()) {
+                    (None, None) => match lane_last.get(&key) {
+                        Some(AvailabilityLaneEvent::Dispatch(expected))
+                            if expected == &disposition.dispatch_digest => {}
+                        _ => {
+                            return Err(ForemanError::ReadOnlyStore(
+                                "provider disposition lacks exact dispatch predecessor".to_owned(),
+                            ))
+                        }
+                    },
+                    (Some(prior), Some(expected)) if prior.disposition_digest == expected => {
+                        validate_provider_disposition_transition(prior, &disposition)?;
+                    }
+                    _ => {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "provider disposition predecessor mismatch".to_owned(),
+                        ))
+                    }
+                }
+                let prior_history = provider_deferral_history(
+                    history,
+                    &disposition.work_attempt_id,
+                    dispatch.dispatch_ordinal,
+                )?;
+                validate_execution_availability_graph(
+                    &history.requirement,
+                    &history.policy,
+                    dispatch,
+                    &observation,
+                    &disposition,
+                    &prior_history,
+                    deferred.as_deref(),
+                )?;
+                lane_last.insert(
+                    key,
+                    AvailabilityLaneEvent::Disposition(disposition.disposition_digest.clone()),
+                );
+                history.observations.push(*observation);
+                history.dispositions.push(*disposition);
+                if let Some(deferred) = deferred {
+                    history.deferred.push(*deferred);
+                }
+            }
+            InternalPayload::ProviderWakeOpened {
+                wake_occurrence_id,
+                deferred_dispatch_digest,
+                next_dispatch_digest,
+            } => {
+                let history = history.as_mut().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "provider wake lacks immutable availability requirement".to_owned(),
+                    )
+                })?;
+                validate_local_occurrence_id(&wake_occurrence_id, "wake_occurrence_id")?;
+                let work_item_id = event.work_item_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("provider wake lacks work item".to_owned())
+                })?;
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("provider wake lacks attempt".to_owned())
+                })?;
+                let key = (work_item_id, attempt_id.clone());
+                let prior_disposition_digest = match lane_last.get(&key) {
+                    Some(AvailabilityLaneEvent::Disposition(value)) => value,
+                    _ => {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "provider wake lacks exact parked disposition predecessor".to_owned(),
+                        ))
+                    }
+                };
+                let deferred = history
+                    .deferred
+                    .iter()
+                    .find(|value| {
+                        value.deferred_dispatch_digest == deferred_dispatch_digest
+                            && value.disposition_digest == *prior_disposition_digest
+                    })
+                    .ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "provider wake deferred binding mismatch".to_owned(),
+                        )
+                    })?;
+                if event.recorded_at < deferred.wake_at
+                    || !wake_ids.insert(wake_occurrence_id.clone())
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider wake time or identity mismatch".to_owned(),
+                    ));
+                }
+                lane_last.insert(
+                    key,
+                    AvailabilityLaneEvent::Wake(next_dispatch_digest.clone()),
+                );
+                history.wake_occurrence_ids.push(wake_occurrence_id);
+                history.wake_work_attempt_ids.push(attempt_id);
+                history
+                    .wake_next_dispatch_digests
+                    .push(next_dispatch_digest);
+            }
+            InternalPayload::ProviderExecutionResumeRequested {
+                resume_occurrence_id,
+                disposition_digest,
+                adapter_process_occurrence_id,
+                execution_identity,
+            } => {
+                let history = history.as_mut().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "provider resume lacks immutable availability requirement".to_owned(),
+                    )
+                })?;
+                validate_local_occurrence_id(&resume_occurrence_id, "resume_occurrence_id")?;
+                validate_local_occurrence_id(
+                    &adapter_process_occurrence_id,
+                    "adapter_process_occurrence_id",
+                )?;
+                execution_identity.validate()?;
+                let work_item_id = event.work_item_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("provider resume lacks work item".to_owned())
+                })?;
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("provider resume lacks attempt".to_owned())
+                })?;
+                let key = (work_item_id, attempt_id.clone());
+                let disposition = history
+                    .dispositions
+                    .iter()
+                    .rev()
+                    .find(|value| value.work_attempt_id == attempt_id)
+                    .ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "provider resume lacks exact disposition".to_owned(),
+                        )
+                    })?;
+                if disposition.disposition_digest != disposition_digest
+                    || disposition.mechanism_state
+                        != ProviderMechanismStateV1::PostAdmissionInterrupted
+                    || disposition.provider_execution.as_ref() != Some(&execution_identity)
+                    || event.recorded_at < disposition.received_at
+                    || !resume_ids.insert(resume_occurrence_id.clone())
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider resume exact execution binding mismatch".to_owned(),
+                    ));
+                }
+                lane_last.insert(key, AvailabilityLaneEvent::Resume);
+                history.resume_occurrence_ids.push(resume_occurrence_id);
+                history
+                    .resume_adapter_process_occurrence_ids
+                    .push(adapter_process_occurrence_id);
+                history
+                    .resume_execution_identities
+                    .push(*execution_identity);
+            }
+            _ => {}
+        }
+    }
+    if lane_last
+        .values()
+        .any(|value| matches!(value, AvailabilityLaneEvent::Wake(_)))
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "provider wake lacks atomic next dispatch".to_owned(),
+        ));
+    }
+    Ok(history)
+}
+
+fn provider_deferral_history(
+    history: &ReadOnlyExecutionAvailabilityHistoryV1,
+    attempt_id: &str,
+    before_dispatch_ordinal: u16,
+) -> Result<Vec<ProviderDeferralHistoryEntryV1>, ForemanError> {
+    let mut result = Vec::new();
+    for dispatch in history.dispatches.iter().filter(|value| {
+        value.work_attempt_id == attempt_id && value.dispatch_ordinal < before_dispatch_ordinal
+    }) {
+        let disposition = history
+            .dispositions
+            .iter()
+            .rev()
+            .find(|value| value.dispatch_digest == dispatch.dispatch_digest)
+            .ok_or_else(|| {
+                ForemanError::ReadOnlyStore(
+                    "prior dispatch lacks exact terminal admission disposition".to_owned(),
+                )
+            })?;
+        let deferred = history
+            .deferred
+            .iter()
+            .find(|value| value.disposition_digest == disposition.disposition_digest)
+            .ok_or_else(|| {
+                ForemanError::ReadOnlyStore(
+                    "prior not-admitted dispatch lacks exact deferral".to_owned(),
+                )
+            })?;
+        result.push(ProviderDeferralHistoryEntryV1 {
+            dispatch: dispatch.clone(),
+            disposition: disposition.clone(),
+            deferred: deferred.clone(),
+        });
+    }
+    result.sort_by_key(|entry| entry.dispatch.dispatch_ordinal);
+    Ok(result)
+}
+
+fn validate_provider_disposition_transition(
+    previous: &ProviderAdmissionDispositionV1,
+    next: &ProviderAdmissionDispositionV1,
+) -> Result<(), ForemanError> {
+    if previous.dispatch_digest != next.dispatch_digest
+        || previous.work_attempt_id != next.work_attempt_id
+        || previous.dispatch_occurrence_id != next.dispatch_occurrence_id
+        || next.received_at < previous.received_at
+    {
+        return Err(ForemanError::IdentityMismatch(
+            "provider disposition transition identity",
+        ));
+    }
+    match previous.mechanism_state {
+        ProviderMechanismStateV1::AdmissionIndeterminate => Ok(()),
+        ProviderMechanismStateV1::ExecutionAdmitted
+        | ProviderMechanismStateV1::WaitingApproval
+        | ProviderMechanismStateV1::PostAdmissionInterrupted => {
+            if previous.provider_execution.is_none()
+                || next.provider_execution != previous.provider_execution
+                || !matches!(
+                    next.mechanism_state,
+                    ProviderMechanismStateV1::ExecutionAdmitted
+                        | ProviderMechanismStateV1::WaitingApproval
+                        | ProviderMechanismStateV1::PostAdmissionInterrupted
+                        | ProviderMechanismStateV1::ProviderCompleted
+                )
+            {
+                return Err(ForemanError::Transition(
+                    "post-admission state may retain only the exact execution".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+        ProviderMechanismStateV1::ParkedNotAdmitted
+        | ProviderMechanismStateV1::ProviderCompleted => Err(ForemanError::Transition(
+            "closed provider disposition cannot transition".to_owned(),
+        )),
+    }
+}
+
 fn load_projection(
     connection: &Connection,
     run_id: &str,
@@ -2628,6 +4367,7 @@ fn load_projection(
         profile.maximum_event_bytes,
         packet.work_items.len().saturating_add(1),
     )?;
+    validate_execution_availability_history_size(connection, run_id, profile.maximum_event_bytes)?;
     let mut statement = connection.prepare(
         "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
                 raw_bytes, raw_digest
@@ -2647,6 +4387,7 @@ fn load_projection(
     })?;
     let rows = rows.collect::<Result<Vec<_>, _>>()?;
     validate_capacity_history(connection, &rows, &packet, &admission, &profile)?;
+    validate_execution_availability_history_rows(&rows, &packet, &admission, &profile)?;
 
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
@@ -2659,6 +4400,22 @@ fn load_projection(
                 InternalPayload::RunAdmitted => ReplayKind::RunAdmitted,
                 InternalPayload::CapacityRequirementAdmitted { .. }
                 | InternalPayload::CapacityAdmissionAccepted { .. } => ReplayKind::CapacityEvidence,
+                InternalPayload::ExecutionAvailabilityConfigured { .. } => {
+                    ReplayKind::ExecutionAvailabilityConfigured
+                }
+                InternalPayload::ProviderDispatchOpened { .. } => {
+                    ReplayKind::ProviderDispatchOpened
+                }
+                InternalPayload::ProviderDispositionRecorded { disposition, .. } => {
+                    ReplayKind::ProviderDispositionRecorded {
+                        mechanism_state: disposition.mechanism_state,
+                        execution_identity: disposition.provider_execution.clone(),
+                    }
+                }
+                InternalPayload::ProviderWakeOpened { .. } => ReplayKind::ProviderWakeOpened,
+                InternalPayload::ProviderExecutionResumeRequested { .. } => {
+                    ReplayKind::ProviderExecutionResumeRequested
+                }
                 InternalPayload::AttemptCreated {
                     resource_lock_keys, ..
                 } => ReplayKind::AttemptCreated { resource_lock_keys },
@@ -3046,18 +4803,6 @@ fn final_question(work_item_id: &str, question: &HumanQuestionV1) -> FinalQuesti
         consequences: question.consequences.clone(),
         resume_point: question.resume_point.clone(),
     }
-}
-
-fn ensure_run(connection: &Connection, run_id: &str) -> Result<(), ForemanError> {
-    let exists: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id = ?1)",
-        [run_id],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Err(ForemanError::UnknownRun(run_id.to_owned()));
-    }
-    Ok(())
 }
 
 fn placeholder_digest() -> String {

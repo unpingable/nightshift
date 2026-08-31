@@ -4,7 +4,8 @@ use nightshiftd::packet::NightshiftPacketV1;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AdapterEventKindV1, AdapterEventV1, ExecutionProfileV2, HumanQuestionV1, SchedulerStateV1,
+    AdapterEventKindV1, AdapterEventV1, ExecutionProfileV2, HumanQuestionV1,
+    ProviderExecutionIdentityV1, ProviderMechanismStateV1, SchedulerStateV1,
     LIVE_RUN_PROJECTION_SCHEMA_V1,
 };
 
@@ -77,7 +78,9 @@ pub(crate) struct ReplayEvent {
 #[derive(Clone, Debug)]
 pub(crate) enum ReplayKind {
     RunAdmitted,
-    AttemptCreated { resource_lock_keys: Vec<String> },
+    AttemptCreated {
+        resource_lock_keys: Vec<String>,
+    },
     DispatchRequested,
     ResumeRequested,
     Adapter(Box<AdapterEventV1>),
@@ -86,7 +89,17 @@ pub(crate) enum ReplayKind {
     NotStartedAccepted(AcceptedOutcomeV1),
     ResourcesReleased,
     CapacityEvidence,
-    RunClosed { final_receipts_digest: String },
+    ExecutionAvailabilityConfigured,
+    ProviderDispatchOpened,
+    ProviderDispositionRecorded {
+        mechanism_state: ProviderMechanismStateV1,
+        execution_identity: Option<ProviderExecutionIdentityV1>,
+    },
+    ProviderWakeOpened,
+    ProviderExecutionResumeRequested,
+    RunClosed {
+        final_receipts_digest: String,
+    },
 }
 
 pub struct Scheduler;
@@ -184,8 +197,46 @@ impl Scheduler {
                     ReplayKind::ResourcesReleased => {
                         claims.retain(|_, claim| claim.work_item_id != *work_item_id);
                     }
+                    ReplayKind::ProviderDispatchOpened | ReplayKind::ProviderWakeOpened => {
+                        item.scheduler_state = SchedulerStateV1::Dispatching;
+                    }
+                    ReplayKind::ProviderDispositionRecorded {
+                        mechanism_state,
+                        execution_identity,
+                    } => {
+                        if let Some(identity) = execution_identity {
+                            item.provider_identity = Some(identity.provider_id.clone());
+                            item.model_identity = Some(identity.model_id.clone());
+                            item.session_identity =
+                                Some(identity.app_server_session_identity.clone());
+                            item.thread_identity = Some(identity.thread_id.clone());
+                            item.turn_identity = Some(identity.turn_id.clone());
+                        }
+                        item.scheduler_state = match mechanism_state {
+                            ProviderMechanismStateV1::ParkedNotAdmitted => {
+                                SchedulerStateV1::WaitingProvider
+                            }
+                            ProviderMechanismStateV1::AdmissionIndeterminate => {
+                                SchedulerStateV1::IndeterminateMechanismState
+                            }
+                            ProviderMechanismStateV1::ExecutionAdmitted
+                            | ProviderMechanismStateV1::PostAdmissionInterrupted => {
+                                SchedulerStateV1::WaitingProvider
+                            }
+                            ProviderMechanismStateV1::WaitingApproval => {
+                                SchedulerStateV1::WaitingApproval
+                            }
+                            ProviderMechanismStateV1::ProviderCompleted => {
+                                SchedulerStateV1::WaitingProvider
+                            }
+                        };
+                    }
+                    ReplayKind::ProviderExecutionResumeRequested => {
+                        item.scheduler_state = SchedulerStateV1::Dispatching;
+                    }
                     ReplayKind::RunAdmitted
                     | ReplayKind::CapacityEvidence
+                    | ReplayKind::ExecutionAvailabilityConfigured
                     | ReplayKind::RunClosed { .. } => {}
                 }
             }

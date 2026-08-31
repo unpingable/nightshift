@@ -219,9 +219,13 @@ decision-bearing matrix covers only the 65 strict ordered snapshots and
 requires every unordered snapshot—including the same-raw approval watermark
 and server-request discrepancy pair—to return the exact raw-only refusal before
 binding inspection, semantic raw-frame replay, or any scheduling meaning.
-This contract checkpoint does not yet claim a cumulative journal-history bound;
-that metadata-first pre-acquisition invariant belongs to the held storage
-implementation and must qualify before journal mutation is accepted.
+The mechanism store enforces a distinct cumulative 16 MiB journal-history
+ceiling for execution-availability rows. It first queries row count and
+`length(raw_bytes)` for the closed availability row kinds, refuses any empty or
+per-event-oversized row, and checked-adds the cumulative length before selecting
+or materializing any raw BLOB. The same preflight runs during query-only reopen
+and every mutating transition under the transition transaction. Legacy
+non-availability rows remain readable under their predecessor law.
 The pure contract graph requires the exact ordered prior history for the same
 work attempt. Every entry carries and reopens its exact dispatch occurrence,
 admission disposition, and deferral receipt. The graph binds their digests and
@@ -242,8 +246,9 @@ accepted owner/schema/fixture pins. The sealed profile, availability
 requirement, and dispatch graph validates executable registration and policy
 bindings transitively; those are not direct V3 fields. An adapter process
 occurrence, App Server session estate, and resource-lock acquisition are not
-selected or proven by V3. The future held store/runtime must select and
-validate those facts before adapter process creation.
+selected or proven by V3. The mechanism store selects those facts, binds them
+into the dispatch occurrence, and validates the complete V2/profile/
+requirement/V3/dispatch graph before any future adapter process creation.
 
 ## Closed meanings
 
@@ -335,6 +340,19 @@ dispatch. Duplicate wake invocations converge.
 A stale availability observation cannot start a dispatch. A wake never
 refreshes evidence. Restart replays exact journal state and cannot advance
 `wake_at`, reset backoff, or replace evidence.
+
+Availability-required runs refuse the legacy V2-only preparation path. Initial
+attempt creation, resource-lock acquisition, V3 construction, and first
+dispatch append share one immediate transaction. A construction or validation
+failure therefore leaves no attempt, lock, or dispatch. A parked wake similarly
+reacquires the exact locks and appends the wake plus fresh dispatch atomically.
+
+The shared restart validator runs before scheduler state is usable. It requires
+the singular immutable requirement adjacent to run admission, exact canonical
+row bytes and retained digests, the complete dispatch/disposition/deferred/wake/
+resume ordering, exact V3 graph binding, and the accepted execution-availability
+graph for every retained occurrence. Query-only snapshots expose these exact
+facts but perform no scheduling transition.
 
 ## Indeterminate and reconciliation law
 

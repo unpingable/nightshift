@@ -20,6 +20,17 @@ use nightshift_foreman::{
     WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
+use nightshift_foreman::{
+    DeferredProviderDispatchV1, DeferredWakeBasisV1, ExactMapperSnapshotV1,
+    ExecutionAvailabilityObservationV1, ExecutionAvailabilityPolicyV1,
+    ExecutionAvailabilityStateV1, ForemanExecutionAvailabilityRequirementV1,
+    ParkedResourceLockPolicyV1, ProviderAdmissionDispositionKindV1, ProviderAdmissionDispositionV1,
+    ProviderAdmissionOwnerPinsV1, ProviderDispatchOccurrenceV1, ProviderDispositionEvidenceV1,
+    ProviderExecutionIdentityV1, ProviderMechanismStateV1, ProviderModelSelectionV1,
+    WorkerStartRequestV3, DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1,
+    EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1, EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1,
+    FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1,
+};
 use nightshift_provider_capacity::{
     decide_capacity, AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
     CapacityObservationV1, CapacityPolicyV1, CapacityState, CapacityWindow, Confidence,
@@ -34,7 +45,7 @@ use nightshiftd::packet::{
     NIGHTSHIFT_PACKET_SCHEMA_V1,
 };
 use rusqlite::{Connection, OpenFlags};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
@@ -3569,4 +3580,1147 @@ fn final_snapshot_questions_match_sealed_casework_contract_for_terminal_and_not_
         Err(nightshift_casework::CaseworkError::Receipt(message))
             if message.contains("exact_question")
     ));
+}
+
+fn holding_time(value: &str) -> chrono::DateTime<Utc> {
+    value.parse().unwrap()
+}
+
+fn holding_placeholder() -> String {
+    format!("sha256:{}", "0".repeat(64))
+}
+
+fn holding_canonical<T: serde::Serialize>(value: &T) -> Vec<u8> {
+    serde_jcs::to_vec(value).unwrap()
+}
+
+fn holding_seal_value(mut value: Value, field: &str, domain: &[u8]) -> Value {
+    value[field] = Value::String(holding_placeholder());
+    let mut basis = value.clone();
+    basis.as_object_mut().unwrap().remove(field);
+    let mut hash = Sha256::new();
+    hash.update(domain);
+    hash.update(holding_canonical(&basis));
+    value[field] = Value::String(format!("sha256:{:x}", hash.finalize()));
+    value
+}
+
+fn holding_replace_strings(value: &mut Value, replacements: &[(&str, &str)]) {
+    match value {
+        Value::String(text) => {
+            if let Some((_, replacement)) =
+                replacements.iter().find(|(candidate, _)| text == candidate)
+            {
+                *text = (*replacement).to_owned();
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                holding_replace_strings(value, replacements);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                holding_replace_strings(value, replacements);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn holding_retarget_snapshot(
+    mut snapshot: Value,
+    opened: &nightshift_foreman::OpenedProviderDispatchV1,
+) -> Vec<u8> {
+    let replacements = [
+        (
+            "attempt-holding-1",
+            opened.dispatch.work_attempt_id.as_str(),
+        ),
+        (
+            "dispatch-holding-1",
+            opened.dispatch.dispatch_occurrence_id.as_str(),
+        ),
+        (
+            "adapter-process-holding-1",
+            opened.dispatch.adapter_process_occurrence_id.as_str(),
+        ),
+        (
+            "fixture-estate-holding-1",
+            opened.dispatch.app_server_session_identity.as_str(),
+        ),
+        ("gpt-5.6-sol", opened.dispatch.selection.model_id.as_str()),
+    ];
+    holding_replace_strings(&mut snapshot, &replacements);
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        if !record["raw"].is_null() {
+            let bytes = hex::decode(record["raw"]["bytes_hex"].as_str().unwrap()).unwrap();
+            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+            holding_replace_strings(&mut wire, &replacements);
+            let mut exact = serde_json::to_vec(&wire).unwrap();
+            exact.push(b"\n"[0]);
+            record["raw"] = json!({
+                "representation": "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+                "byte_length": exact.len(),
+                "sha256": format!("sha256:{:x}", Sha256::digest(&exact)),
+                "encoding": "hex",
+                "bytes_hex": hex::encode(exact),
+            });
+        }
+    }
+    snapshot["binding"] = holding_seal_value(
+        snapshot["binding"].clone(),
+        "binding_digest",
+        b"switchyard.codex-provider-admission-binding.digest/v1\0",
+    );
+    let binding_digest = snapshot["binding"]["binding_digest"].clone();
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        record["binding_digest"] = binding_digest.clone();
+        *record = holding_seal_value(
+            record.clone(),
+            "evidence_digest",
+            b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+        );
+    }
+    snapshot = holding_seal_value(
+        snapshot,
+        "snapshot_digest",
+        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+    );
+    holding_canonical(&snapshot)
+}
+
+fn holding_policy() -> ExecutionAvailabilityPolicyV1 {
+    let mut value = ExecutionAvailabilityPolicyV1 {
+        schema: EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1.to_owned(),
+        policy_digest: holding_placeholder(),
+        policy_id: "holding-policy".to_owned(),
+        maximum_dispatch_occurrences_per_attempt: 4,
+        backoff_seconds: vec![5, 10, 20, 40],
+        maximum_total_deferral_seconds: 600,
+        parked_resource_lock_policy: ParkedResourceLockPolicyV1::ReleaseAndReacquire,
+        provider_capacity_released_while_parked: true,
+        reconcile_indeterminate: true,
+        allow_ordered_model_fallback: true,
+        automatic_semantic_retry: false,
+        approval_response_authorized: false,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    value.seal().unwrap();
+    value
+}
+
+fn holding_requirement(
+    packet: &NightshiftPacketV1,
+    admission: &ForemanAdmissionV1,
+    profile: &ExecutionProfileV2,
+    policy: &ExecutionAvailabilityPolicyV1,
+) -> ForemanExecutionAvailabilityRequirementV1 {
+    let selections = packet
+        .work_items
+        .iter()
+        .map(|item| {
+            (
+                item.id.clone(),
+                vec![
+                    ProviderModelSelectionV1 {
+                        provider_id: "openai".to_owned(),
+                        model_id: "gpt-5.6-sol".to_owned(),
+                        model_class: "large".to_owned(),
+                    },
+                    ProviderModelSelectionV1 {
+                        provider_id: "openai".to_owned(),
+                        model_id: "gpt-5.6-terra".to_owned(),
+                        model_class: "large".to_owned(),
+                    },
+                ],
+            )
+        })
+        .collect();
+    let adapter = &profile.adapters["switchyard-codex"];
+    let mut value = ForemanExecutionAvailabilityRequirementV1 {
+        schema: FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1.to_owned(),
+        requirement_digest: holding_placeholder(),
+        packet_digest: packet.packet_digest.clone(),
+        admission_digest: admission.admission_digest.clone(),
+        profile_digest: profile.profile_digest.clone(),
+        run_id: admission.run_id.clone(),
+        adapter_id: adapter.adapter_id.clone(),
+        adapter_protocol: adapter.protocol.clone(),
+        adapter_version: adapter.adapter_version.clone(),
+        adapter_executable_identity: adapter.executable_identity.clone(),
+        owner_pins: ProviderAdmissionOwnerPinsV1::accepted(),
+        policy_id: policy.policy_id.clone(),
+        policy_digest: policy.policy_digest.clone(),
+        work_item_model_selections: selections,
+        admitted_at: admission.admitted_at,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    value.seal().unwrap();
+    value
+}
+
+fn holding_setup() -> (
+    TempDir,
+    PathBuf,
+    ForemanStore,
+    NightshiftPacketV1,
+    ForemanAdmissionV1,
+    ExecutionProfileV2,
+    ExecutionAvailabilityPolicyV1,
+    ForemanExecutionAvailabilityRequirementV1,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("holding.sqlite");
+    let mut packet = packet();
+    packet.packet_id = "holding-store-fixture".to_owned();
+    packet.created_at = holding_time("2026-08-31T12:00:00Z");
+    packet.current_until = holding_time("2026-08-31T14:00:00Z");
+    let mut first = work_item("work-a", "WORK-A", vec![]);
+    first.model_routing.class = "large".to_owned();
+    let mut second = work_item("work-b", "WORK-B", vec![]);
+    second.model_routing.class = "large".to_owned();
+    packet.work_items = vec![first, second];
+    packet.worker_budget.maximum_concurrent_mutating_workers = 2;
+    packet.seal().unwrap();
+
+    let mut admission = admission(&packet);
+    admission.run_id = "run-holding-store".to_owned();
+    admission.admitted_at = holding_time("2026-08-31T12:00:00Z");
+    admission.expires_at = holding_time("2026-08-31T13:00:00Z");
+    admission.maximum_concurrent_workers = 2;
+    admission.allowed_adapter_ids = vec!["switchyard-codex".to_owned()];
+    admission.allowed_provider_model_classes = vec!["large".to_owned()];
+    admission.seal().unwrap();
+
+    let mut work_items = BTreeMap::new();
+    for (work_item_id, lock) in [("work-a", "provider-slot-a"), ("work-b", "provider-slot-b")] {
+        work_items.insert(
+            work_item_id.to_owned(),
+            WorkItemExecutionV1 {
+                adapter_id: "switchyard-codex".to_owned(),
+                workspace_identity: format!("workspace-{work_item_id}"),
+                resource_lock_keys: vec![lock.to_owned()],
+                provider_model_class: "large".to_owned(),
+            },
+        );
+    }
+    let mut profile = ExecutionProfileV2 {
+        schema: FOREMAN_EXECUTION_PROFILE_SCHEMA_V2.to_owned(),
+        profile_digest: holding_placeholder(),
+        packet_digest: packet.packet_digest.clone(),
+        admission_digest: admission.admission_digest.clone(),
+        adapters: BTreeMap::from([(
+            "switchyard-codex".to_owned(),
+            AdapterRegistrationV2 {
+                adapter_id: "switchyard-codex".to_owned(),
+                protocol: "switchyard.codex-app-server/v2".to_owned(),
+                adapter_version: "2.0.0".to_owned(),
+                executable_identity: format!("sha256:{}", "9".repeat(64)),
+                bounded_arguments: vec![],
+            },
+        )]),
+        work_items,
+        budget_policy_ref: "fuel-policy".to_owned(),
+        log_custody_root: "/tmp/nightshift-holding/log".to_owned(),
+        receipt_custody_root: "/tmp/nightshift-holding/receipts".to_owned(),
+        maximum_event_bytes: 1024 * 1024,
+        maximum_receipt_bytes: 1024 * 1024,
+        adapter_timeout_seconds: 600,
+        closeout_policy: "ALL_EXPLICIT_TERMINAL_OR_NOT_STARTED".to_owned(),
+    };
+    profile.seal().unwrap();
+    let policy = holding_policy();
+    let requirement = holding_requirement(&packet, &admission, &profile, &policy);
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .admit_with_execution_availability(
+            &packet.canonical_bytes().unwrap(),
+            &holding_canonical(&admission),
+            &holding_canonical(&profile),
+            &holding_canonical(&requirement),
+            &holding_canonical(&policy),
+            admission.admitted_at,
+        )
+        .unwrap();
+    (
+        directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        policy,
+        requirement,
+    )
+}
+
+fn holding_snapshot(name: &str) -> Value {
+    let bytes: &[u8] = match name {
+        "parked" => include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-parked-not-admitted.snapshot.v1.json"
+        ),
+        "indeterminate" => include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-admission-indeterminate.snapshot.v1.json"
+        ),
+        "interrupted" => include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-post-admission-interrupted.snapshot.v1.json"
+        ),
+        "approval" => include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"
+        ),
+        value => panic!("unknown holding snapshot {value}"),
+    };
+    serde_json::from_slice(bytes).unwrap()
+}
+
+fn holding_disposition(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    opened: &nightshift_foreman::OpenedProviderDispatchV1,
+    snapshot_name: &str,
+    received_at: chrono::DateTime<Utc>,
+) -> (
+    Vec<u8>,
+    ProviderAdmissionDispositionV1,
+    ExecutionAvailabilityObservationV1,
+) {
+    let snapshot_bytes = holding_retarget_snapshot(holding_snapshot(snapshot_name), opened);
+    let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
+    let execution = snapshot["provider_execution_identity"]
+        .as_object()
+        .map(|identity| ProviderExecutionIdentityV1 {
+            provider_id: identity["provider"].as_str().unwrap().to_owned(),
+            model_id: identity["model"].as_str().unwrap().to_owned(),
+            app_server_session_identity: identity["app_server_session_identity"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            thread_id: identity["thread_id"].as_str().unwrap().to_owned(),
+            turn_id: identity["turn_id"].as_str().unwrap().to_owned(),
+            first_response_id: identity["first_response_id"].as_str().unwrap().to_owned(),
+        });
+    let disposition_kind = match snapshot["admission_disposition"].as_str().unwrap() {
+        "EXECUTION_ADMITTED" => ProviderAdmissionDispositionKindV1::ExecutionAdmitted,
+        "NOT_ADMITTED_MODEL_AT_CAPACITY" => {
+            ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity
+        }
+        "ADMISSION_INDETERMINATE" => ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+        value => panic!("unexpected fixture disposition {value}"),
+    };
+    let mechanism_state = match snapshot["mechanism_state"].as_str().unwrap() {
+        "PARKED_NOT_ADMITTED" => ProviderMechanismStateV1::ParkedNotAdmitted,
+        "ADMISSION_INDETERMINATE" => ProviderMechanismStateV1::AdmissionIndeterminate,
+        "POST_ADMISSION_INTERRUPTED" => ProviderMechanismStateV1::PostAdmissionInterrupted,
+        "WAITING_APPROVAL" => ProviderMechanismStateV1::WaitingApproval,
+        value => panic!("unexpected fixture mechanism {value}"),
+    };
+    let request_occurrence = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|record| record["normalized"]["request_occurrence_id"].as_str())
+        .unwrap_or("request-0")
+        .to_owned();
+    let retry_after_ms = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|record| record["normalized"]["retry_after_ms"].as_i64());
+    let mut disposition = ProviderAdmissionDispositionV1 {
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1.to_owned(),
+        disposition_digest: holding_placeholder(),
+        dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: requirement.policy_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: requirement.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        provider_request_occurrence_id: request_occurrence,
+        adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
+        app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+        thread_id: snapshot["binding"]["thread_id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        turn_id: snapshot["binding"]["turn_id"].as_str().unwrap().to_owned(),
+        disposition: disposition_kind,
+        mechanism_state,
+        received_at,
+        response_created: execution.is_some(),
+        will_retry: false,
+        acquisition_complete: snapshot["acquisition_cut"]["clean"]
+            .as_bool()
+            .unwrap_or(false),
+        provider_retry_after: retry_after_ms
+            .map(|milliseconds| received_at + Duration::milliseconds(milliseconds)),
+        provider_execution: execution,
+        mapper_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1".to_owned(),
+        mapper_snapshot_digest: snapshot["snapshot_digest"].as_str().unwrap().to_owned(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_bytes(&snapshot_bytes).unwrap(),
+        approval_response_sent: false,
+        protected_effect_absent: true,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    disposition.seal().unwrap();
+    let source_kind = match disposition.disposition {
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
+            "PROVIDER_ADMISSION_REFUSED"
+        }
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted => "PROVIDER_EXECUTION_STEP",
+        ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => "ADMISSION_DISCREPANCY",
+        _ => unreachable!(),
+    };
+    let source = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == source_kind)
+        .unwrap();
+    let exact_evidence = if source["raw"].is_null() {
+        None
+    } else {
+        Some(serde_json::from_value(source["raw"].clone()).unwrap())
+    };
+    let observed_at = source["normalized"]["observed_at_ms"]
+        .as_i64()
+        .and_then(chrono::DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or(received_at);
+    let state = match disposition.disposition {
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
+            ExecutionAvailabilityStateV1::ModelAtCapacity
+        }
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted => {
+            ExecutionAvailabilityStateV1::Available
+        }
+        ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => {
+            ExecutionAvailabilityStateV1::Unknown
+        }
+        _ => unreachable!(),
+    };
+    let mut observation = ExecutionAvailabilityObservationV1 {
+        schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        observation_digest: holding_placeholder(),
+        provider_id: disposition.provider_id.clone(),
+        model_id: disposition.model_id.clone(),
+        model_class: opened.dispatch.selection.model_class.clone(),
+        observed_at,
+        received_at,
+        expires_at: received_at + Duration::seconds(60),
+        state,
+        source_identity: "switchyard:provider-admission".to_owned(),
+        source_version: "v1".to_owned(),
+        provider_retry_after: disposition.provider_retry_after,
+        exact_evidence,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    observation.seal().unwrap();
+    (snapshot_bytes, disposition, observation)
+}
+
+fn holding_deferred(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    policy: &ExecutionAvailabilityPolicyV1,
+    opened: &nightshift_foreman::OpenedProviderDispatchV1,
+    disposition: &ProviderAdmissionDispositionV1,
+) -> DeferredProviderDispatchV1 {
+    let remaining_model_ordinals = if policy.allow_ordered_model_fallback {
+        ((opened.dispatch.selected_model_ordinal + 1)
+            ..requirement.work_item_model_selections[&opened.dispatch.work_item_id].len() as u16)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let wake_at = disposition.provider_retry_after.unwrap_or_else(|| {
+        disposition.received_at
+            + Duration::seconds(
+                policy.backoff_seconds[opened.dispatch.dispatch_ordinal as usize - 1] as i64,
+            )
+    });
+    let backoff_seconds = (wake_at - disposition.received_at).num_seconds() as u64;
+    let mut value = DeferredProviderDispatchV1 {
+        schema: DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1.to_owned(),
+        deferred_dispatch_digest: holding_placeholder(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: policy.policy_digest.clone(),
+        disposition_digest: disposition.disposition_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: requirement.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        last_dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        selected_model_ordinal: opened.dispatch.selected_model_ordinal,
+        remaining_model_ordinals,
+        refusal_received_at: disposition.received_at,
+        wake_basis: if disposition.provider_retry_after.is_some() {
+            DeferredWakeBasisV1::ProviderRetryAfter
+        } else {
+            DeferredWakeBasisV1::PolicyBackoff
+        },
+        backoff_ordinal: opened.dispatch.dispatch_ordinal - 1,
+        backoff_seconds,
+        provider_retry_after: disposition.provider_retry_after,
+        wake_at,
+        parked_resource_lock_policy: policy.parked_resource_lock_policy,
+        provider_capacity_released: true,
+        semantic_retry: false,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    value.seal().unwrap();
+    value
+}
+
+fn holding_open_initial(
+    store: &ForemanStore,
+) -> (
+    WorkerStartRequestV2,
+    nightshift_foreman::OpenedProviderDispatchV1,
+) {
+    let opened = store
+        .prepare_provider_attempt(
+            "run-holding-store",
+            "work-a",
+            "dispatch-store-1",
+            "adapter-process-store-1",
+            "session-store-1",
+            0,
+            holding_time("2026-08-31T12:01:00Z"),
+        )
+        .unwrap();
+    let attempt = opened.worker_start_request.predecessor_v2().unwrap();
+    (attempt, opened)
+}
+
+fn holding_record(
+    store: &ForemanStore,
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    policy: &ExecutionAvailabilityPolicyV1,
+    opened: &nightshift_foreman::OpenedProviderDispatchV1,
+    snapshot_name: &str,
+    received_at: chrono::DateTime<Utc>,
+    predecessor: Option<&str>,
+) -> ProviderAdmissionDispositionV1 {
+    let (_snapshot, disposition, observation) =
+        holding_disposition(requirement, opened, snapshot_name, received_at);
+    let deferred = if disposition.disposition.permits_automatic_park() {
+        Some(holding_deferred(requirement, policy, opened, &disposition))
+    } else {
+        None
+    };
+    let observation_bytes = holding_canonical(&observation);
+    let disposition_bytes = holding_canonical(&disposition);
+    let deferred_bytes = deferred.as_ref().map(holding_canonical);
+    store
+        .record_provider_disposition(
+            &disposition.run_id,
+            &disposition.work_item_id,
+            &disposition.work_attempt_id,
+            ProviderDispositionEvidenceV1 {
+                observation_bytes: &observation_bytes,
+                disposition_bytes: &disposition_bytes,
+                deferred_bytes: deferred_bytes.as_deref(),
+            },
+            predecessor,
+        )
+        .unwrap()
+}
+
+#[test]
+fn holding_store_parks_restarts_wakes_falls_back_and_allows_independent_lane() {
+    let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, opened) = holding_open_initial(&store);
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    assert_eq!(
+        parked.mechanism_state,
+        ProviderMechanismStateV1::ParkedNotAdmitted
+    );
+    let projection = store.projection("run-holding-store").unwrap();
+    assert_eq!(
+        projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "work-a")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::WaitingProvider
+    );
+    assert!(store
+        .prepare_attempt(
+            "run-holding-store",
+            "work-b",
+            holding_time("2026-08-31T12:01:03Z"),
+        )
+        .is_err());
+    let independent = store
+        .prepare_provider_attempt(
+            "run-holding-store",
+            "work-b",
+            "dispatch-independent-1",
+            "adapter-process-independent-1",
+            "session-independent-1",
+            0,
+            holding_time("2026-08-31T12:01:03Z"),
+        )
+        .unwrap();
+    assert_eq!(independent.worker_start_request.work_item_id, "work-b");
+    drop(store);
+
+    let restarted = ForemanStore::open(&path).unwrap();
+    let wake_at = parked.provider_retry_after.unwrap();
+    let next = restarted
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-store-1",
+            "dispatch-store-2",
+            "adapter-process-store-2",
+            "session-store-2",
+            1,
+            wake_at,
+        )
+        .unwrap();
+    assert_eq!(next.dispatch.dispatch_ordinal, 2);
+    assert_eq!(next.dispatch.selected_model_ordinal, 1);
+    assert_eq!(
+        next.worker_start_request.work_attempt_id,
+        attempt.attempt_id
+    );
+    let duplicate = restarted
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-store-1",
+            "dispatch-store-2",
+            "adapter-process-store-2",
+            "session-store-2",
+            1,
+            wake_at,
+        )
+        .unwrap();
+    assert_eq!(duplicate, next);
+    assert!(restarted
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-store-1",
+            "dispatch-substituted",
+            "adapter-process-store-2",
+            "session-store-2",
+            1,
+            wake_at,
+        )
+        .is_err());
+    let query = ForemanStore::open_read_only(&path).unwrap();
+    let snapshot = query.read_only_run_snapshot("run-holding-store").unwrap();
+    let mechanism = snapshot.execution_availability.unwrap();
+    assert_eq!(mechanism.dispatches.len(), 3);
+    assert_eq!(mechanism.wake_occurrence_ids, vec!["wake-store-1"]);
+}
+
+#[test]
+fn holding_indeterminate_requires_exact_reconciliation_before_redispatch() {
+    let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, opened) = holding_open_initial(&store);
+    let indeterminate = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "indeterminate",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    assert_eq!(
+        indeterminate.mechanism_state,
+        ProviderMechanismStateV1::AdmissionIndeterminate
+    );
+    assert!(store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-before-reconcile",
+            "dispatch-before-reconcile",
+            "adapter-process-before-reconcile",
+            "session-before-reconcile",
+            0,
+            holding_time("2026-08-31T12:01:10Z"),
+        )
+        .is_err());
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "parked",
+        holding_time("2026-08-31T12:01:03Z"),
+        Some(&indeterminate.disposition_digest),
+    );
+    assert_eq!(
+        parked.mechanism_state,
+        ProviderMechanismStateV1::ParkedNotAdmitted
+    );
+    assert!(
+        holding_disposition(
+            &requirement,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:04Z"),
+        )
+        .1
+        .disposition_digest
+            != indeterminate.disposition_digest
+    );
+}
+
+#[test]
+fn holding_post_admission_restart_resumes_only_exact_execution() {
+    let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, opened) = holding_open_initial(&store);
+    let interrupted = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "interrupted",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    assert_eq!(
+        interrupted.mechanism_state,
+        ProviderMechanismStateV1::PostAdmissionInterrupted
+    );
+    assert!(store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-post-admission",
+            "dispatch-post-admission",
+            "adapter-process-post-admission",
+            "session-post-admission",
+            1,
+            holding_time("2026-08-31T12:01:20Z"),
+        )
+        .is_err());
+    drop(store);
+    let restarted = ForemanStore::open(&path).unwrap();
+    let execution = interrupted.provider_execution.clone().unwrap();
+    restarted
+        .resume_provider_execution(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "resume-store-1",
+            &interrupted.disposition_digest,
+            "adapter-process-resume-1",
+            &execution,
+            holding_time("2026-08-31T12:01:10Z"),
+        )
+        .unwrap();
+    restarted
+        .resume_provider_execution(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "resume-store-1",
+            &interrupted.disposition_digest,
+            "adapter-process-resume-1",
+            &execution,
+            holding_time("2026-08-31T12:01:10Z"),
+        )
+        .unwrap();
+    let mut substituted = execution.clone();
+    substituted.turn_id = "turn-substituted".to_owned();
+    assert!(restarted
+        .resume_provider_execution(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "resume-store-2",
+            &interrupted.disposition_digest,
+            "adapter-process-resume-2",
+            &substituted,
+            holding_time("2026-08-31T12:01:11Z"),
+        )
+        .is_err());
+    let projection = restarted.projection("run-holding-store").unwrap();
+    assert_eq!(
+        projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "work-a")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::Dispatching
+    );
+}
+
+#[test]
+fn holding_concurrent_writers_converge_on_one_wake_and_dispatch() {
+    let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, opened) = holding_open_initial(&store);
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    drop(store);
+    let barrier = Arc::new(Barrier::new(2));
+    let mut workers = Vec::new();
+    for _ in 0..2 {
+        let path = path.clone();
+        let barrier = Arc::clone(&barrier);
+        let attempt_id = attempt.attempt_id.clone();
+        let wake_at = parked.provider_retry_after.unwrap();
+        workers.push(std::thread::spawn(move || {
+            let store = ForemanStore::open(path).unwrap();
+            barrier.wait();
+            store.wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt_id,
+                "wake-concurrent-1",
+                "dispatch-concurrent-2",
+                "adapter-process-concurrent-2",
+                "session-concurrent-2",
+                1,
+                wake_at,
+            )
+        }));
+    }
+    let first = workers.remove(0).join().unwrap().unwrap();
+    let second = workers.remove(0).join().unwrap().unwrap();
+    assert_eq!(first, second);
+    let query = ForemanStore::open_read_only(&path).unwrap();
+    let snapshot = query.read_only_run_snapshot("run-holding-store").unwrap();
+    let history = snapshot.execution_availability.unwrap();
+    assert_eq!(history.wake_occurrence_ids.len(), 1);
+    assert_eq!(history.dispatches.len(), 2);
+}
+
+#[test]
+fn holding_failed_wake_rolls_back_lock_reacquisition_and_restart_recovers() {
+    let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, opened) = holding_open_initial(&store);
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    let wake_at = parked.provider_retry_after.unwrap();
+    assert!(store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-rolled-back",
+            "dispatch-rolled-back",
+            "adapter-process-rolled-back",
+            "invalid session identity",
+            1,
+            wake_at,
+        )
+        .is_err());
+    drop(store);
+    let restarted = ForemanStore::open(&path).unwrap();
+    let opened = restarted
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-after-rollback",
+            "dispatch-after-rollback",
+            "adapter-process-after-rollback",
+            "session-after-rollback",
+            1,
+            wake_at,
+        )
+        .unwrap();
+    assert_eq!(opened.dispatch.dispatch_ordinal, 2);
+    let snapshot = ForemanStore::open_read_only(&path)
+        .unwrap()
+        .read_only_run_snapshot("run-holding-store")
+        .unwrap();
+    let history = snapshot.execution_availability.unwrap();
+    assert_eq!(history.wake_occurrence_ids, vec!["wake-after-rollback"]);
+}
+
+#[test]
+fn holding_failed_initial_dispatch_rolls_back_attempt_and_lock_then_restart_recovers() {
+    let (_directory, path, store, _packet, _admission, _profile, _policy, _requirement) =
+        holding_setup();
+    assert!(store
+        .prepare_provider_attempt(
+            "run-holding-store",
+            "work-a",
+            "dispatch-initial-rolled-back",
+            "adapter-process-initial-rolled-back",
+            "invalid session identity",
+            0,
+            holding_time("2026-08-31T12:01:00Z"),
+        )
+        .is_err());
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    let attempt_events: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM events WHERE attempt_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let resource_claims: u64 = connection
+        .query_row("SELECT count(*) FROM resource_claims", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(attempt_events, 0);
+    assert_eq!(resource_claims, 0);
+    drop(connection);
+
+    let restarted = ForemanStore::open(&path).unwrap();
+    let opened = restarted
+        .prepare_provider_attempt(
+            "run-holding-store",
+            "work-a",
+            "dispatch-initial-after-rollback",
+            "adapter-process-initial-after-rollback",
+            "session-initial-after-rollback",
+            0,
+            holding_time("2026-08-31T12:01:01Z"),
+        )
+        .unwrap();
+    assert_eq!(opened.dispatch.dispatch_ordinal, 1);
+    let snapshot = ForemanStore::open_read_only(&path)
+        .unwrap()
+        .read_only_run_snapshot("run-holding-store")
+        .unwrap();
+    let history = snapshot.execution_availability.unwrap();
+    assert_eq!(history.dispatches, vec![opened.dispatch]);
+}
+
+#[test]
+fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch() {
+    let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, opened) = holding_open_initial(&store);
+    let approval = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &opened,
+        "approval",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    assert_eq!(
+        approval.mechanism_state,
+        ProviderMechanismStateV1::PostAdmissionInterrupted
+    );
+    assert!(!approval.approval_response_sent);
+    assert!(approval.protected_effect_absent);
+    assert!(store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-approval",
+            "dispatch-approval",
+            "adapter-process-approval",
+            "session-approval",
+            1,
+            holding_time("2026-08-31T12:01:20Z"),
+        )
+        .is_err());
+    let execution = approval.provider_execution.clone().unwrap();
+    store
+        .resume_provider_execution(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "resume-approval",
+            &approval.disposition_digest,
+            "adapter-process-resume-approval",
+            &execution,
+            holding_time("2026-08-31T12:01:20Z"),
+        )
+        .unwrap();
+    let projection = store.projection("run-holding-store").unwrap();
+    assert_eq!(
+        projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "work-a")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::Dispatching
+    );
+}
+
+#[test]
+fn holding_metadata_preflight_refuses_huge_event_before_raw_materialization() {
+    let (_directory, path, store, _packet, _admission, profile, _policy, _requirement) =
+        holding_setup();
+    let (_attempt, _opened) = holding_open_initial(&store);
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER events_no_update;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE events SET raw_bytes = zeroblob(?1) WHERE kind = 'provider_dispatch'",
+            [profile.maximum_event_bytes + 1],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(matches!(
+        store.projection("run-holding-store"),
+        Err(ForemanError::InputTooLarge(
+            "execution availability journal event"
+        ))
+    ));
+    drop(store);
+    assert!(matches!(
+        read_only_run_snapshot(&path, "run-holding-store"),
+        Err(ForemanError::InputTooLarge(
+            "execution availability journal event"
+        ))
+    ));
+}
+
+#[test]
+fn holding_metadata_preflight_refuses_cumulative_history_before_raw_materialization() {
+    let (_directory, path, store, _packet, _admission, profile, _policy, _requirement) =
+        holding_setup();
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    let row_bytes = profile.maximum_event_bytes;
+    for ordinal in 0..17_u32 {
+        connection
+            .execute(
+                "INSERT INTO events
+                 (event_id, run_id, work_item_id, attempt_id, kind, recorded_at, raw_bytes, raw_digest)
+                 VALUES (?1, 'run-holding-store', 'work-a', 'attempt-bound-fixture',
+                         'provider_wake', ?2, zeroblob(?3), ?4)",
+                rusqlite::params![
+                    format!("provider-wake-bound-{ordinal}"),
+                    holding_time("2026-08-31T12:01:00Z").to_rfc3339(),
+                    row_bytes,
+                    format!("sha256:{}", "0".repeat(64)),
+                ],
+            )
+            .unwrap();
+    }
+    let retained: u64 = connection
+        .query_row(
+            "SELECT sum(length(raw_bytes)) FROM events
+             WHERE kind IN (
+                 'execution_availability_requirement', 'provider_dispatch',
+                 'provider_disposition', 'provider_wake', 'provider_resume'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(retained > 16 * 1024 * 1024);
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(matches!(
+        store.projection("run-holding-store"),
+        Err(ForemanError::InputTooLarge(
+            "execution availability journal history"
+        ))
+    ));
+    drop(store);
+    assert!(matches!(
+        read_only_run_snapshot(&path, "run-holding-store"),
+        Err(ForemanError::InputTooLarge(
+            "execution availability journal history"
+        ))
+    ));
+}
+
+#[test]
+fn holding_restart_refuses_coherently_resealed_nested_dispatch_substitution() {
+    let (_directory, path, store, _packet, _admission, _profile, _policy, _requirement) =
+        holding_setup();
+    let (_attempt, _opened) = holding_open_initial(&store);
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER events_no_update;")
+        .unwrap();
+    let raw: Vec<u8> = connection
+        .query_row(
+            "SELECT raw_bytes FROM events WHERE kind = 'provider_dispatch'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut event: Value = serde_json::from_slice(&raw).unwrap();
+    let mut start: WorkerStartRequestV3 =
+        serde_json::from_value(event["payload"]["start_request"].clone()).unwrap();
+    start.provider_id = "substituted-provider".to_owned();
+    start.seal().unwrap();
+    let start_bytes = serde_jcs::to_vec(&start).unwrap();
+    let mut dispatch: ProviderDispatchOccurrenceV1 =
+        serde_json::from_value(event["payload"]["dispatch"].clone()).unwrap();
+    dispatch.selection.provider_id = start.provider_id.clone();
+    dispatch.worker_start_request_digest = start.request_digest.clone();
+    dispatch.seal().unwrap();
+    let dispatch_bytes = serde_jcs::to_vec(&dispatch).unwrap();
+    event["payload"]["start_request"] = serde_json::to_value(&start).unwrap();
+    event["payload"]["start_request_bytes"] = serde_json::to_value(start_bytes).unwrap();
+    event["payload"]["dispatch"] = serde_json::to_value(&dispatch).unwrap();
+    event["payload"]["dispatch_bytes"] = serde_json::to_value(dispatch_bytes).unwrap();
+    let substituted = serde_jcs::to_vec(&event).unwrap();
+    connection
+        .execute(
+            "UPDATE events SET raw_bytes = ?1, raw_digest = ?2
+             WHERE kind = 'provider_dispatch'",
+            rusqlite::params![substituted, retained_raw_digest(&substituted)],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(store.projection("run-holding-store").is_err());
+    drop(store);
+    assert!(read_only_run_snapshot(&path, "run-holding-store").is_err());
 }
