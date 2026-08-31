@@ -161,9 +161,10 @@ profile, selected provider/model/class and model ordinal, and accepted
 Codex/Switchyard owner/schema/fixture pins. V2 remains unchanged and readable.
 V3 has no provider execution identity at start, internal provider retry,
 semantic retry, approval-response authority, or target-effect authority.
-Construction is acyclic and executable: Nightshift first derives and seals V3
-from the exact V2 predecessor, sealed execution profile, sealed availability
-requirement, selected requirement ordinal, and fresh dispatch occurrence ID.
+Construction is acyclic, and the graph check is executable as validation:
+Nightshift first derives and seals V3 from the exact V2 predecessor, sealed
+execution profile, sealed availability requirement, selected requirement
+ordinal, and fresh dispatch occurrence ID.
 It then seals the dispatch occurrence over the V3 digest. The decision-bearing
 graph validator reopens both and requires exact profile/admission/requirement,
 run/work/attempt/packet/adapter/brief, provider/model/class/ordinal, occurrence,
@@ -234,9 +235,15 @@ append-only history.
 
 The worker-adapter successor is V3. V2 remains readable and unchanged, but a
 run admitted with an execution-availability requirement refuses the V2 start
-path. V3 binds exact request, packet, brief, profile, attempt, dispatch,
-provider, selected model, adapter protocol/version/executable, session estate,
-resource policy, and result schema before adapter process creation.
+path. V3 directly retains the exact predecessor request, packet, brief,
+profile digest, work attempt, fresh dispatch occurrence, provider, selected
+model/class/ordinal, adapter protocol/version, expected receipt schema, and
+accepted owner/schema/fixture pins. The sealed profile, availability
+requirement, and dispatch graph validates executable registration and policy
+bindings transitively; those are not direct V3 fields. An adapter process
+occurrence, App Server session estate, and resource-lock acquisition are not
+selected or proven by V3. The future held store/runtime must select and
+validate those facts before adapter process creation.
 
 ## Closed meanings
 
