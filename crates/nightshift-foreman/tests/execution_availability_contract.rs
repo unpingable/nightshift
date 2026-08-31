@@ -1370,11 +1370,36 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
         "turn_completed_before_boundary_discrepancy",
         "turn_completed_during_approval_discrepancy",
         "provider_activity_after_approval_discrepancy",
+        "unordered_waiting_approval_then_watermark",
     ] {
         assert!(corpus["branch_inventory"][branch].as_u64().unwrap() > 0);
     }
     let snapshots = corpus["snapshots"].as_array().unwrap();
     assert!(snapshots.len() >= 100);
+    let mut kind_shapes = BTreeMap::<String, Value>::new();
+    for snapshot in snapshots {
+        for record in snapshot["records"].as_array().unwrap() {
+            if record["kind"] != "ACQUISITION_CUT" {
+                kind_shapes
+                    .entry(record["kind"].as_str().unwrap().to_owned())
+                    .or_insert_with(|| record["normalized"].clone());
+            }
+        }
+    }
+    for kind in [
+        "PROVIDER_REQUEST_STARTED",
+        "PROVIDER_EXECUTION_STEP",
+        "PROVIDER_ADMISSION_REFUSED",
+        "PROVIDER_RESPONSE_COMPLETED",
+        "WAITING_APPROVAL",
+        "LOCAL_TURN_FACT",
+        "ADMISSION_DISCREPANCY",
+        "ACQUISITION_WATERMARK",
+        "CLIENT_REQUEST_ISSUED",
+        "CLIENT_RESPONSE_RETAINED",
+    ] {
+        assert!(kind_shapes.contains_key(kind), "missing owner kind {kind}");
+    }
     let mut saw_gap = false;
     let mut saw_duplicate = false;
     let mut saw_reorder = false;
@@ -1413,49 +1438,85 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
             if record["kind"] == "ACQUISITION_CUT" {
                 continue;
             }
-            let mut alternate = snapshot.clone();
-            let alternate_kind = if record["kind"] == "ACQUISITION_WATERMARK" {
-                "LOCAL_TURN_FACT"
-            } else {
-                "ACQUISITION_WATERMARK"
-            };
-            alternate["records"][index]["kind"] = json!(alternate_kind);
-            alternate["records"][index]["normalized"] = json!({"proves_provider_admission":false});
-            alternate = reseal_mapper_snapshot(alternate);
-            let alternate_raw = canonical(&alternate);
-            let mut invalid = disposition.clone();
-            invalid.mapper_snapshot_digest =
-                alternate["snapshot_digest"].as_str().unwrap().to_owned();
-            invalid.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&alternate_raw).unwrap();
-            invalid.disposition_digest = placeholder();
-            if invalid.seal().is_ok() {
-                let method = record["method"].as_str().unwrap();
-                let detail = record["normalized"]["detail"].as_str();
-                let owner_can_emit_unordered_watermark = record["acquisition_kind"].is_null()
-                    && alternate_kind == "ACQUISITION_WATERMARK"
-                    && ((record["kind"] == "ADMISSION_DISCREPANCY"
-                        && matches!(
-                            detail,
-                            Some(
-                                "unknown App Server server request"
-                                    | "approval identity substitution"
-                                    | "approval request preceded provider admission"
-                                    | "approval request preceded exact response completion"
-                            )
-                        ))
-                        || record["kind"] == "WAITING_APPROVAL")
-                    && method != "error"
-                    && !matches!(method, "thread/started" | "turn/started" | "turn/completed")
-                    && !method.starts_with("providerAdmission/")
-                    && !method.starts_with("providerRequest/")
-                    && !method.starts_with("rawResponse/");
-                assert!(
-                    owner_can_emit_unordered_watermark,
-                    "owner record {} {} at {} admitted non-owner alternate kind {alternate_kind}",
-                    record["kind"].as_str().unwrap(),
-                    method,
-                    snapshot["snapshot_digest"].as_str().unwrap(),
-                );
+            for (alternate_kind, normalized_shape) in &kind_shapes {
+                if record["kind"] == alternate_kind.as_str() {
+                    continue;
+                }
+                let mut alternate = snapshot.clone();
+                alternate["records"][index]["kind"] = json!(alternate_kind);
+                alternate["records"][index]["normalized"] = normalized_shape.clone();
+                alternate = reseal_mapper_snapshot(alternate);
+                let alternate_raw = canonical(&alternate);
+                let mut invalid = disposition.clone();
+                invalid.mapper_snapshot_digest =
+                    alternate["snapshot_digest"].as_str().unwrap().to_owned();
+                invalid.mapper_snapshot =
+                    ExactMapperSnapshotV1::from_bytes(&alternate_raw).unwrap();
+                invalid.disposition_digest = placeholder();
+                if invalid.seal().is_ok() {
+                    let method = record["method"].as_str().unwrap();
+                    let detail = record["normalized"]["detail"].as_str();
+                    let owner_can_emit_alternate = record["acquisition_kind"].is_null()
+                        && alternate_kind == "ACQUISITION_WATERMARK"
+                        && ((record["kind"] == "ADMISSION_DISCREPANCY"
+                            && matches!(
+                                detail,
+                                Some(
+                                    "unknown App Server server request"
+                                        | "approval identity substitution"
+                                        | "approval request preceded provider admission"
+                                        | "approval request preceded exact response completion"
+                                        | "provider activity followed unanswered approval"
+                                )
+                            ))
+                            || record["kind"] == "WAITING_APPROVAL")
+                        && method != "error"
+                        && !matches!(method, "thread/started" | "turn/started" | "turn/completed")
+                        && !method.starts_with("providerAdmission/")
+                        && !method.starts_with("providerRequest/")
+                        && !method.starts_with("rawResponse/");
+                    assert!(
+                        owner_can_emit_alternate,
+                        "owner record {} {} at {} admitted non-owner alternate kind {alternate_kind}",
+                        record["kind"].as_str().unwrap(),
+                        method,
+                        snapshot["snapshot_digest"].as_str().unwrap(),
+                    );
+                }
+            }
+
+            if matches!(
+                record["kind"].as_str(),
+                Some(
+                    "PROVIDER_REQUEST_STARTED"
+                        | "PROVIDER_EXECUTION_STEP"
+                        | "PROVIDER_ADMISSION_REFUSED"
+                        | "PROVIDER_RESPONSE_COMPLETED"
+                )
+            ) {
+                let prior_execution = snapshot["records"].as_array().unwrap()[..index]
+                    .iter()
+                    .rev()
+                    .find(|candidate| candidate["kind"] == "PROVIDER_EXECUTION_STEP")
+                    .map(|candidate| candidate["normalized"]["provider_execution_identity"].clone())
+                    .unwrap_or(Value::Null);
+                let resume = !prior_execution.is_null();
+                let mut discrepancy = snapshot.clone();
+                discrepancy["records"][index]["kind"] = json!("ADMISSION_DISCREPANCY");
+                discrepancy["records"][index]["normalized"] = json!({
+                    "detail":"unknown provider-boundary notification",
+                    "provider_execution_identity":prior_execution,
+                    "resume_same_attempt_only":resume,
+                });
+                discrepancy = reseal_mapper_snapshot(discrepancy);
+                let discrepancy_raw = canonical(&discrepancy);
+                let mut invalid = disposition.clone();
+                invalid.mapper_snapshot_digest =
+                    discrepancy["snapshot_digest"].as_str().unwrap().to_owned();
+                invalid.mapper_snapshot =
+                    ExactMapperSnapshotV1::from_bytes(&discrepancy_raw).unwrap();
+                invalid.disposition_digest = placeholder();
+                invalid.seal().unwrap_err();
             }
 
             if record["kind"] == "ADMISSION_DISCREPANCY" && record["method"] == "turn/completed" {

@@ -307,6 +307,21 @@ def main() -> int:
                         message=owner_message("rawResponse/started", response()),
                     )
                 )
+
+                legacy_waiting = ProviderAdmissionMapper(
+                    copy.deepcopy(base_binding), allow_unordered_fixture=True
+                )
+                legacy_waiting.consume(
+                    owner_message("providerRequest/started", request())
+                )
+                legacy_waiting.consume(owner_message("rawResponse/started", response()))
+                legacy_waiting.consume(
+                    owner_message("rawResponse/completed", completion())
+                )
+                legacy_waiting.consume(
+                    owner_message(approval_method, approval), server_request=True
+                )
+                legacy_waiting.consume(owner_message(approval_method, approval))
                 client_discrepancy.consume_envelope(
                     AcquisitionEnvelope(
                         1,
@@ -404,6 +419,20 @@ def main() -> int:
                     record["method"] == "rawResponse/started"
                     and record["normalized"].get("detail")
                     == "provider activity followed unanswered approval"
+                    for record in snapshot["records"]
+                )
+                for snapshot in snapshots
+            ),
+            "unordered_waiting_approval_then_watermark": sum(
+                any(
+                    record["acquisition_kind"] is None
+                    and record["kind"] == "WAITING_APPROVAL"
+                    for record in snapshot["records"]
+                )
+                and any(
+                    record["acquisition_kind"] is None
+                    and record["method"] == "item/commandExecution/requestApproval"
+                    and record["kind"] == "ACQUISITION_WATERMARK"
                     for record in snapshot["records"]
                 )
                 for snapshot in snapshots

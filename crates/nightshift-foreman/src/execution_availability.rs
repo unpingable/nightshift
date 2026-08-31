@@ -2958,12 +2958,6 @@ fn validate_switchyard_raw_replay(
         "ACQUISITION_WATERMARK" => {
             if method == "error"
                 || matches!(method, "thread/started" | "turn/started" | "turn/completed")
-                || (saw_approval
-                    && lane.is_none()
-                    && matches!(
-                        method,
-                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-                    ))
                 || method.starts_with("providerAdmission/")
                 || method.starts_with("providerRequest/")
                 || method.starts_with("rawResponse/")
@@ -3169,6 +3163,15 @@ fn validate_switchyard_raw_replay(
                     .is_some_and(|id| completed_request_occurrences.contains(id))
             {
                 "duplicate provider request occurrence identity"
+            } else if method == "providerRequest/started"
+                && integer(params, "samplingOrdinal").is_ok_and(|value| value > 0)
+                && current_execution.is_none()
+            {
+                "multiple pre-admission sampling requests are not allowed"
+            } else if method == "providerRequest/started" {
+                return Err(ContractError::InvalidField(
+                    "valid provider request recorded as discrepancy",
+                ));
             } else if method == "rawResponse/started"
                 && object.is_none_or(|value| {
                     let fields = [
@@ -3235,6 +3238,10 @@ fn validate_switchyard_raw_replay(
                     .is_some_and(|id| completed_responses.contains(id) || open_response == Some(id))
             {
                 "duplicate upstream response identity"
+            } else if method == "rawResponse/started" {
+                return Err(ContractError::InvalidField(
+                    "valid response-created boundary recorded as discrepancy",
+                ));
             } else if method == "providerAdmission/refused"
                 && object.is_none_or(|value| {
                     let fields = [
@@ -3328,6 +3335,10 @@ fn validate_switchyard_raw_replay(
                 })
             {
                 "provider refusal time precedes request start"
+            } else if method == "providerAdmission/refused" {
+                return Err(ContractError::InvalidField(
+                    "valid provider refusal recorded as discrepancy",
+                ));
             } else if method == "rawResponse/completed"
                 && object.is_none_or(|value| {
                     let fields = ["threadId", "turnId", "responseId", "usage"];
@@ -3344,6 +3355,10 @@ fn validate_switchyard_raw_replay(
                 && string(params, "responseId").ok() != open_response
             {
                 "response completion has no exact admitted response identity"
+            } else if method == "rawResponse/completed" {
+                return Err(ContractError::InvalidField(
+                    "valid response completion recorded as discrepancy",
+                ));
             } else if method.starts_with("providerAdmission/")
                 || method.starts_with("providerRequest/")
                 || method.starts_with("rawResponse/")
