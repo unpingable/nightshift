@@ -918,6 +918,11 @@ impl ForemanStore {
                 .optional()?
                 .ok_or_else(|| ForemanError::UnknownRun(run_id.to_owned()))?;
         let projection = load_projection(&transaction, run_id)?;
+        let packet = NightshiftPacketV1::from_slice(&packet_bytes)
+            .map_err(|error| ForemanError::Packet(error.to_string()))?;
+        packet
+            .validate_integrity()
+            .map_err(|error| ForemanError::Packet(error.to_string()))?;
         let profile = ExecutionProfileV2::from_slice(&profile_bytes)?;
         profile.validate()?;
         let events = {
@@ -973,13 +978,51 @@ impl ForemanStore {
             validated
         };
         validate_read_only_projection_receipts(&projection, &terminal_receipts)?;
-        let final_snapshot_bytes = transaction
+        let final_snapshot_row = transaction
             .query_row(
-                "SELECT raw_bytes FROM final_snapshots WHERE run_id = ?1",
+                "SELECT updated_at, raw_digest, raw_bytes
+                 FROM final_snapshots WHERE run_id = ?1",
                 [run_id],
-                |row| row.get(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
             )
             .optional()?;
+        let final_snapshot_bytes = match (
+            final_snapshot_row,
+            projection.closed_final_receipts_digest.as_deref(),
+        ) {
+            (None, None) => None,
+            (Some((updated_at, retained_digest, bytes)), Some(replayed_digest)) => {
+                if retained_digest != raw_digest(&bytes) || retained_digest != replayed_digest {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "final snapshot digest and RunClosed replay disagree".to_owned(),
+                    ));
+                }
+                let updated_at = DateTime::parse_from_rfc3339(&updated_at)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    .with_timezone(&Utc);
+                let rebuilt = build_final_document(&transaction, &packet, run_id, updated_at)?;
+                let rebuilt = serde_jcs::to_vec(&rebuilt)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+                if rebuilt != bytes {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "final snapshot bytes do not reproduce from exact accepted receipts"
+                            .to_owned(),
+                    ));
+                }
+                Some(bytes)
+            }
+            _ => {
+                return Err(ForemanError::ReadOnlyStore(
+                    "final snapshot presence and RunClosed replay disagree".to_owned(),
+                ));
+            }
+        };
         transaction.commit()?;
         Ok(ReadOnlyRunSnapshotV1 {
             run_id: run_id.to_owned(),
@@ -1468,7 +1511,17 @@ fn append_internal(
     Ok(())
 }
 
-type RawContractRow = (Vec<u8>, Vec<u8>, Vec<u8>, u16);
+type RawContractRow = (
+    String,
+    String,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    String,
+    u16,
+);
 
 fn load_contracts(
     connection: &Connection,
@@ -1484,14 +1537,37 @@ fn load_contracts(
 > {
     let row: Option<RawContractRow> = connection
         .query_row(
-            "SELECT packet_bytes, admission_bytes, profile_bytes, maximum_concurrent_workers
+            "SELECT packet_digest, admission_digest, profile_digest,
+                    packet_bytes, admission_bytes, profile_bytes,
+                    admitted_at, expires_at, maximum_concurrent_workers
              FROM runs WHERE run_id = ?1",
             [run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
         )
         .optional()?;
-    let (packet_raw, admission_raw, profile_raw, maximum) =
-        row.ok_or_else(|| ForemanError::UnknownRun(run_id.to_owned()))?;
+    let (
+        packet_digest,
+        admission_digest,
+        profile_digest,
+        packet_raw,
+        admission_raw,
+        profile_raw,
+        admitted_at,
+        expires_at,
+        maximum,
+    ) = row.ok_or_else(|| ForemanError::UnknownRun(run_id.to_owned()))?;
     let packet = NightshiftPacketV1::from_slice(&packet_raw)
         .map_err(|error| ForemanError::Packet(error.to_string()))?;
     packet
@@ -1501,6 +1577,18 @@ fn load_contracts(
     admission.validate()?;
     let profile = ExecutionProfileV2::from_slice(&profile_raw)?;
     profile.validate()?;
+    validate_bindings(&packet, &admission, &profile)?;
+    if packet_digest != packet.packet_digest
+        || admission_digest != admission.admission_digest
+        || profile_digest != profile.profile_digest
+        || admitted_at != admission.admitted_at.to_rfc3339()
+        || expires_at != admission.expires_at.to_rfc3339()
+        || maximum != admission.maximum_concurrent_workers
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "run row and exact contract bytes disagree".to_owned(),
+        ));
+    }
     Ok((packet, admission, profile, maximum))
 }
 

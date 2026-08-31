@@ -20,6 +20,11 @@ projected. It recomputes retained-raw and record digests, binds the raw record
 identity to the SQLite row identity, and requires receipt kind, exact state,
 classification, and digest to agree with deterministic foreman replay. A
 required-table-compatible store with substituted row content is refused.
+Packet, admission, and profile bytes are reopened and cross-validated before
+replay; redundant run-table digests, times, and concurrency must equal those
+exact contracts. A retained final snapshot is accepted only when its raw digest
+equals the `RunClosed` digest and its canonical bytes reproduce from the exact
+accepted receipts in the same read transaction.
 
 The read path never initializes a store, changes journal mode, starts a write
 transaction, or creates a missing database. Symlinks, non-regular files,

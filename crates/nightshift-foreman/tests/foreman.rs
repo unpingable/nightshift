@@ -764,6 +764,13 @@ fn byte_digests(snapshot: &BTreeMap<PathBuf, Vec<u8>>) -> BTreeMap<PathBuf, Stri
         .collect()
 }
 
+fn retained_raw_digest(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 fn schema_snapshot(path: &Path) -> Vec<(String, Option<String>)> {
     let connection = Connection::open_with_flags(
         path,
@@ -918,6 +925,26 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
     drop(reader);
     assert_eq!(schema_snapshot(&database), schema_before_final);
     assert_eq!(directory_bytes(directory.path()), files_before_final);
+
+    drop(store);
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER final_snapshots_no_update;")
+        .unwrap();
+    let substituted = b"{}".to_vec();
+    connection
+        .execute(
+            "UPDATE final_snapshots SET raw_digest = ?1, raw_bytes = ?2
+             WHERE run_id = 'run-fixture'",
+            rusqlite::params![retained_raw_digest(&substituted), substituted],
+        )
+        .unwrap();
+    drop(connection);
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert!(matches!(
+        reader.read_only_run_snapshot("run-fixture"),
+        Err(ForemanError::ReadOnlyStore(_))
+    ));
 }
 
 #[test]
@@ -962,6 +989,55 @@ fn query_only_snapshot_refuses_substituted_accepted_receipt_custody() {
             "DROP TRIGGER terminal_receipts_no_update;
              UPDATE terminal_receipts SET receipt_kind = 'not_started'
              WHERE work_item_id = 'root-a';",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert!(reader.read_only_run_snapshot("run-fixture").is_err());
+}
+
+#[test]
+fn query_only_snapshot_refuses_substituted_run_contract_columns() {
+    let (directory, store, _, _, _) = setup();
+    let database = directory.path().join("foreman.sqlite");
+    drop(store);
+
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER runs_no_update;
+             UPDATE runs SET maximum_concurrent_workers = 1
+             WHERE run_id = 'run-fixture';",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert!(matches!(
+        reader.read_only_run_snapshot("run-fixture"),
+        Err(ForemanError::ReadOnlyStore(_))
+    ));
+}
+
+#[test]
+fn query_only_snapshot_refuses_individually_valid_cross_contract_substitution() {
+    let (directory, store, _, _, mut profile) = setup();
+    let database = directory.path().join("foreman.sqlite");
+    profile.admission_digest = format!("sha256:{}", "e".repeat(64));
+    profile.seal().unwrap();
+    let profile_bytes = serde_jcs::to_vec(&profile).unwrap();
+    drop(store);
+
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER runs_no_update;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE runs SET profile_digest = ?1, profile_bytes = ?2
+             WHERE run_id = 'run-fixture'",
+            rusqlite::params![profile.profile_digest, profile_bytes],
         )
         .unwrap();
     drop(connection);
