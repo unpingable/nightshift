@@ -3359,6 +3359,41 @@ fn midnight_rail_four_item_deterministic_dogfood_qualifies_without_provider() {
     if let Some(output) = std::env::var_os("NIGHTSHIFT_MIDNIGHT_FIXTURE_DIR") {
         let output = PathBuf::from(output);
         assert!(output.is_dir());
+        let exact_snapshot =
+            nightshift_foreman::read_only_run_snapshot(&path, "run-fixture").unwrap();
+        for capacity in exact_snapshot.capacity_admissions {
+            let prefix = format!("capacity-{}", capacity.work_item_id);
+            fs::write(
+                output.join(format!("{prefix}-admission.v1.json")),
+                capacity.admission_bytes,
+            )
+            .unwrap();
+            fs::write(
+                output.join(format!("{prefix}-observation.v1.json")),
+                capacity.observation_bytes,
+            )
+            .unwrap();
+            fs::write(
+                output.join(format!("{prefix}-policy.v1.json")),
+                capacity.policy_bytes,
+            )
+            .unwrap();
+            fs::write(
+                output.join(format!("{prefix}-decision.v1.json")),
+                capacity.decision_bytes,
+            )
+            .unwrap();
+        }
+        for receipt in exact_snapshot.terminal_receipts {
+            fs::write(
+                output.join(format!(
+                    "accepted-{}-{}.v1.json",
+                    receipt.work_item_id, receipt.receipt_kind
+                )),
+                receipt.raw_bytes,
+            )
+            .unwrap();
+        }
         for (name, bytes) in [
             ("packet.v1.json", packet_bytes),
             (
