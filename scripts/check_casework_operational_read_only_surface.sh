@@ -85,6 +85,11 @@ if ! rg -q 'old_head' crates/nightshift-casework/src/server.rs ||
    ! rg -q 'method not allowed' crates/nightshift-casework/src/server.rs; then
     fail "the predecessor GET-only method contract lacks its direct regression qualification"
 fi
+if ! rg -Fq 'parts.get(1) == Some(&"operational-conditions")' crates/nightshift-casework/src/static_ui.rs ||
+   ! rg -Fq '["", "operational-conditions", _, "questions", id]' crates/nightshift-casework/src/static_ui.rs ||
+   ! rg -Fq '["", "operational-conditions", _, "raw"]' crates/nightshift-casework/src/static_ui.rs; then
+    fail "compiled UI does not admit the exact operational deep-link family"
+fi
 for kind in monitor nq lineage profile evaluation; do
     if ! rg -q "/raw/$kind" crates/nightshift-casework/src/server.rs ||
        ! rg -q "\"$kind\"" ui/casework/src/api.ts; then
