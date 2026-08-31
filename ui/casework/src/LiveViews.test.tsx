@@ -22,7 +22,7 @@ describe("live Casework projection", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "1 · Bounded packet intent" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "2 · Live mechanism and attempt" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "3 · Accepted terminal outcome or explicit absence" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "3 · Accepted terminal / not-started receipt or explicit absence" })).toBeVisible();
     expect(screen.getByText("NO_ACCEPTED_TERMINAL_OR_NOT_STARTED_RECEIPT")).toBeVisible();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
