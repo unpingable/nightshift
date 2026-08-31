@@ -13,7 +13,7 @@ use serde::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::contract::ContractError;
+use crate::contract::{ContractError, WorkerStartRequestV2};
 
 pub const EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1: &str =
     "nightshift.provider-execution-availability-observation/v1";
@@ -26,6 +26,7 @@ pub const PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1: &str =
 pub const PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1: &str =
     "nightshift.provider-admission-disposition/v1";
 pub const DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1: &str = "nightshift.deferred-provider-dispatch/v1";
+pub const WORKER_START_REQUEST_SCHEMA_V3: &str = "nightshift.worker-start-request/v3";
 
 pub const ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD: &str =
     "c36a8137638decf8b04a49611354a90f32c5a945";
@@ -48,6 +49,7 @@ const REQUIREMENT_DOMAIN: &[u8] =
 const DISPATCH_DOMAIN: &[u8] = b"nightshift.provider-dispatch-occurrence.digest/v1\0";
 const DISPOSITION_DOMAIN: &[u8] = b"nightshift.provider-admission-disposition.digest/v1\0";
 const DEFERRED_DOMAIN: &[u8] = b"nightshift.deferred-provider-dispatch.digest/v1\0";
+const WORKER_START_REQUEST_DOMAIN_V3: &[u8] = b"nightshift.worker-start-request.digest/v3\0";
 const SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_BYTES: &[u8] =
     include_bytes!("../../../schemas/vendor/switchyard.codex-provider-admission.v1.schema.json");
 
@@ -452,6 +454,279 @@ impl ForemanExecutionAvailabilityRequirementV1 {
         }
         if self.authority_effect != "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY" {
             return Err(ContractError::InvalidField("requirement authority effect"));
+        }
+        Ok(())
+    }
+}
+
+/// HOLDING-only start request. V3 does not replace or reinterpret V2: it
+/// retains the exact canonical V2 request as an immutable predecessor and adds
+/// the fresh dispatch occurrence and provider-selection boundary required by
+/// provider-execution admission accounting.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerStartRequestV3 {
+    pub schema: String,
+    pub request_digest: String,
+    pub predecessor_schema: String,
+    pub predecessor_request_digest: String,
+    pub predecessor_sha256: String,
+    pub predecessor_encoding: String,
+    pub predecessor_bytes_hex: String,
+    pub packet_digest: String,
+    pub profile_digest: String,
+    pub run_id: String,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub work_attempt_id: String,
+    pub dispatch_occurrence_id: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub adapter_protocol: String,
+    pub worker_brief_digest: String,
+    pub workspace_identity: String,
+    pub provider_model_class: String,
+    pub timeout_seconds: u64,
+    pub maximum_output_bytes: u64,
+    pub recursive_worker_swarms_forbidden: bool,
+    pub approval_policy: String,
+    pub expected_receipt_schema: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub model_class: String,
+    pub selected_model_ordinal: u16,
+    pub provider_admission_adapter_protocol: String,
+    pub provider_admission_binding_schema: String,
+    pub provider_admission_evidence_schema: String,
+    pub provider_admission_snapshot_schema: String,
+    pub codex_owner_head: String,
+    pub switchyard_owner_head: String,
+    pub switchyard_schema_sha256: String,
+    pub switchyard_deterministic_fixture_sha256: String,
+    pub provider_execution_id: Option<String>,
+    pub internal_provider_retry_count: u16,
+    pub semantic_retry: bool,
+    pub approval_response_authorized: bool,
+    pub authority_effect: String,
+}
+
+impl WorkerStartRequestV3 {
+    pub fn from_v2(
+        predecessor_bytes: &[u8],
+        profile_digest: impl Into<String>,
+        dispatch_occurrence_id: impl Into<String>,
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+        model_class: impl Into<String>,
+        selected_model_ordinal: u16,
+    ) -> Result<Self, ContractError> {
+        if predecessor_bytes.is_empty() || predecessor_bytes.len() > 64 * 1024 {
+            return Err(ContractError::InvalidField("V2 predecessor bytes"));
+        }
+        let predecessor: WorkerStartRequestV2 = parse(predecessor_bytes)?;
+        predecessor.validate()?;
+        if serde_jcs::to_vec(&predecessor).map_err(json_error)? != predecessor_bytes {
+            return Err(ContractError::InvalidField(
+                "canonical V2 predecessor bytes",
+            ));
+        }
+        let mut request = Self {
+            schema: WORKER_START_REQUEST_SCHEMA_V3.to_owned(),
+            request_digest: format!("sha256:{}", "0".repeat(64)),
+            predecessor_schema: predecessor.schema.clone(),
+            predecessor_request_digest: predecessor.request_digest.clone(),
+            predecessor_sha256: plain_sha256(predecessor_bytes),
+            predecessor_encoding: "hex".to_owned(),
+            predecessor_bytes_hex: hex::encode(predecessor_bytes),
+            packet_digest: predecessor.packet_digest.clone(),
+            profile_digest: profile_digest.into(),
+            run_id: predecessor.run_id.clone(),
+            work_item_id: predecessor.work_item_id.clone(),
+            attempt_id: predecessor.attempt_id.clone(),
+            work_attempt_id: predecessor.attempt_id.clone(),
+            dispatch_occurrence_id: dispatch_occurrence_id.into(),
+            adapter_id: predecessor.adapter_id.clone(),
+            adapter_version: predecessor.adapter_version.clone(),
+            adapter_protocol: predecessor.adapter_protocol.clone(),
+            worker_brief_digest: predecessor.worker_brief_digest.clone(),
+            workspace_identity: predecessor.workspace_identity.clone(),
+            provider_model_class: predecessor.provider_model_class.clone(),
+            timeout_seconds: predecessor.timeout_seconds,
+            maximum_output_bytes: predecessor.maximum_output_bytes,
+            recursive_worker_swarms_forbidden: predecessor.recursive_worker_swarms_forbidden,
+            approval_policy: predecessor.approval_policy.clone(),
+            expected_receipt_schema: predecessor.expected_receipt_schema.clone(),
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            model_class: model_class.into(),
+            selected_model_ordinal,
+            provider_admission_adapter_protocol: "switchyard.codex-app-server/v2".to_owned(),
+            provider_admission_binding_schema: "switchyard.codex-provider-admission-binding/v1"
+                .to_owned(),
+            provider_admission_evidence_schema: "switchyard.codex-provider-admission-evidence/v1"
+                .to_owned(),
+            provider_admission_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1"
+                .to_owned(),
+            codex_owner_head: ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD.to_owned(),
+            switchyard_owner_head: ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD.to_owned(),
+            switchyard_schema_sha256: ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256
+                .to_owned(),
+            switchyard_deterministic_fixture_sha256:
+                ACCEPTED_SWITCHYARD_DETERMINISTIC_FIXTURE_SHA256.to_owned(),
+            provider_execution_id: None,
+            internal_provider_retry_count: 0,
+            semantic_retry: false,
+            approval_response_authorized: false,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+        };
+        request.seal()?;
+        Ok(request)
+    }
+
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        let request: Self = parse(bytes)?;
+        if serde_jcs::to_vec(&request).map_err(json_error)? != bytes {
+            return Err(ContractError::InvalidField("canonical V3 request bytes"));
+        }
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn seal(&mut self) -> Result<(), ContractError> {
+        self.request_digest =
+            digest_without(self, "request_digest", WORKER_START_REQUEST_DOMAIN_V3)?;
+        self.validate()
+    }
+
+    pub fn predecessor_v2(&self) -> Result<WorkerStartRequestV2, ContractError> {
+        if self.predecessor_encoding != "hex"
+            || self
+                .predecessor_bytes_hex
+                .bytes()
+                .any(|byte| !byte.is_ascii_digit() && !matches!(byte, b'a'..=b'f'))
+        {
+            return Err(ContractError::InvalidField("V2 predecessor encoding"));
+        }
+        let bytes = hex::decode(&self.predecessor_bytes_hex)
+            .map_err(|_| ContractError::InvalidField("V2 predecessor hex"))?;
+        if bytes.is_empty()
+            || bytes.len() > 64 * 1024
+            || plain_sha256(&bytes) != self.predecessor_sha256
+        {
+            return Err(ContractError::InvalidField("V2 predecessor custody"));
+        }
+        let predecessor: WorkerStartRequestV2 = parse(&bytes)?;
+        predecessor.validate()?;
+        if serde_jcs::to_vec(&predecessor).map_err(json_error)? != bytes
+            || predecessor.request_digest != self.predecessor_request_digest
+        {
+            return Err(ContractError::InvalidField(
+                "canonical V2 predecessor bytes",
+            ));
+        }
+        Ok(predecessor)
+    }
+
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, WORKER_START_REQUEST_SCHEMA_V3)?;
+        sealed_digest(
+            self,
+            "request_digest",
+            &self.request_digest,
+            WORKER_START_REQUEST_DOMAIN_V3,
+        )?;
+        for (field, value) in [
+            (
+                "predecessor_request_digest",
+                &self.predecessor_request_digest,
+            ),
+            ("predecessor_sha256", &self.predecessor_sha256),
+            ("packet_digest", &self.packet_digest),
+            ("profile_digest", &self.profile_digest),
+            ("worker_brief_digest", &self.worker_brief_digest),
+            ("switchyard_schema_sha256", &self.switchyard_schema_sha256),
+            (
+                "switchyard_deterministic_fixture_sha256",
+                &self.switchyard_deterministic_fixture_sha256,
+            ),
+        ] {
+            digest(field, value)?;
+        }
+        for (field, value) in [
+            ("run_id", &self.run_id),
+            ("work_item_id", &self.work_item_id),
+            ("attempt_id", &self.attempt_id),
+            ("work_attempt_id", &self.work_attempt_id),
+            ("dispatch_occurrence_id", &self.dispatch_occurrence_id),
+            ("adapter_id", &self.adapter_id),
+            ("adapter_version", &self.adapter_version),
+            ("adapter_protocol", &self.adapter_protocol),
+            ("workspace_identity", &self.workspace_identity),
+            ("provider_model_class", &self.provider_model_class),
+            ("provider_id", &self.provider_id),
+            ("model_id", &self.model_id),
+            ("model_class", &self.model_class),
+            (
+                "provider_admission_adapter_protocol",
+                &self.provider_admission_adapter_protocol,
+            ),
+            (
+                "provider_admission_binding_schema",
+                &self.provider_admission_binding_schema,
+            ),
+            (
+                "provider_admission_evidence_schema",
+                &self.provider_admission_evidence_schema,
+            ),
+            (
+                "provider_admission_snapshot_schema",
+                &self.provider_admission_snapshot_schema,
+            ),
+        ] {
+            id(field, value)?;
+        }
+        let predecessor = self.predecessor_v2()?;
+        if self.predecessor_schema != crate::WORKER_START_REQUEST_SCHEMA_V2
+            || predecessor.schema != self.predecessor_schema
+            || self.packet_digest != predecessor.packet_digest
+            || self.run_id != predecessor.run_id
+            || self.work_item_id != predecessor.work_item_id
+            || self.attempt_id != predecessor.attempt_id
+            || self.work_attempt_id != predecessor.attempt_id
+            || self.adapter_id != predecessor.adapter_id
+            || self.adapter_version != predecessor.adapter_version
+            || self.adapter_protocol != predecessor.adapter_protocol
+            || self.worker_brief_digest != predecessor.worker_brief_digest
+            || self.workspace_identity != predecessor.workspace_identity
+            || self.provider_model_class != predecessor.provider_model_class
+            || self.timeout_seconds != predecessor.timeout_seconds
+            || self.maximum_output_bytes != predecessor.maximum_output_bytes
+            || self.recursive_worker_swarms_forbidden
+                != predecessor.recursive_worker_swarms_forbidden
+            || self.approval_policy != predecessor.approval_policy
+            || self.expected_receipt_schema != predecessor.expected_receipt_schema
+            || self.model_class != self.provider_model_class
+            || self.selected_model_ordinal >= 16
+            || self.adapter_protocol != "switchyard.codex-app-server/v2"
+            || self.provider_admission_adapter_protocol != self.adapter_protocol
+            || self.provider_admission_binding_schema
+                != "switchyard.codex-provider-admission-binding/v1"
+            || self.provider_admission_evidence_schema
+                != "switchyard.codex-provider-admission-evidence/v1"
+            || self.provider_admission_snapshot_schema
+                != "switchyard.codex-provider-admission-snapshot/v1"
+            || self.codex_owner_head != ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD
+            || self.switchyard_owner_head != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD
+            || self.switchyard_schema_sha256 != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256
+            || self.switchyard_deterministic_fixture_sha256
+                != ACCEPTED_SWITCHYARD_DETERMINISTIC_FIXTURE_SHA256
+            || self.provider_execution_id.is_some()
+            || self.internal_provider_retry_count != 0
+            || self.semantic_retry
+            || self.approval_response_authorized
+            || self.authority_effect != "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY"
+        {
+            return Err(ContractError::InvalidField("worker start V3 binding"));
         }
         Ok(())
     }

@@ -148,12 +148,22 @@ The implementation adds closed, domain-separated records:
 - `nightshift.provider-execution-availability-observation/v1`;
 - `nightshift.provider-execution-availability-policy/v1`;
 - `nightshift.foreman-execution-availability-requirement/v1`;
+- `nightshift.worker-start-request/v3`;
 - `nightshift.provider-dispatch-occurrence/v1`;
 - `nightshift.provider-admission-disposition/v1`; and
 - `nightshift.deferred-provider-dispatch/v1`.
 
-Every record uses RFC 8785 serialization and a distinct
-`<schema>.digest/v1\0` domain. Exact raw evidence uses hex encoding, an
+The HOLDING-only start V3 retains the complete canonical start V2 predecessor
+bytes, predecessor request digest, and plain byte SHA. It duplicates and binds
+all V2 packet/run/work/attempt/adapter/brief/workspace/model-class/boundary
+fields, then adds the exact work-attempt and fresh dispatch occurrence,
+profile, selected provider/model/class and model ordinal, and accepted
+Codex/Switchyard owner/schema/fixture pins. V2 remains unchanged and readable.
+V3 has no provider execution identity at start, internal provider retry,
+semantic retry, approval-response authority, or target-effect authority.
+
+Every record uses RFC 8785 serialization and a distinct versioned digest
+domain. Exact raw evidence uses hex encoding, an
 explicit byte length, plain SHA-256, and a 16 KiB per-evidence ceiling. The
 complete canonical Switchyard mapper snapshot is a distinct carrier with
 representation `RFC8785_SWITCHYARD_MAPPER_SNAPSHOT` and a 16 MiB ceiling.
