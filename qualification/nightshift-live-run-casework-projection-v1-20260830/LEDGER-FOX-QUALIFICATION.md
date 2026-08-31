@@ -52,4 +52,4 @@ The browser profile, emitted fixture, SQLite copy, server, browser process, and 
 
 ## Final custody
 
-The qualified subject worktree was clean before qualification artifacts were added. Publication custody is the exact closeout commit on `campaign/ledger-fox-nightshift-live-run-casework-projection-v1-20260830`; the operator closeout resolves and reports that commit and its remote equality. No human question or teardown obligation remains.
+The qualified subject worktree was clean before qualification artifacts were added. One publication attempt to the repository's configured `origin` for `campaign/ledger-fox-nightshift-live-run-casework-projection-v1-20260830` was refused by the execution reviewer because it did not accept the exact payload/destination trust established by the operator instruction and repository configuration. The refusal happened before publication; it was not retried or worked around. The result is therefore clean, exact, and sole-local. No human question or teardown obligation remains.

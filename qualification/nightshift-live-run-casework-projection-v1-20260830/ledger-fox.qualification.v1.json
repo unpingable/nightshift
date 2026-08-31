@@ -45,6 +45,7 @@
   },
   "default_branch_mutated": false,
   "production_activated": false,
+  "publication_status": "SOLE_LOCAL_EXECUTION_REVIEWER_REFUSED_EXACT_PAYLOAD_DESTINATION_TRUST",
   "service_installed": false,
   "listener_remaining": false,
   "browser_process_remaining": false,
