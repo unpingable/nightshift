@@ -42,6 +42,36 @@ describe("live Casework projection", () => {
     expect(screen.getByText("event:one")).toBeVisible();
   });
 
+  it("keeps repeated lane-local question IDs bound to distinct lane navigation", async () => {
+    const shared = liveRun.work_items[0].human_questions[0];
+    const repeated = {
+      ...liveRun,
+      work_items: [
+        {
+          ...liveRun.work_items[0],
+          human_questions: [{ ...shared, question_id: "question:shared", question: "Lane A exact question" }],
+        },
+        {
+          ...liveRun.work_items[0],
+          work_item_id: "lane-b",
+          campaign_codename: "LANE-B",
+          campaign_slug: "lane-b",
+          human_questions: [{
+            ...shared,
+            navigation_id: "f".repeat(64),
+            question_id: "question:shared",
+            question: "Lane B exact question",
+          }],
+        },
+      ],
+    };
+    installApiMock(run, liveIndex, repeated);
+    at(`/active-runs/${repeated.navigation_id}/questions/${repeated.work_items[1].human_questions[0].navigation_id}`);
+    render(<App />);
+    expect(await screen.findByText("Lane B exact question")).toBeVisible();
+    expect(screen.queryByText("Lane A exact question")).not.toBeInTheDocument();
+  });
+
   it("shows reciprocal navigation only for a server-qualified exact final-byte match", async () => {
     installApiMock(run, {
       ...liveIndex,
@@ -54,13 +84,25 @@ describe("live Casework projection", () => {
   });
 
   it("exposes final and per-event exact raw sources without adding controls", async () => {
-    installApiMock();
-    at(`/active-runs/${liveRun.navigation_id}/raw`);
+    const closed = {
+      ...liveRun,
+      raw_sources: {
+        ...liveRun.raw_sources,
+        final_snapshot_sha256: "sha256:" + "f".repeat(64),
+      },
+    };
+    const fetchMock = installApiMock(run, liveIndex, closed);
+    at(`/active-runs/${closed.navigation_id}/raw`);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Exact final snapshot" })).toBeVisible();
+    expect(await screen.findByText('{"exact":"final snapshot bytes"}')).toBeVisible();
     expect(screen.getByRole("link", { name: /Event 1/ })).toHaveAttribute(
       "href",
-      `/api/v1/active-runs/${liveRun.navigation_id}/events/1/raw`,
+      `/api/v1/active-runs/${closed.navigation_id}/events/1/raw`,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/active-runs/${closed.navigation_id}/raw/final`,
+      expect.objectContaining({ method: "GET" }),
     );
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });

@@ -146,13 +146,16 @@ export const liveIndex: LiveRunIndex = {
 export function installApiMock(
   caseworkRun: CaseworkRun = run,
   liveRunIndex: LiveRunIndex = liveIndex,
+  activeRun: CaseworkLiveRun = liveRun,
 ) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
     if (path === "/api/v1/runs") return new Response(JSON.stringify(index), { status: 200 });
     if (path === "/api/v1/active-runs") return new Response(JSON.stringify(liveRunIndex), { status: 200 });
+    if (path.endsWith("/raw/final")) return new Response('{"exact":"final snapshot bytes"}\n', { status: 200 });
+    if (/\/events\/\d+\/raw$/.test(path)) return new Response('{"exact":"event bytes"}\n', { status: 200 });
     if (path.includes("/api/v1/active-runs/") && path.includes("/raw/")) return new Response('{"exact":"live bytes"}\n', { status: 200 });
-    if (path.startsWith("/api/v1/active-runs/")) return new Response(JSON.stringify(liveRun), { status: 200 });
+    if (path.startsWith("/api/v1/active-runs/")) return new Response(JSON.stringify(activeRun), { status: 200 });
     if (path.endsWith("/raw/packet")) return new Response(packetBytes, { status: 200 });
     if (path.endsWith("/raw/receipts")) return new Response(receiptBytes, { status: 200 });
     if (path.startsWith("/api/v1/runs/")) return new Response(JSON.stringify(caseworkRun), { status: 200 });

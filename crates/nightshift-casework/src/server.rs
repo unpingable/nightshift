@@ -650,6 +650,19 @@ mod wire_tests {
             projection.sealed_case_run_id.as_deref(),
             Some(sealed_run_id.as_str())
         );
+        let final_response = api.response(
+            "GET",
+            &format!("/api/v1/active-runs/{navigation_id}/raw/final"),
+        );
+        assert_eq!(final_response.status, 200);
+        assert_eq!(final_response.body, final_bytes);
+        let (&sequence, event_bytes) = loaded.event_bytes.iter().next().unwrap();
+        let event_response = api.response(
+            "GET",
+            &format!("/api/v1/active-runs/{navigation_id}/events/{sequence}/raw"),
+        );
+        assert_eq!(event_response.status, 200);
+        assert_eq!(&event_response.body, event_bytes);
 
         let mut substituted_runs = api.runs.clone();
         substituted_runs
