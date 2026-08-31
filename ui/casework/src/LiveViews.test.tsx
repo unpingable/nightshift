@@ -72,6 +72,66 @@ describe("live Casework projection", () => {
     expect(screen.queryByText("Lane A exact question")).not.toBeInTheDocument();
   });
 
+  it("renders exact recorded provider-capacity attempts as mechanism facts without controls", async () => {
+    const recorded: typeof liveRun = {
+      ...liveRun,
+      execution_profile: {
+        ...liveRun.execution_profile,
+        capacity_binding_status: "EXACT_RECORDED_CAPACITY_REQUIREMENT",
+      },
+      provider_capacity: {
+        status: "EXACT_RECORDED_BY_FOREMAN",
+        requirement: {
+          capacity_requirement_digest: "sha256:" + "1".repeat(64),
+          exact_bytes_sha256: "sha256:" + "2".repeat(64),
+          recorded_at: "2026-08-31T00:00:00Z",
+          policy_id: "policy:fixture",
+          provider_id: "provider:fixture",
+          model_cost_classes: { bounded: "CHEAP" },
+          authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+        },
+        attempts: [{
+          journal_sequence: 3,
+          work_item_id: "lane-a",
+          attempt_id: "attempt:one",
+          recorded_at: "2026-08-31T00:00:00Z",
+          provider_id: "provider:fixture",
+          packet_model_class: "bounded",
+          profile_model_class: "bounded",
+          cost_class: "CHEAP",
+          capacity_state: "CONSERVE",
+          admission_disposition: "CHEAP_BOUNDED_ONLY",
+          source_class: "OBSERVED",
+          confidence: "HIGH",
+          observation_disposition: "USABLE",
+          observed_at: "2026-08-30T23:59:59Z",
+          expires_at: "2026-08-31T00:10:00Z",
+          decision_at: "2026-08-31T00:00:00Z",
+          evaluated_at: "2026-08-31T00:00:00Z",
+          currentness: "CURRENT",
+          capacity_admission_digest: "sha256:" + "3".repeat(64),
+          observation_digest: "sha256:" + "4".repeat(64),
+          policy_digest: "sha256:" + "5".repeat(64),
+          decision_digest: "sha256:" + "6".repeat(64),
+          admission_exact_bytes_sha256: "sha256:" + "7".repeat(64),
+          observation_exact_bytes_sha256: "sha256:" + "8".repeat(64),
+          policy_exact_bytes_sha256: "sha256:" + "9".repeat(64),
+          decision_exact_bytes_sha256: "sha256:" + "a".repeat(64),
+        }],
+        explanation: "Exact journal-recorded mechanism evidence; no campaign result.",
+      },
+    };
+    installApiMock(run, liveIndex, recorded);
+    at(`/active-runs/${recorded.navigation_id}`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Recorded provider-capacity mechanism" })).toBeVisible();
+    expect(screen.getByText("EXACT_RECORDED_BY_FOREMAN")).toBeVisible();
+    expect(screen.getByText(/CONSERVE · CHEAP_BOUNDED_ONLY/)).toBeVisible();
+    expect(screen.getByText(/OBSERVED · HIGH · USABLE/)).toBeVisible();
+    expect(screen.queryByText("NOT_RECORDED_BY_FOREMAN")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("shows reciprocal navigation only for a server-qualified exact final-byte match", async () => {
     installApiMock(run, {
       ...liveIndex,

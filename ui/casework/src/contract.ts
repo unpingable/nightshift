@@ -264,9 +264,43 @@ export interface CaseworkLiveRun {
   sealed_case_run_id: string | null;
   provider_capacity: {
     status: string;
-    observation_digest: string | null;
-    policy_digest: string | null;
-    decision_digest: string | null;
+    requirement: null | {
+      capacity_requirement_digest: string;
+      exact_bytes_sha256: string;
+      recorded_at: string;
+      policy_id: string;
+      provider_id: string;
+      model_cost_classes: Record<string, "CHEAP" | "EXPENSIVE">;
+      authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY";
+    };
+    attempts: Array<{
+      journal_sequence: number;
+      work_item_id: string;
+      attempt_id: string;
+      recorded_at: string;
+      provider_id: string;
+      packet_model_class: string;
+      profile_model_class: string;
+      cost_class: "CHEAP" | "EXPENSIVE";
+      capacity_state: "ABUNDANT" | "NORMAL" | "CONSERVE" | "CRITICAL" | "UNKNOWN";
+      admission_disposition: "ORDINARY_BOUNDED" | "CHEAP_BOUNDED_ONLY" | "NO_NEW_WORK";
+      source_class: "AUTHORITATIVE" | "OBSERVED" | "INFERRED" | "UNKNOWN";
+      confidence: "UNKNOWN" | "LOW" | "MEDIUM" | "HIGH";
+      observation_disposition: "USABLE" | "UNKNOWN";
+      observed_at: string;
+      expires_at: string;
+      decision_at: string;
+      evaluated_at: string;
+      currentness: "NOT_YET_CURRENT" | "CURRENT" | "EXPIRED";
+      capacity_admission_digest: string;
+      observation_digest: string;
+      policy_digest: string;
+      decision_digest: string;
+      admission_exact_bytes_sha256: string;
+      observation_exact_bytes_sha256: string;
+      policy_exact_bytes_sha256: string;
+      decision_exact_bytes_sha256: string;
+    }>;
     explanation: string;
   };
   authority_effect: string;

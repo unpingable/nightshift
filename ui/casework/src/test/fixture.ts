@@ -121,9 +121,8 @@ export const liveRun: CaseworkLiveRun = {
   sealed_case_run_id: null,
   provider_capacity: {
     status: "NOT_RECORDED_BY_FOREMAN",
-    observation_digest: null,
-    policy_digest: null,
-    decision_digest: null,
+    requirement: null,
+    attempts: [],
     explanation: "No exact capacity decision was recorded.",
   },
   authority_effect: "READ_ONLY_OPERATOR_PROJECTION",

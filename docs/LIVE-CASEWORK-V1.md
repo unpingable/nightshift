@@ -48,10 +48,23 @@ An accepted outcome is copied only from an accepted exact receipt; otherwise
 the projection carries the explicit absence marker
 `NO_ACCEPTED_TERMINAL_OR_NOT_STARTED_RECEIPT`.
 
-Provider-capacity evidence is fail-closed in V1. The foreman profile retains a
-budget policy reference, but the journal does not retain an exact FUEL
-observation or decision. The projection therefore says
-`NOT_RECORDED_BY_FOREMAN` and does not infer that a policy was evaluated.
+Provider-capacity evidence is fail-closed and evidence-derived. Legacy runs with no
+journal-recorded capacity requirement or admissions retain the exact
+`NOT_RECORDED_BY_FOREMAN` absence; a profile policy reference alone never proves
+that a policy was evaluated. Capacity-required GAUGE stores project
+`EXACT_RECORDED_BY_FOREMAN` only after the read-only consumer independently
+reopens the canonical requirement, admission, observation, policy, and decision
+bytes, matches each parsed value to the foreman typed duplicate, reproduces the
+deterministic FUEL decision, and cross-binds packet, run, work item, attempt,
+adapter, provider, model class, policy, journal sequence, and admission time.
+
+The distinct mechanism region orders admissions by exact journal sequence and
+shows provider and model identities, capacity state, admission disposition,
+source class, confidence, observation disposition, observation/decision times,
+view-time currentness, owner-domain record digests, and plain SHA-256 digests of
+each exact retained source. Those facts say only what the journal recorded. They
+are not a campaign result, a target-effect authority, or evidence that any
+unrecorded FUEL observation influenced scheduling.
 
 ## Exact raw-source framing
 

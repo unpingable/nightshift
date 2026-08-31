@@ -4,6 +4,7 @@
 //! This crate is an operator inspection tool. It creates no authorization,
 //! aggregate result, retry, execution request, or canonical runtime state.
 
+mod live_capacity;
 mod live_loader;
 mod live_model;
 mod loader;

@@ -92,7 +92,18 @@ export function LiveRunView({ navigationId }: { navigationId: string }) {
       </tbody></table></div>
     </Section>
     <Section title="Resource ownership"><div className="record-stack">{run.resource_claims.map((claim) => <DefinitionGrid key={claim.resource_lock_key}><Field label="Resource"><Exact wrap>{claim.resource_lock_key}</Exact></Field><Field label="Work item"><Exact>{claim.work_item_id}</Exact></Field><Field label="Attempt"><Exact wrap>{claim.attempt_id}</Exact></Field></DefinitionGrid>)}{run.resource_claims.length === 0 && <p className="empty">No resource claims retained.</p>}</div></Section>
-    <Section title="Provider-capacity record"><DefinitionGrid><Field label="Binding status"><Exact>{run.provider_capacity.status}</Exact></Field><Field label="Policy reference"><Exact>{run.execution_profile.budget_policy_ref}</Exact></Field></DefinitionGrid><p>{run.provider_capacity.explanation}</p></Section>
+    <Section title="Recorded provider-capacity mechanism">
+      <DefinitionGrid>
+        <Field label="Binding status"><Exact>{run.provider_capacity.status}</Exact></Field>
+        <Field label="Policy reference"><Exact>{run.execution_profile.budget_policy_ref}</Exact></Field>
+        <Field label="Requirement digest"><Exact wrap>{run.provider_capacity.requirement?.capacity_requirement_digest ?? "not recorded"}</Exact></Field>
+        <Field label="Provider"><Exact>{run.provider_capacity.requirement?.provider_id ?? "not recorded"}</Exact></Field>
+      </DefinitionGrid>
+      <p>{run.provider_capacity.explanation}</p>
+      {run.provider_capacity.attempts.length > 0 && <div className="table-scroll"><table className="ledger-table"><thead><tr><th>Attempt</th><th>Provider / model</th><th>State / disposition</th><th>Source / confidence</th><th>Times / currentness</th><th>Exact raw digests</th></tr></thead><tbody>
+        {run.provider_capacity.attempts.map((attempt) => <tr key={attempt.attempt_id}><th scope="row"><Exact wrap>{attempt.work_item_id}</Exact><small>{attempt.attempt_id} · journal {attempt.journal_sequence}</small></th><td><Exact wrap>{attempt.provider_id} · {attempt.packet_model_class} · {attempt.cost_class}</Exact></td><td><Exact wrap>{attempt.capacity_state} · {attempt.admission_disposition}</Exact></td><td><Exact wrap>{attempt.source_class} · {attempt.confidence} · {attempt.observation_disposition}</Exact></td><td><Exact wrap>{attempt.observed_at} → {attempt.expires_at} · decision {attempt.decision_at} · {attempt.currentness}</Exact></td><td><Exact wrap>{attempt.admission_exact_bytes_sha256} · {attempt.observation_exact_bytes_sha256} · {attempt.policy_exact_bytes_sha256} · {attempt.decision_exact_bytes_sha256}</Exact></td></tr>)}
+      </tbody></table></div>}
+    </Section>
   </main>;
 }
 

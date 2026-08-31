@@ -38,6 +38,44 @@
     "provider_capacity": { "$ref": "#/$defs/provider_capacity" },
     "authority_effect": { "const": "READ_ONLY_OPERATOR_PROJECTION" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provider_capacity": {
+            "properties": { "status": { "const": "NOT_RECORDED_BY_FOREMAN" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution_profile": {
+            "properties": {
+              "capacity_binding_status": { "const": "POLICY_REFERENCE_ONLY_NO_RECORDED_DECISION" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider_capacity": {
+            "properties": { "status": { "const": "EXACT_RECORDED_BY_FOREMAN" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "execution_profile": {
+            "properties": {
+              "capacity_binding_status": { "const": "EXACT_RECORDED_CAPACITY_REQUIREMENT" }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "text": { "type": "string", "maxLength": 65536 },
     "short_text": { "type": "string", "maxLength": 4096 },
@@ -106,7 +144,10 @@
         "exact_bytes_sha256": { "$ref": "#/$defs/digest" },
         "budget_policy_ref": { "$ref": "#/$defs/short_text" },
         "capacity_binding_status": {
-          "const": "POLICY_REFERENCE_ONLY_NO_RECORDED_DECISION"
+          "enum": [
+            "POLICY_REFERENCE_ONLY_NO_RECORDED_DECISION",
+            "EXACT_RECORDED_CAPACITY_REQUIREMENT"
+          ]
         }
       }
     },
@@ -304,20 +345,100 @@
         "final_snapshot_sha256": { "$ref": "#/$defs/nullable_digest" }
       }
     },
-    "provider_capacity": {
+    "provider_capacity_requirement": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "status", "observation_digest", "policy_digest", "decision_digest",
-        "explanation"
+        "capacity_requirement_digest", "exact_bytes_sha256", "recorded_at",
+        "policy_id", "provider_id", "model_cost_classes", "authority_effect"
       ],
       "properties": {
-        "status": { "const": "NOT_RECORDED_BY_FOREMAN" },
-        "observation_digest": { "type": "null" },
-        "policy_digest": { "type": "null" },
-        "decision_digest": { "type": "null" },
-        "explanation": { "$ref": "#/$defs/text" }
+        "capacity_requirement_digest": { "$ref": "#/$defs/digest" },
+        "exact_bytes_sha256": { "$ref": "#/$defs/digest" },
+        "recorded_at": { "$ref": "#/$defs/time" },
+        "policy_id": { "$ref": "#/$defs/short_text" },
+        "provider_id": { "$ref": "#/$defs/short_text" },
+        "model_cost_classes": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 16,
+          "propertyNames": { "$ref": "#/$defs/short_text" },
+          "additionalProperties": { "enum": ["CHEAP", "EXPENSIVE"] }
+        },
+        "authority_effect": { "const": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY" }
       }
+    },
+    "provider_capacity_attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "journal_sequence", "work_item_id", "attempt_id", "recorded_at",
+        "provider_id", "packet_model_class", "profile_model_class", "cost_class",
+        "capacity_state", "admission_disposition", "source_class", "confidence",
+        "observation_disposition", "observed_at", "expires_at", "decision_at",
+        "evaluated_at", "currentness", "capacity_admission_digest",
+        "observation_digest", "policy_digest", "decision_digest",
+        "admission_exact_bytes_sha256", "observation_exact_bytes_sha256",
+        "policy_exact_bytes_sha256", "decision_exact_bytes_sha256"
+      ],
+      "properties": {
+        "journal_sequence": { "type": "integer", "minimum": 1 },
+        "work_item_id": { "$ref": "#/$defs/short_text" },
+        "attempt_id": { "$ref": "#/$defs/short_text" },
+        "recorded_at": { "$ref": "#/$defs/time" },
+        "provider_id": { "$ref": "#/$defs/short_text" },
+        "packet_model_class": { "$ref": "#/$defs/short_text" },
+        "profile_model_class": { "$ref": "#/$defs/short_text" },
+        "cost_class": { "enum": ["CHEAP", "EXPENSIVE"] },
+        "capacity_state": { "enum": ["ABUNDANT", "NORMAL", "CONSERVE", "CRITICAL", "UNKNOWN"] },
+        "admission_disposition": { "enum": ["ORDINARY_BOUNDED", "CHEAP_BOUNDED_ONLY", "NO_NEW_WORK"] },
+        "source_class": { "enum": ["AUTHORITATIVE", "OBSERVED", "INFERRED", "UNKNOWN"] },
+        "confidence": { "enum": ["UNKNOWN", "LOW", "MEDIUM", "HIGH"] },
+        "observation_disposition": { "enum": ["USABLE", "UNKNOWN"] },
+        "observed_at": { "$ref": "#/$defs/time" },
+        "expires_at": { "$ref": "#/$defs/time" },
+        "decision_at": { "$ref": "#/$defs/time" },
+        "evaluated_at": { "$ref": "#/$defs/time" },
+        "currentness": { "enum": ["NOT_YET_CURRENT", "CURRENT", "EXPIRED"] },
+        "capacity_admission_digest": { "$ref": "#/$defs/digest" },
+        "observation_digest": { "$ref": "#/$defs/digest" },
+        "policy_digest": { "$ref": "#/$defs/digest" },
+        "decision_digest": { "$ref": "#/$defs/digest" },
+        "admission_exact_bytes_sha256": { "$ref": "#/$defs/digest" },
+        "observation_exact_bytes_sha256": { "$ref": "#/$defs/digest" },
+        "policy_exact_bytes_sha256": { "$ref": "#/$defs/digest" },
+        "decision_exact_bytes_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "provider_capacity": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "requirement", "attempts", "explanation"],
+          "properties": {
+            "status": { "const": "NOT_RECORDED_BY_FOREMAN" },
+            "requirement": { "type": "null" },
+            "attempts": { "type": "array", "maxItems": 0 },
+            "explanation": { "$ref": "#/$defs/text" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "requirement", "attempts", "explanation"],
+          "properties": {
+            "status": { "const": "EXACT_RECORDED_BY_FOREMAN" },
+            "requirement": { "$ref": "#/$defs/provider_capacity_requirement" },
+            "attempts": {
+              "type": "array",
+              "maxItems": 4096,
+              "items": { "$ref": "#/$defs/provider_capacity_attempt" }
+            },
+            "explanation": { "$ref": "#/$defs/text" }
+          }
+        }
+      ]
     }
   }
 }

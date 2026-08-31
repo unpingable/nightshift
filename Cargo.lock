@@ -481,6 +481,7 @@ dependencies = [
  "chrono",
  "clap",
  "nightshift-foreman",
+ "nightshift-provider-capacity",
  "nightshiftd",
  "rustix",
  "serde",
