@@ -135,7 +135,21 @@ describe("live Casework projection", () => {
     for (const digit of ["3", "4", "5", "6"]) {
       expect(capacityRow).toHaveTextContent("sha256:" + digit.repeat(64));
     }
+    for (const digit of ["7", "8", "9", "a"]) {
+      expect(capacityRow).toHaveTextContent("sha256:" + digit.repeat(64));
+    }
     expect(screen.queryByText("NOT_RECORDED_BY_FOREMAN")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("renders the legacy no-record status and explanation without inference", async () => {
+    installApiMock();
+    at(`/active-runs/${liveRun.navigation_id}`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Recorded provider-capacity mechanism" })).toBeVisible();
+    expect(screen.getByText("NOT_RECORDED_BY_FOREMAN")).toBeVisible();
+    expect(screen.getByText("No exact capacity decision was recorded.")).toBeVisible();
+    expect(screen.queryByText("EXACT_RECORDED_BY_FOREMAN")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
