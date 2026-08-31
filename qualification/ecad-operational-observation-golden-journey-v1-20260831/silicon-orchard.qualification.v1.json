@@ -1,0 +1,82 @@
+{
+  "schema": "nightshift.ecad-operational-observation-qualification/v1",
+  "campaign": {
+    "codename": "SILICON-ORCHARD",
+    "canonical_slug": "ecad-operational-observation-golden-journey-v1",
+    "track": "ecad-operations"
+  },
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "owners": {
+    "monitor_qualified_subject": "bb75c4325f903f2c544e9758b5ea8d30c8bbc773",
+    "monitor_result_head": "afdda72c5268c0979d7e071d8214010b7d23d401",
+    "nq_qualified_subject": "78ba5137c83089d6f1cd2bada65f6f7bdda2669c",
+    "nq_result_head": "d9c9f419283ec690014f706c5a6738451918f0f7",
+    "nightshift_qualified_subject": "926d03d1732463c1398101d2832abd33177c5248"
+  },
+  "predecessor_results": {
+    "field_monitor": "b2d52fe34f146774cbf5601819982c267c7fb082",
+    "field_nq": "39b9f84f2f70955dd12e5cbfe798c740f9e52854",
+    "distant_bell": "8a1adaae27a5da70398b445c152cd4e7548b0289",
+    "shift_atlas": "1493d4a419c9bac734284c791ebb98c28f9b7a20"
+  },
+  "source_custody": {
+    "monitor_bundle_digest": "sha256:fa51387ed569064281f63576e46de44628e2833bfbec2955fc7d990209ae173f",
+    "nq_bundle_digest": "sha256:ee4c077d32d033c81fd97d17a2f7b6451c68d5fca25a1257ec9865367e3aa8d2",
+    "claim_deck_digest": "sha256:7f9ba67910df6962e4e02cb2e1fa75562a59889e16cef3c9133c90aa090cea0d",
+    "scenario_count": 20,
+    "raw_artifact_count": 100,
+    "raw_artifacts_per_scenario": 5,
+    "accepted_owner_regeneration_byte_identical": true
+  },
+  "qualified_subject_commit": "926d03d1732463c1398101d2832abd33177c5248",
+  "successor_base_policy": "exact_remote_verified_result_head_ancestry",
+  "classification": "NIGHTSHIFT-ECAD-OPERATIONAL-OBSERVATION-GOLDEN-JOURNEY-V1-QUALIFIED",
+  "aggregate_result_created": false,
+  "target_effects_authorized": false,
+  "qualification": {
+    "locked_workspace_all_targets_all_features": "PASSED",
+    "all_target_all_feature_warnings_denied_clippy": "PASSED",
+    "format_and_diff_hygiene": "PASSED",
+    "focused_silicon_cases_passed": 3,
+    "frontend_test_files_passed": 7,
+    "frontend_cases_passed": 28,
+    "production_frontend_build": "PASSED",
+    "structural_gates": "PASSED",
+    "deterministic_negative_controls": "PASSED",
+    "owner_binding_schema_and_negative": "PASSED",
+    "independent_integrated_exact_graph_audit": "ACCEPTED"
+  },
+  "browser": {
+    "retained_installed_chrome_trace": "EXACT_EVIDENCE_REUSED",
+    "replacement_browser_session": "NOT_RUN_BYTE_IDENTICAL_INPUTS"
+  },
+  "not_run_dimensions": [
+    "proprietary-ecad-tool-pdk-license-scheduler-worker",
+    "real-external-host-transport",
+    "privileged-filesystem-exhaustion",
+    "remediation-or-governed-write-plane",
+    "production-activation-or-live-route"
+  ],
+  "qualified_properties": {
+    "process_exit_establishes_ecad_result": false,
+    "delivery_establishes_truth": false,
+    "nq_qualification_establishes_currentness": false,
+    "casework_presentation_establishes_authority": false,
+    "exact_five_raw_get_head_routes": true,
+    "write_method_available": false,
+    "mutation_control_available": false,
+    "aggregate_health_or_result_available": false,
+    "unknown_fields_promoted": false
+  },
+  "canonical_nightshiftd_production_binary_count": 2,
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "process_remaining": false,
+  "browser_profile_remaining": false,
+  "provider_session_created": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false,
+  "human_questions": []
+}

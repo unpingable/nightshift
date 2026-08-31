@@ -12,6 +12,13 @@ import {
   LiveRunView,
   LiveWorkItemView,
 } from "./LiveViews";
+import {
+  OperationalConditionIndexSection,
+  OperationalConditionIndexView,
+  OperationalConditionView,
+  OperationalQuestionView,
+  OperationalRawView,
+} from "./OperationalViews";
 
 function Link({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) {
   return <a href={href} className={className}>{children}</a>;
@@ -110,6 +117,7 @@ function RunIndexView() {
         <p>Sealed packet intent paired with one exact receipt snapshot. Classifications remain independent and verbatim.</p>
       </header>
       <ActiveRunIndex />
+      <OperationalConditionIndexSection />
       <Section title="Sealed receipt cases">
         <p>Immutable packet intent paired with exact closeout receipt snapshots.</p>
       <div className="run-ledger">
@@ -294,6 +302,10 @@ function RawView({ digest }: { digest: string }) {
 function RoutedView({ route }: { route: Route }) {
   switch (route.kind) {
     case "index": return <RunIndexView />;
+    case "operational-index": return <OperationalConditionIndexView />;
+    case "operational-condition": return <OperationalConditionView navigationId={route.navigationId} />;
+    case "operational-question": return <OperationalQuestionView navigationId={route.navigationId} id={route.id} />;
+    case "operational-raw": return <OperationalRawView navigationId={route.navigationId} />;
     case "run": return <RunCaseView digest={route.digest} />;
     case "work-item": return <WorkItemView digest={route.digest} id={route.id} />;
     case "question": return <QuestionView digest={route.digest} id={route.id} />;
@@ -310,5 +322,5 @@ function RoutedView({ route }: { route: Route }) {
 
 export default function App() {
   const route = useRoute();
-  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection families: nightshift.casework-run/v1 · nightshift.casework-live-run/v1</span><span>Exact sources remain separate: sealed snapshots and query-only foreman journals</span></footer></div>;
+  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection families: nightshift.casework-run/v1 · nightshift.casework-live-run/v1 · nightshift.casework-operational-condition/v1</span><span>Exact sources remain separate: sealed snapshots, query-only foreman journals, and operational testimony/qualification/lineage</span></footer></div>;
 }

@@ -195,6 +195,27 @@ fn is_declared_client_route(path: &str) -> bool {
     if parts.first() != Some(&"") {
         return false;
     }
+    if parts.get(1) == Some(&"operational-conditions") {
+        if parts.as_slice() == ["", "operational-conditions"] {
+            return true;
+        }
+        let Some(navigation_id) = parts.get(2) else {
+            return false;
+        };
+        if navigation_id.len() != 64
+            || !navigation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return false;
+        }
+        return match parts.as_slice() {
+            ["", "operational-conditions", _] => true,
+            ["", "operational-conditions", _, "raw"] => true,
+            ["", "operational-conditions", _, "questions", id] => valid_route_id(id),
+            _ => false,
+        };
+    }
     if parts.get(1) == Some(&"active-runs") {
         let Some(navigation_id) = parts.get(2) else {
             return false;

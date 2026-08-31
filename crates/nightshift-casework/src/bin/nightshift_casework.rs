@@ -18,6 +18,9 @@ struct Args {
     /// Explicit run directory containing packet.v1.json and run-receipts.v1.json.
     #[arg(long = "run-dir")]
     run_dirs: Vec<PathBuf>,
+    /// Explicit directory containing exact Monitor, NQ, lineage, profile, and evaluation files.
+    #[arg(long = "condition-dir")]
+    condition_dirs: Vec<PathBuf>,
 
     /// Explicit existing foreman SQLite store. Pair by ordinal with --foreman-run-id.
     #[arg(long = "foreman-store")]
@@ -45,8 +48,9 @@ fn main() -> Result<()> {
     if args.foreman_stores.len() != args.foreman_run_ids.len() {
         anyhow::bail!("each --foreman-store requires one ordinal --foreman-run-id");
     }
-    if args.run_dirs.is_empty() && args.foreman_stores.is_empty() {
-        anyhow::bail!("at least one sealed --run-dir or live --foreman-store is required");
+    if args.run_dirs.is_empty() && args.foreman_stores.is_empty() && args.condition_dirs.is_empty()
+    {
+        anyhow::bail!("at least one sealed, live, or operational condition source is required");
     }
     let evaluated_now = args.evaluated_at.unwrap_or_else(Utc::now);
     let runs = load_runs_at(&args.run_dirs, evaluated_now).context("load casework runs")?;
@@ -57,6 +61,8 @@ fn main() -> Result<()> {
         .collect();
     let api = Api::new(runs)
         .with_live_sources(sources, args.evaluated_at)
+        .map_err(anyhow::Error::msg)?
+        .with_operational_conditions(&args.condition_dirs)
         .map_err(anyhow::Error::msg)?;
     let api = match args.ui_dir {
         Some(directory) => api

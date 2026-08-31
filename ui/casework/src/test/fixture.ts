@@ -1,5 +1,11 @@
 import projectionJson from "../../../../qualification/nightshift-casework-mvp-20260829/velvet-orrery.casework-run.v1.json";
-import type { CaseworkLiveRun, CaseworkRun, LiveRunIndex, RunIndex } from "../contract";
+import type {
+  CaseworkLiveRun,
+  CaseworkRun,
+  LiveRunIndex,
+  OperationalConditionIndex,
+  RunIndex,
+} from "../contract";
 
 export const run = projectionJson as CaseworkRun;
 
@@ -142,15 +148,22 @@ export const liveIndex: LiveRunIndex = {
   }],
 };
 
+export const operationalIndex: OperationalConditionIndex = {
+  schema: "nightshift.casework-operational-condition-index/v1",
+  conditions: [],
+};
+
 export function installApiMock(
   caseworkRun: CaseworkRun = run,
   liveRunIndex: LiveRunIndex = liveIndex,
   activeRun: CaseworkLiveRun = liveRun,
+  operationalRunIndex: OperationalConditionIndex = operationalIndex,
 ) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
     if (path === "/api/v1/runs") return new Response(JSON.stringify(index), { status: 200 });
     if (path === "/api/v1/active-runs") return new Response(JSON.stringify(liveRunIndex), { status: 200 });
+    if (path === "/api/v1/operational-conditions") return new Response(JSON.stringify(operationalRunIndex), { status: 200 });
     if (path.endsWith("/raw/final")) return new Response('{"exact":"final snapshot bytes"}\n', { status: 200 });
     if (/\/events\/\d+\/raw$/.test(path)) return new Response('{"exact":"event bytes"}\n', { status: 200 });
     if (path.includes("/api/v1/active-runs/") && path.includes("/raw/")) return new Response('{"exact":"live bytes"}\n', { status: 200 });

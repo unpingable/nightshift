@@ -45,12 +45,33 @@ fn serves_only_preloaded_assets_and_declared_spa_routes() {
         "text/javascript; charset=utf-8"
     );
     assert_eq!(api.response("GET", &format!("/runs/{run}/raw")).status, 200);
+    assert_eq!(api.response("GET", "/operational-conditions").status, 200);
+    assert_eq!(
+        api.response("GET", &format!("/operational-conditions/{run}"))
+            .status,
+        200
+    );
+    assert_eq!(
+        api.response(
+            "GET",
+            &format!("/operational-conditions/{run}/questions/question%3Aone"),
+        )
+        .status,
+        200
+    );
+    assert_eq!(
+        api.response("GET", &format!("/operational-conditions/{run}/raw"))
+            .status,
+        200
+    );
 
     for path in [
         "/assets/unlisted.js",
         "/assets/../index.html",
         "/../index.html",
         &format!("/runs/{run}/undeclared"),
+        &format!("/operational-conditions/{run}/raw/monitor"),
+        &format!("/operational-conditions/{run}/questions/one/extra"),
     ] {
         assert_eq!(api.response("GET", path).status, 404, "{path}");
     }
@@ -60,8 +81,11 @@ fn serves_only_preloaded_assets_and_declared_spa_routes() {
 fn write_methods_are_405_for_ui_and_assets() {
     let directory = fixture();
     let api = Api::new(BTreeMap::new()).with_static_ui(StaticUi::load(directory.path()).unwrap());
+    let condition = format!("/operational-conditions/{}", "0".repeat(64));
     for method in ["POST", "PUT", "PATCH", "DELETE"] {
         assert_eq!(api.response(method, "/").status, 405);
         assert_eq!(api.response(method, "/assets/index-Ab12.js").status, 405);
+        assert_eq!(api.response(method, &condition).status, 405);
     }
+    assert_eq!(api.response("HEAD", &condition).status, 405);
 }

@@ -1,5 +1,9 @@
 export type Route =
   | { kind: "index" }
+  | { kind: "operational-index" }
+  | { kind: "operational-condition"; navigationId: string }
+  | { kind: "operational-question"; navigationId: string; id: string }
+  | { kind: "operational-raw"; navigationId: string }
   | { kind: "run"; digest: string }
   | { kind: "work-item"; digest: string; id: string }
   | { kind: "question"; digest: string; id: string }
@@ -23,6 +27,21 @@ function decode(value: string): string | null {
 export function parseRoute(pathname: string): Route {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "index" };
+  if (parts[0] === "operational-conditions") {
+    if (parts.length === 1) return { kind: "operational-index" };
+    if (!parts[1]) return { kind: "not-found" };
+    const navigationId = decode(parts[1]);
+    if (!navigationId) return { kind: "not-found" };
+    if (parts.length === 2) return { kind: "operational-condition", navigationId };
+    if (parts.length === 3 && parts[2] === "raw") {
+      return { kind: "operational-raw", navigationId };
+    }
+    if (parts.length === 4 && parts[2] === "questions") {
+      const id = decode(parts[3]);
+      return id ? { kind: "operational-question", navigationId, id } : { kind: "not-found" };
+    }
+    return { kind: "not-found" };
+  }
   if (parts[0] === "active-runs" && parts[1]) {
     const navigationId = decode(parts[1]);
     if (!navigationId) return { kind: "not-found" };
@@ -78,4 +97,15 @@ export function liveWorkItemPath(navigationId: string, id: string): string {
 
 export function liveQuestionPath(navigationId: string, id: string): string {
   return `${liveRunPath(navigationId)}/questions/${encodeURIComponent(id)}`;
+}
+export function operationalConditionPath(navigationId: string): string {
+  return `/operational-conditions/${encodeURIComponent(navigationId)}`;
+}
+
+export function operationalQuestionPath(navigationId: string, id: string): string {
+  return `${operationalConditionPath(navigationId)}/questions/${encodeURIComponent(id)}`;
+}
+
+export function operationalRawPath(navigationId: string): string {
+  return `${operationalConditionPath(navigationId)}/raw`;
 }

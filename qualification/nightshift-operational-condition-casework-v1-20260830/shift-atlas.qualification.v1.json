@@ -1,0 +1,71 @@
+{
+  "schema": "nightshift.operational-condition-casework-qualification/v1",
+  "campaign": {
+    "codename": "SHIFT-ATLAS",
+    "canonical_slug": "nightshift-operational-condition-casework-v1",
+    "track": "nightshift-operator-surface"
+  },
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "integration_commit": "d1b35d3afc9b815e77a6422702cebb2767790197",
+  "predecessor_result_heads": {
+    "LEDGER-FOX": "eea4472342581925d9bde71ed04937039aee78d4",
+    "EPOCH-LANTERN": "1b3497066d3f7d3da9284e4d0c9ff7fbd6a8e296"
+  },
+  "predecessor_qualified_subjects": {
+    "LEDGER-FOX": "ef6b11ef7514ab11074c297dc09cf796adea7e32",
+    "EPOCH-LANTERN": "7d467fa8613318f5e5886c082740c4e030a20c2c"
+  },
+  "qualified_subject_commit": "c2bf16cb591003664d793848d284a143ed392e9f",
+  "successor_base_policy": "exact_result_ancestry",
+  "classification": "NIGHTSHIFT-OPERATIONAL-CONDITION-CASEWORK-V1-QUALIFIED",
+  "aggregate_result_created": false,
+  "authority_effect": "READ_ONLY_PRESENTATION_ONLY",
+  "target_effects_authorized": false,
+  "qualification": {
+    "locked_workspace_all_targets": "PASSED",
+    "focused_casework": {
+      "passed": 41,
+      "ignored_documented_fixture_emitters": 2,
+      "failed": 0
+    },
+    "all_target_all_feature_warnings_denied_clippy": "PASSED",
+    "rust_format": "PASSED",
+    "executable_schema_tests_passed": 23,
+    "frontend_test_files_passed": 7,
+    "frontend_cases_passed": 28,
+    "production_frontend_build": "PASSED",
+    "installed_chrome_version": "143.0.7499.109",
+    "installed_browser_journey": "PASSED",
+    "structural_gates": "PASSED",
+    "deterministic_negative_controls": "PASSED",
+    "independent_exact_commit_audit": "ACCEPTED"
+  },
+  "qualified_properties": {
+    "sealed_live_operational_families_distinct": true,
+    "exact_five_source_bytes_retained": true,
+    "descriptor_bound_stable_source_acquisition": true,
+    "epoch_owner_derivation_recomputed": true,
+    "subject_producer_outcome_profile_evaluation_cross_bound": true,
+    "subject_local_history_only": true,
+    "nq_support_nonclaims_and_uncertainty_preserved": true,
+    "presentation_questions_mint_findings_or_dispositions": false,
+    "fixed_operational_raw_routes": true,
+    "operational_get_head_parity": true,
+    "predecessor_method_contract_widened": false,
+    "unknown_fields_promoted": false,
+    "write_method_available": false,
+    "action_control_available": false,
+    "aggregate_health_or_result_available": false
+  },
+  "canonical_nightshiftd_production_binary_count": 2,
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "browser_process_remaining": false,
+  "temporary_profile_remaining": false,
+  "provider_session_created": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false,
+  "human_questions": []
+}

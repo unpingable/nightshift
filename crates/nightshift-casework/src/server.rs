@@ -11,9 +11,11 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    live_loader::reseal_live_projection, load_live_run_at, static_ui::StaticUi,
-    CaseworkLiveRunIndexEntryV1, CaseworkLiveRunIndexV1, LoadedLiveRun, LoadedRun, RunIndexEntryV1,
-    RunIndexV1, RunSummaryV1, CASEWORK_LIVE_RUN_INDEX_SCHEMA_V1,
+    live_loader::reseal_live_projection, load_live_run_at, load_operational_conditions_at,
+    static_ui::StaticUi, CaseworkLiveRunIndexEntryV1, CaseworkLiveRunIndexV1,
+    CaseworkOperationalConditionIndexEntryV1, CaseworkOperationalConditionIndexV1, LoadedLiveRun,
+    LoadedOperationalCondition, LoadedRun, RunIndexEntryV1, RunIndexV1, RunSummaryV1,
+    CASEWORK_LIVE_RUN_INDEX_SCHEMA_V1, CASEWORK_OPERATIONAL_CONDITION_INDEX_SCHEMA_V1,
 };
 
 const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
@@ -23,6 +25,7 @@ const MAX_HEADER_LINES: usize = 100;
 pub struct Api {
     runs: BTreeMap<String, LoadedRun>,
     live_sources: BTreeMap<String, LiveRunSource>,
+    operational_conditions: BTreeMap<String, LoadedOperationalCondition>,
     evaluated_at: Option<DateTime<Utc>>,
     static_ui: Option<StaticUi>,
 }
@@ -40,6 +43,7 @@ pub struct Response {
     pub reason: &'static str,
     pub content_type: &'static str,
     pub etag: Option<String>,
+    pub allow: &'static str,
     pub body: Vec<u8>,
 }
 
@@ -48,6 +52,7 @@ impl Api {
         Self {
             runs,
             live_sources: BTreeMap::new(),
+            operational_conditions: BTreeMap::new(),
             evaluated_at: None,
             static_ui: None,
         }
@@ -81,6 +86,11 @@ impl Api {
         }
         Ok(self)
     }
+    pub fn with_operational_conditions(mut self, directories: &[PathBuf]) -> Result<Self, String> {
+        self.operational_conditions =
+            load_operational_conditions_at(directories).map_err(|error| error.to_string())?;
+        Ok(self)
+    }
 
     pub fn with_static_ui(mut self, static_ui: StaticUi) -> Self {
         self.static_ui = Some(static_ui);
@@ -88,7 +98,8 @@ impl Api {
     }
 
     pub fn response(&self, method: &str, path: &str) -> Response {
-        if method != "GET" {
+        let operational_family = is_operational_condition_route(path);
+        if method != "GET" && !(method == "HEAD" && operational_family) {
             return Response::text(405, "Method Not Allowed", b"method not allowed\n".to_vec());
         }
         if path == "/healthz" {
@@ -123,6 +134,17 @@ impl Api {
                 None,
             );
         }
+        if path == "/api/v1/operational-conditions" {
+            let index = CaseworkOperationalConditionIndexV1 {
+                schema: CASEWORK_OPERATIONAL_CONDITION_INDEX_SCHEMA_V1.to_owned(),
+                conditions: self
+                    .operational_conditions
+                    .values()
+                    .map(operational_index_entry)
+                    .collect(),
+            };
+            return operational_json_response(&index, None);
+        }
         if !path.starts_with("/api/") {
             if let Some(asset) = self
                 .static_ui
@@ -134,9 +156,16 @@ impl Api {
                     reason: "OK",
                     content_type: asset.content_type,
                     etag: Some(asset.etag.clone()),
+                    allow: "GET",
                     body: asset.bytes.clone(),
                 };
             }
+        }
+        if let Some((navigation_id, suffix)) = parse_operational_condition_path(path) {
+            let Some(condition) = self.operational_conditions.get(navigation_id) else {
+                return Response::text(404, "Not Found", b"not found\n".to_vec()).with_head();
+            };
+            return operational_response(condition, suffix);
         }
         if let Some((navigation_id, suffix)) = parse_live_run_path(path) {
             let Some(source) = self.live_sources.get(navigation_id) else {
@@ -221,6 +250,7 @@ impl Response {
             reason,
             content_type: "application/json",
             etag,
+            allow: "GET",
             body,
         }
     }
@@ -231,6 +261,7 @@ impl Response {
             reason,
             content_type: "text/plain; charset=utf-8",
             etag: None,
+            allow: "GET",
             body,
         }
     }
@@ -241,8 +272,14 @@ impl Response {
             reason: "OK",
             content_type: "application/octet-stream",
             etag: Some(quoted_etag(&etag)),
+            allow: "GET",
             body,
         }
+    }
+
+    fn with_head(mut self) -> Self {
+        self.allow = "GET, HEAD";
+        self
     }
 }
 
@@ -307,10 +344,15 @@ fn handle_stream(stream: &mut TcpStream, api: &Api) -> std::io::Result<()> {
     } else {
         Response::text(400, "Bad Request", b"bad request\n".to_vec())
     };
-    write_response(stream, &response)
+    let head_only = method == "HEAD" && response.allow == "GET, HEAD";
+    write_response(stream, &response, head_only)
 }
 
-fn write_response(stream: &mut TcpStream, response: &Response) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    response: &Response,
+    head_only: bool,
+) -> std::io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n",
@@ -324,9 +366,12 @@ fn write_response(stream: &mut TcpStream, response: &Response) -> std::io::Resul
     }
     write!(
         stream,
-        "Allow: GET\r\nCache-Control: private, max-age=0, must-revalidate\r\nContent-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Resource-Policy: same-origin\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n"
+        "Allow: {}\r\nCache-Control: private, max-age=0, must-revalidate\r\nContent-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Resource-Policy: same-origin\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nConnection: close\r\n\r\n",
+        response.allow
     )?;
-    stream.write_all(&response.body)?;
+    if !head_only {
+        stream.write_all(&response.body)?;
+    }
     stream.flush()
 }
 
@@ -348,6 +393,29 @@ fn parse_run_path(path: &str) -> Option<(&str, &str)> {
 
 fn parse_live_run_path(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix("/api/v1/active-runs/")?;
+    let (navigation_id, suffix) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    if !valid_digest_id(navigation_id) {
+        return None;
+    }
+    Some((navigation_id, suffix))
+}
+fn is_operational_condition_route(path: &str) -> bool {
+    if path == "/api/v1/operational-conditions" {
+        return true;
+    }
+    parse_operational_condition_path(path).is_some_and(|(_, suffix)| {
+        matches!(
+            suffix,
+            "" | "/raw/monitor" | "/raw/nq" | "/raw/lineage" | "/raw/profile" | "/raw/evaluation"
+        )
+    })
+}
+
+fn parse_operational_condition_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/api/v1/operational-conditions/")?;
     let (navigation_id, suffix) = match rest.find('/') {
         Some(index) => (&rest[..index], &rest[index..]),
         None => (rest, ""),
@@ -443,6 +511,58 @@ fn live_response(run: &LoadedLiveRun, suffix: &str) -> Response {
         }
     }
 }
+fn operational_index_entry(
+    condition: &LoadedOperationalCondition,
+) -> CaseworkOperationalConditionIndexEntryV1 {
+    let projection = &condition.projection;
+    CaseworkOperationalConditionIndexEntryV1 {
+        navigation_id: projection.navigation_id.clone(),
+        projection_digest: projection.projection_digest.clone(),
+        lineage_id: projection.lineage.lineage_id.clone(),
+        evaluation_id: projection.evaluation.evaluation_id.clone(),
+        subject_kind: projection.subject.kind,
+        subject_namespace: projection.subject.namespace.clone(),
+        subject_identity_digest: projection.subject_identity_digest.clone(),
+        disposition: projection.evaluation.disposition,
+        reobservation_trigger: projection.evaluation.reobservation_trigger,
+        evaluated_at: projection.evaluation.evaluated_at.clone(),
+        question_count: projection.questions.len(),
+    }
+}
+
+fn operational_response(condition: &LoadedOperationalCondition, suffix: &str) -> Response {
+    let projection = &condition.projection;
+    match suffix {
+        "" => {
+            operational_json_response(projection, Some(quoted_etag(&projection.projection_digest)))
+        }
+        "/raw/monitor" => operational_raw_response(
+            &condition.monitor_bytes,
+            &projection.raw_sources.monitor.exact_bytes_sha256,
+        ),
+        "/raw/nq" => operational_raw_response(
+            &condition.nq_bytes,
+            &projection.raw_sources.nq.exact_bytes_sha256,
+        ),
+        "/raw/lineage" => operational_raw_response(
+            &condition.lineage_bytes,
+            &projection.raw_sources.lineage.exact_bytes_sha256,
+        ),
+        "/raw/profile" => operational_raw_response(
+            &condition.profile_bytes,
+            &projection.raw_sources.profile.exact_bytes_sha256,
+        ),
+        "/raw/evaluation" => operational_raw_response(
+            &condition.evaluation_bytes,
+            &projection.raw_sources.evaluation.exact_bytes_sha256,
+        ),
+        _ => Response::text(404, "Not Found", b"not found\n".to_vec()).with_head(),
+    }
+}
+
+fn operational_raw_response(bytes: &[u8], digest: &str) -> Response {
+    Response::json(200, "OK", bytes.to_vec(), Some(quoted_etag(digest))).with_head()
+}
 
 fn index_entry(run: &LoadedRun) -> RunIndexEntryV1 {
     let projection = &run.projection;
@@ -480,6 +600,9 @@ fn json_response(value: &impl Serialize, etag: Option<String>) -> Response {
             b"serialization failed\n".to_vec(),
         ),
     }
+}
+fn operational_json_response(value: &impl Serialize, etag: Option<String>) -> Response {
+    json_response(value, etag).with_head()
 }
 
 fn quoted_etag(identity: &str) -> String {
@@ -677,5 +800,183 @@ mod wire_tests {
         let response = substituted.response("GET", &format!("/api/v1/active-runs/{navigation_id}"));
         let projection: crate::CaseworkLiveRunV1 = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(projection.sealed_case_run_id, None);
+    }
+    fn operational_api() -> (tempfile::TempDir, Api, String, [Vec<u8>; 5]) {
+        const MONITOR: &[u8] = include_bytes!(
+            "../../nightshiftd/tests/fixtures/operational_lineage/field-monitor.accepted.json"
+        );
+        const NQ: &[u8] = include_bytes!(
+            "../../nightshiftd/tests/fixtures/operational_lineage/field-nq.accepted.json"
+        );
+        let temporary = tempfile::tempdir().unwrap();
+        let condition = temporary.path().join("condition");
+        std::fs::create_dir(&condition).unwrap();
+        let admitted_at = Utc.with_ymd_and_hms(2026, 8, 30, 3, 0, 1).single().unwrap();
+        let lineage = nightshiftd::operational_lineage::admit_operational_lineage(
+            MONITOR,
+            NQ,
+            "input:field-vector",
+            admitted_at,
+            &[],
+        )
+        .unwrap()
+        .0;
+        let profile = nightshiftd::operational_lineage::ReobservationProfileV1 {
+            profile_id: "profile:shift-api".into(),
+            max_age_seconds: 60,
+        };
+        let evaluation = nightshiftd::operational_lineage::evaluate_reobservation(
+            &lineage,
+            &profile,
+            admitted_at,
+        )
+        .unwrap();
+        let lineage_bytes = serde_json::to_vec(&lineage).unwrap();
+        let profile_bytes = serde_json::to_vec(&profile).unwrap();
+        let evaluation_bytes = serde_json::to_vec(&evaluation).unwrap();
+        for (name, bytes) in [
+            ("monitor.v1.json", MONITOR),
+            ("nq.v1.json", NQ),
+            ("lineage.v1.json", lineage_bytes.as_slice()),
+            ("profile.v1.json", profile_bytes.as_slice()),
+            ("evaluation.v1.json", evaluation_bytes.as_slice()),
+        ] {
+            std::fs::write(condition.join(name), bytes).unwrap();
+        }
+        let api = Api::new(BTreeMap::new())
+            .with_operational_conditions(std::slice::from_ref(&condition))
+            .unwrap();
+        let navigation_id = api.operational_conditions.keys().next().unwrap().clone();
+        (
+            temporary,
+            api,
+            navigation_id,
+            [
+                MONITOR.to_vec(),
+                NQ.to_vec(),
+                lineage_bytes,
+                profile_bytes,
+                evaluation_bytes,
+            ],
+        )
+    }
+
+    fn split_wire(response: &[u8]) -> (&[u8], &[u8]) {
+        let boundary = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        (&response[..boundary], &response[boundary..])
+    }
+
+    #[test]
+    fn operational_routes_have_exact_get_head_parity_and_writes_remain_405() {
+        let (_temporary, api, navigation_id, raw_bytes) = operational_api();
+        let routes = [
+            (
+                format!("/api/v1/operational-conditions/{navigation_id}"),
+                None,
+            ),
+            (
+                format!("/api/v1/operational-conditions/{navigation_id}/raw/monitor"),
+                Some(raw_bytes[0].as_slice()),
+            ),
+            (
+                format!("/api/v1/operational-conditions/{navigation_id}/raw/nq"),
+                Some(raw_bytes[1].as_slice()),
+            ),
+            (
+                format!("/api/v1/operational-conditions/{navigation_id}/raw/lineage"),
+                Some(raw_bytes[2].as_slice()),
+            ),
+            (
+                format!("/api/v1/operational-conditions/{navigation_id}/raw/profile"),
+                Some(raw_bytes[3].as_slice()),
+            ),
+            (
+                format!("/api/v1/operational-conditions/{navigation_id}/raw/evaluation"),
+                Some(raw_bytes[4].as_slice()),
+            ),
+        ];
+        for (path, expected_raw) in routes {
+            let get = wire_request(
+                api.clone(),
+                format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
+            );
+            let head = wire_request(
+                api.clone(),
+                format!("HEAD {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
+            );
+            let (get_headers, get_body) = split_wire(&get);
+            let (head_headers, head_body) = split_wire(&head);
+            assert_eq!(head_headers, get_headers, "{path}");
+            assert!(head_body.is_empty(), "{path}");
+            assert!(get_headers
+                .windows(b"Allow: GET, HEAD\r\n".len())
+                .any(|window| window == b"Allow: GET, HEAD\r\n"));
+            if let Some(expected) = expected_raw {
+                assert_eq!(get_body, expected, "{path}");
+            }
+        }
+
+        let index_get = wire_request(
+            api.clone(),
+            b"GET /api/v1/operational-conditions HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        let index_head = wire_request(
+            api.clone(),
+            b"HEAD /api/v1/operational-conditions HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        );
+        assert_eq!(split_wire(&index_get).0, split_wire(&index_head).0);
+        assert!(split_wire(&index_head).1.is_empty());
+
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            let response = wire_request(
+                api.clone(),
+                format!(
+                    "{method} /api/v1/operational-conditions/{navigation_id} HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            assert!(response.starts_with(b"HTTP/1.1 405 Method Not Allowed\r\n"));
+        }
+        assert_eq!(
+            api.response(
+                "GET",
+                &format!("/api/v1/operational-conditions/{navigation_id}/raw/monitor"),
+            )
+            .body,
+            raw_bytes[0]
+        );
+        assert_eq!(
+            api.response(
+                "GET",
+                &format!("/api/v1/operational-conditions/{navigation_id}/raw/monitor/extra"),
+            )
+            .status,
+            404
+        );
+        assert_eq!(
+            api.response(
+                "HEAD",
+                &format!("/api/v1/operational-conditions/{navigation_id}/raw/monitor/extra"),
+            )
+            .status,
+            405
+        );
+        assert_eq!(
+            api.response("GET", "/api/v1/operational-conditions/../raw/monitor")
+                .status,
+            404
+        );
+
+        let old_head = wire_request(api, b"HEAD /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let (headers, body) = split_wire(&old_head);
+        assert!(headers.starts_with(b"HTTP/1.1 405 Method Not Allowed\r\n"));
+        assert!(headers
+            .windows(b"Allow: GET\r\n".len())
+            .any(|window| window == b"Allow: GET\r\n"));
+        assert_eq!(body, b"method not allowed\n");
     }
 }
