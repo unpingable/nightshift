@@ -1,0 +1,52 @@
+{
+  "schema": "nightshift.foreman-final-human-question-compatibility-qualification/v1",
+  "campaign": {
+    "codename": "QUESTION-RIVET",
+    "canonical_slug": "nightshift-foreman-final-human-question-casework-compatibility-v1",
+    "track": "nightshift-orchestration-runtime"
+  },
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "predecessor_head": "0558de6fa9ca8ba63589b256bd09e31b0a2389e6",
+  "qualified_subject_commit": "bc66249491ec26cd7ae522b5fe4d0d193af65f6e",
+  "classification": "QUESTION-RIVET-FOREMAN-FINAL-HUMAN-QUESTION-CASEWORK-COMPATIBILITY-V1-QUALIFIED",
+  "aggregate_result_created": false,
+  "authority_effect": "DERIVED_FINAL_RECEIPT_COMPATIBILITY_ONLY",
+  "target_effects_authorized": false,
+  "qualification": {
+    "locked_workspace_passed": 375,
+    "locked_workspace_ignored_documented": 14,
+    "failed": 0,
+    "foreman_integration_passed": 29,
+    "casework_passed": 34,
+    "casework_ignored_documented": 1,
+    "python_schema_report_passed": 26,
+    "frontend_passed": 26,
+    "production_frontend_build": "PASSED",
+    "all_feature_warnings_denied_clippy": "PASSED",
+    "formatting": "PASSED",
+    "structural_gates_and_negative_controls": "PASSED",
+    "independent_exact_commit_audit": "ACCEPTED"
+  },
+  "qualified_properties": {
+    "terminal_questions_project_exact_question": true,
+    "not_started_questions_project_exact_question": true,
+    "exact_raw_worker_question_receipt_retained": true,
+    "sealed_casework_v1_loads": true,
+    "report_renderer_loads": true,
+    "historical_question_key_substitution_refused": true,
+    "historical_final_bytes_mutated": false,
+    "approval_response_surface": false,
+    "aggregate_result_surface": false
+  },
+  "successor_base_policy": "EXACT_RESULT_ANCESTRY",
+  "human_questions": [],
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "provider_session_created": false,
+  "approval_response_sent": false,
+  "protected_effect_occurred": false,
+  "listener_remaining": false,
+  "service_remaining": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false
+}
