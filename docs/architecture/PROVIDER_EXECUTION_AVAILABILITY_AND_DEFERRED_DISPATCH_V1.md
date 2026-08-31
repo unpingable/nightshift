@@ -165,13 +165,31 @@ record, cut, and snapshot state must all agree. A present source timestamp that
 cannot be represented is refused; only an absent timestamp uses the explicitly
 defined receipt-time fallback.
 LOSS evidence is exact arbitrary frame custody and is never JSON-decoded;
-rawless UNKNOWN acquisition discrepancies and the owner's bounded legacy local
-facts retain their distinct exact meanings. Provider sampling ordinals and
+rawless UNKNOWN acquisition discrepancies retain their distinct exact meaning.
+Decision-bearing admission is deliberately narrower than the complete accepted
+Switchyard compatibility domain: every non-cut record must carry a contiguous
+`acquisition_ordinal` and an exact retained `acquisition_kind`. This is the
+strict ordered acquisition surface used by the campaign binding. Legacy
+qualification-only unordered records have neither retained lane nor sufficient
+evidence to distinguish `server_request=true` from `server_request=false` for
+the same raw approval message. Nightshift retains all 126 exact owner-generated
+terminal prefixes as compatibility analysis, separately identifies the 118 the
+owner's generic replay helper reopens, and refuses all 61 prefixes containing
+unordered evidence as provider-admission or dispatch-decision basis. They may
+remain raw evidence; they cannot park, wake, fallback, redispatch, or establish
+execution admission. No fixture-specific snapshot allowlist restores missing
+lane testimony.
+
+Provider sampling ordinals and
 request order start at zero and advance together, completed occurrence IDs are
 unique, and request/response/refusal boundary times are monotonic. The
 qualification-only `verify_switchyard_owner_parity.py` predicate pins exact
-Switchyard head `2ba25db...` and proves owner replay equality for every checked
-mapper snapshot that the independent Rust suite consumes.
+Switchyard head `2ba25db...`, preserves all 126 captured owner outputs,
+classifies eight generic-helper exceptions, and proves owner replay equality
+for the 118 generic-replayable compatibility snapshots. The independent Rust
+decision-bearing matrix covers only the 65 strict ordered snapshots and
+requires every unordered snapshot—including the same-raw approval watermark
+and server-request discrepancy pair—to refuse before any scheduling meaning.
 This contract checkpoint does not yet claim a cumulative journal-history bound;
 that metadata-first pre-acquisition invariant belongs to the held storage
 implementation and must qualify before journal mutation is accepted.

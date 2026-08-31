@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
 use nightshift_foreman::*;
@@ -437,7 +437,7 @@ fn owner_pin_mapper_and_transition_substitutions_fail_closed() {
     wrong_wake.seal().unwrap_err();
 }
 
-fn disposition_from_exact_snapshot(
+fn disposition_candidate_from_exact_snapshot(
     requirement: &ForemanExecutionAvailabilityRequirementV1,
     dispatch: &ProviderDispatchOccurrenceV1,
     raw: &[u8],
@@ -487,7 +487,7 @@ fn disposition_from_exact_snapshot(
         .unwrap()
         .iter()
         .find_map(|record| record["normalized"]["retry_after_ms"].as_i64());
-    let mut value = ProviderAdmissionDispositionV1 {
+    let value = ProviderAdmissionDispositionV1 {
         schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1.to_owned(),
         disposition_digest: placeholder(),
         dispatch_digest: dispatch.dispatch_digest.clone(),
@@ -522,6 +522,17 @@ fn disposition_from_exact_snapshot(
         protected_effect_absent: true,
         authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
     };
+    value
+}
+
+fn disposition_from_exact_snapshot(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    dispatch: &ProviderDispatchOccurrenceV1,
+    raw: &[u8],
+    received_at: DateTime<Utc>,
+) -> ProviderAdmissionDispositionV1 {
+    let mut value =
+        disposition_candidate_from_exact_snapshot(requirement, dispatch, raw, received_at);
     value.seal().unwrap();
     value
 }
@@ -1375,10 +1386,36 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
         assert!(corpus["branch_inventory"][branch].as_u64().unwrap() > 0);
     }
     let snapshots = corpus["snapshots"].as_array().unwrap();
-    assert!(snapshots.len() >= 100);
+    assert_eq!(corpus["owner_generated_terminal_snapshot_count"], 126);
+    assert_eq!(corpus["owner_generic_replayable_snapshot_count"], 118);
+    assert_eq!(
+        corpus["owner_generic_helper_exceptions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+    assert_eq!(snapshots.len(), 126);
+    let generic_replayable: BTreeSet<&str> = corpus["owner_generic_replayable_snapshot_digests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|digest| digest.as_str().unwrap())
+        .collect();
+    assert_eq!(generic_replayable.len(), 118);
     let mut kind_shapes = BTreeMap::<String, Value>::new();
     for snapshot in snapshots {
-        for record in snapshot["records"].as_array().unwrap() {
+        let records = snapshot["records"].as_array().unwrap();
+        let strict_ordered = records
+            .iter()
+            .filter(|record| record["kind"] != "ACQUISITION_CUT")
+            .all(|record| {
+                !record["acquisition_ordinal"].is_null() && !record["acquisition_kind"].is_null()
+            });
+        if !strict_ordered {
+            continue;
+        }
+        for record in records {
             if record["kind"] != "ACQUISITION_CUT" {
                 kind_shapes
                     .entry(record["kind"].as_str().unwrap().to_owned())
@@ -1404,7 +1441,65 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
     let mut saw_duplicate = false;
     let mut saw_reorder = false;
     let mut saw_refusal_then_discrepancy = false;
+    let mut saw_unordered_approval_watermark = false;
+    let mut saw_unordered_approval_discrepancy = false;
+    let mut saw_strict_notification_approval_watermark = false;
+    let mut saw_strict_server_request_approval = false;
+    let mut strict_ordered_count = 0;
+    let mut unordered_compatibility_count = 0;
     for snapshot in snapshots {
+        let records = snapshot["records"].as_array().unwrap();
+        let strict_ordered = records
+            .iter()
+            .filter(|record| record["kind"] != "ACQUISITION_CUT")
+            .all(|record| {
+                !record["acquisition_ordinal"].is_null() && !record["acquisition_kind"].is_null()
+            });
+        if !strict_ordered {
+            unordered_compatibility_count += 1;
+            saw_unordered_approval_watermark |= records.iter().any(|record| {
+                record["kind"] == "ACQUISITION_WATERMARK"
+                    && record["acquisition_kind"].is_null()
+                    && record["method"] == "item/commandExecution/requestApproval"
+            });
+            saw_unordered_approval_discrepancy |= records.iter().any(|record| {
+                record["kind"] == "ADMISSION_DISCREPANCY"
+                    && record["acquisition_kind"].is_null()
+                    && record["method"] == "item/commandExecution/requestApproval"
+                    && record["normalized"]["detail"]
+                        == "provider activity followed unanswered approval"
+            });
+            let raw = canonical(snapshot);
+            let mut candidate = disposition_candidate_from_exact_snapshot(
+                &requirement,
+                &dispatch,
+                &raw,
+                time("2026-08-31T12:01:02Z"),
+            );
+            candidate.seal().unwrap_err();
+            continue;
+        }
+        strict_ordered_count += 1;
+        saw_strict_notification_approval_watermark |= records.iter().any(|record| {
+            record["kind"] == "ACQUISITION_WATERMARK"
+                && record["acquisition_kind"] == "NOTIFICATION"
+                && matches!(
+                    record["method"].as_str(),
+                    Some(
+                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                    )
+                )
+        });
+        saw_strict_server_request_approval |= records.iter().any(|record| {
+            record["kind"] == "WAITING_APPROVAL"
+                && record["acquisition_kind"] == "SERVER_REQUEST"
+                && matches!(
+                    record["method"].as_str(),
+                    Some(
+                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                    )
+                )
+        });
         let ordered_discrepancies: Vec<i64> = snapshot["records"]
             .as_array()
             .unwrap()
@@ -1594,6 +1689,11 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
     }
     assert!(saw_gap && saw_duplicate && saw_reorder);
     assert!(saw_refusal_then_discrepancy);
+    assert_eq!(strict_ordered_count, 65);
+    assert_eq!(unordered_compatibility_count, 61);
+    assert!(saw_unordered_approval_watermark && saw_unordered_approval_discrepancy);
+    assert!(saw_strict_notification_approval_watermark);
+    assert!(saw_strict_server_request_approval);
 }
 
 #[test]
@@ -1695,9 +1795,13 @@ fn exact_loss_unknown_and_legacy_rawless_owner_variants_reopen() {
     local["raw"] = Value::Null;
     legacy["records"].as_array_mut().unwrap().insert(0, local);
     legacy = reseal_mapper_snapshot(legacy);
-    disposition_from_exact_snapshot(&requirement, &dispatch, &canonical(&legacy), received)
-        .validate()
-        .unwrap();
+    let mut legacy_candidate = disposition_candidate_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&legacy),
+        received,
+    );
+    legacy_candidate.seal().unwrap_err();
 }
 
 #[test]

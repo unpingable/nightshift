@@ -354,7 +354,34 @@ def main() -> int:
                 setattr(ProviderAdmissionMapper, name, operation)
         if result != 0:
             raise SystemExit(f"exact owner branch suite failed: {result}")
-        snapshots = [captured[digest] for digest in sorted(captured)]
+        captured_snapshots = [captured[digest] for digest in sorted(captured)]
+        generic_replayable = []
+        generic_helper_exceptions = []
+        for snapshot in captured_snapshots:
+            try:
+                replayed = replay_snapshot(snapshot).snapshot()
+            except ProviderAdmissionError as error:
+                generic_helper_exceptions.append(
+                    {
+                        "snapshot_digest": snapshot["snapshot_digest"],
+                        "admission_disposition": snapshot["admission_disposition"],
+                        "mechanism_state": snapshot["mechanism_state"],
+                        "reason": str(error),
+                    }
+                )
+                continue
+            if replayed == snapshot:
+                generic_replayable.append(snapshot["snapshot_digest"])
+            else:
+                generic_helper_exceptions.append(
+                    {
+                        "snapshot_digest": snapshot["snapshot_digest"],
+                        "admission_disposition": snapshot["admission_disposition"],
+                        "mechanism_state": snapshot["mechanism_state"],
+                        "reason": "generic owner replay changed retained snapshot",
+                    }
+                )
+        snapshots = captured_snapshots
         inventory = {
             "closed_response_completed_shape": sum(
                 any(
@@ -443,6 +470,10 @@ def main() -> int:
         corpus = {
             "owner_head": OWNER_HEAD,
             "source_test": "tests/test_provider_admission.py",
+            "owner_generated_terminal_snapshot_count": len(captured_snapshots),
+            "owner_generic_replayable_snapshot_count": len(generic_replayable),
+            "owner_generic_replayable_snapshot_digests": generic_replayable,
+            "owner_generic_helper_exceptions": generic_helper_exceptions,
             "branch_inventory": inventory,
             "snapshots": snapshots,
         }
@@ -451,7 +482,11 @@ def main() -> int:
             json.dumps(corpus, separators=(",", ":"), sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        print(f"refreshed_owner_terminal_snapshots={len(captured)} path={output}")
+        print(
+            f"refreshed_owner_terminal_snapshots={len(captured_snapshots)} "
+            f"owner_generic_replayable={len(generic_replayable)} "
+            f"generic_helper_exceptions={len(generic_helper_exceptions)} path={output}"
+        )
 
     fixtures = sorted(fixture_dir.glob("switchyard-*.snapshot.v1.json"))
     if not fixtures:

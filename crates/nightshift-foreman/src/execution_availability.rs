@@ -1717,6 +1717,11 @@ fn validate_switchyard_snapshot_complete(
         if cut_value.is_some() {
             return Err(ContractError::InvalidField("evidence after terminal cut"));
         }
+        if acquisition_ordinal.is_null() || acquisition_kind.is_null() {
+            return Err(ContractError::InvalidField(
+                "decision-bearing mapper evidence requires strict ordered acquisition",
+            ));
+        }
         let client_lane = matches!(
             acquisition_kind.as_str(),
             Some("CLIENT_REQUEST" | "CLIENT_RESPONSE")
@@ -3019,12 +3024,6 @@ fn validate_switchyard_raw_replay(
                 "App Server activity followed completed turn"
             } else if saw_approval
                 && (lane == Some("SERVER_REQUEST")
-                    || (lane.is_none()
-                        && matches!(
-                            method,
-                            "item/commandExecution/requestApproval"
-                                | "item/fileChange/requestApproval"
-                        ))
                     || method.starts_with("providerAdmission/")
                     || method.starts_with("providerRequest/")
                     || method.starts_with("rawResponse/"))
