@@ -97,3 +97,13 @@ establishes no Nightshift transition.
 
 No real provider, authentication profile, secret, production service, or live
 timer is used by this campaign's initial qualification.
+
+## Exact Nightshift integration result before mechanism mutation
+
+The additive non-rewriting integration completed without conflicts at
+`682b3688236d7bf16101515e1922bc9438f3c17a`. Its first parent is
+`14ae165a670b4f5f095cea9effaec2555885ce5b`, the exact merge of the initial
+contract freeze and SILICON result. Its second parent is the durable roadmap
+`70e3b734e979173ae552efb322b48bf7fb0c028b`. Exact MIDNIGHT result
+`6160a7fac9845aaefefbc11847e55786b35749e6`, exact SILICON result
+`f6e95c8a51982a9381c27c4792c8d9fd6f1daf47`, and the roadmap are ancestors.

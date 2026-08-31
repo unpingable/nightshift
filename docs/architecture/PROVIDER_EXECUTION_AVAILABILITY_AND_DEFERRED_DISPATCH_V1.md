@@ -4,13 +4,29 @@ Campaign: HOLDING-PATTERN
 
 Canonical slug: `provider-execution-availability-and-deferred-dispatch-v1`
 
-Status: contract freeze; runtime implementation not yet qualified
+Status: accepted cross-repository owner subjects pinned; Nightshift contract checkpoint under qualification
 
 This contract is a non-authorizing successor to the exact durable roadmap at
 `70e3b734e979173ae552efb322b48bf7fb0c028b`. It does not amend the sealed
 Nightshift V2 packet or the accepted worker-adapter V2 law.
 
 ## Exact owners
+
+The accepted owner subjects consumed by this contract are:
+
+- Codex provider-boundary owner `c36a8137638decf8b04a49611354a90f32c5a945`;
+- Switchyard mapper owner `2ba25db66d8b29dd215bd87e05f4ea794024b3b7`;
+- checked Switchyard schema SHA-256
+  `131f1f6e0cf8cb0aea26ed225c584440c81ffedd443c68ace23adecbe493cf93`; and
+- deterministic fixture SHA-256
+  `cafa673ac58f60029fd6c1de229b4f57d9f42ba918b7ecb2a3bfb20cb2b41a31`.
+
+These pins establish protocol and test custody, not an inherited executable,
+provider session, credential, or dispatch authority. Nightshift independently
+reopens canonical mapper snapshot bytes, verifies binding/evidence/snapshot
+digests and exact identity relations, then projects only the closed owner
+meanings.
+
 
 Nightshift owns provider-neutral scheduling mechanism state:
 

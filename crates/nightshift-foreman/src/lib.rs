@@ -4,10 +4,12 @@
 //! is mechanism evidence and never a campaign result or target-effect authority.
 
 pub mod contract;
+pub mod execution_availability;
 pub mod scheduler;
 pub mod store;
 
 pub use contract::*;
+pub use execution_availability::*;
 pub use scheduler::{LiveRunProjectionV1, LiveWorkItemV1, Scheduler};
 pub use store::{
     read_only_run_snapshot, reopen_capacity_journal_event, CapacityAdmissionEvidenceV1,
