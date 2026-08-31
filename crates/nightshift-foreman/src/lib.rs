@@ -15,8 +15,9 @@ pub use store::{
     read_only_run_snapshot, reopen_capacity_journal_event, CapacityAdmissionEvidenceV1,
     ForemanError, ForemanStore, OpenedProviderDispatchV1, ProviderDispositionEvidenceV1,
     ReadOnlyCapacityAdmissionV1, ReadOnlyCapacityJournalEventV1, ReadOnlyCapacityRequirementV1,
-    ReadOnlyEventRowV1, ReadOnlyExecutionAvailabilityHistoryV1, ReadOnlyRunSnapshotV1,
-    ReadOnlyTerminalReceiptRowV1,
+    ReadOnlyEventRowV1, ReadOnlyExecutionAvailabilityHistoryV1,
+    ReadOnlyProviderResourceTransitionV1, ReadOnlyRunSnapshotV1, ReadOnlyTerminalReceiptRowV1,
+    RunMechanismRequirementsV1,
 };
 
 pub const FOREMAN_ADMISSION_SCHEMA_V1: &str = "nightshift.foreman-admission/v1";

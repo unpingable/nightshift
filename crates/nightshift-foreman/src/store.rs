@@ -100,11 +100,31 @@ pub struct ProviderDispositionEvidenceV1<'a> {
     pub deferred_bytes: Option<&'a [u8]>,
 }
 
+/// Independent immutable run-level mechanism requirements admitted together.
+/// Either owner may be absent; neither record derives or overwrites the other.
+pub struct RunMechanismRequirementsV1<'a> {
+    pub capacity_requirement_bytes: Option<&'a [u8]>,
+    pub execution_availability_requirement_bytes: Option<&'a [u8]>,
+    pub execution_availability_policy_bytes: Option<&'a [u8]>,
+}
+
 /// Exact records produced by one atomic provider-dispatch opening.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenedProviderDispatchV1 {
     pub worker_start_request: WorkerStartRequestV3,
     pub dispatch: ProviderDispatchOccurrenceV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyProviderResourceTransitionV1 {
+    pub transition: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub dispatch_digest: String,
+    pub policy_digest: String,
+    pub wake_occurrence_id: Option<String>,
+    pub resource_lock_keys: Vec<String>,
+    pub recorded_at: DateTime<Utc>,
 }
 
 /// Query-only exact HOLDING journal history. Each byte vector is the canonical
@@ -124,8 +144,13 @@ pub struct ReadOnlyExecutionAvailabilityHistoryV1 {
     pub wake_work_attempt_ids: Vec<String>,
     pub wake_next_dispatch_digests: Vec<String>,
     pub resume_occurrence_ids: Vec<String>,
+    pub resume_work_item_ids: Vec<String>,
+    pub resume_work_attempt_ids: Vec<String>,
     pub resume_adapter_process_occurrence_ids: Vec<String>,
     pub resume_execution_identities: Vec<ProviderExecutionIdentityV1>,
+    pub resume_disposition_digests: Vec<String>,
+    pub resume_recorded_at: Vec<DateTime<Utc>>,
+    pub resource_transitions: Vec<ReadOnlyProviderResourceTransitionV1>,
 }
 
 struct ValidatedCapacityAdmission {
@@ -286,6 +311,19 @@ enum InternalPayload {
         disposition_digest: String,
         adapter_process_occurrence_id: String,
         execution_identity: Box<ProviderExecutionIdentityV1>,
+    },
+    ProviderResourcesReleased {
+        disposition_digest: String,
+        dispatch_digest: String,
+        policy_digest: String,
+        resource_lock_keys: Vec<String>,
+    },
+    ProviderResourcesReacquired {
+        wake_occurrence_id: String,
+        deferred_dispatch_digest: String,
+        next_dispatch_digest: String,
+        policy_digest: String,
+        resource_lock_keys: Vec<String>,
     },
     TerminalAccepted {
         outcome: AcceptedOutcomeV1,
@@ -562,21 +600,7 @@ impl ForemanStore {
         capacity_requirement_bytes: &[u8],
         evaluated_at: DateTime<Utc>,
     ) -> Result<String, ForemanError> {
-        if capacity_requirement_bytes.is_empty()
-            || capacity_requirement_bytes.len() > MAXIMUM_CAPACITY_RECORD_BYTES
-        {
-            return Err(ForemanError::InputTooLarge("capacity requirement"));
-        }
-        let requirement = ForemanCapacityRequirementV1::from_slice(capacity_requirement_bytes)?;
-        requirement.validate()?;
-        if serde_jcs::to_vec(&requirement)
-            .map_err(|error| ForemanError::Serialization(error.to_string()))?
-            != capacity_requirement_bytes
-        {
-            return Err(ForemanError::Transition(
-                "capacity requirement bytes are not exact canonical owner bytes".to_owned(),
-            ));
-        }
+        let requirement = validate_capacity_requirement_bytes(capacity_requirement_bytes)?;
         self.admit_internal(
             packet_bytes,
             admission_bytes,
@@ -605,6 +629,49 @@ impl ForemanStore {
             evaluated_at,
             None,
             Some(configuration),
+        )
+    }
+
+    pub fn admit_with_mechanism_requirements(
+        &self,
+        packet_bytes: &[u8],
+        admission_bytes: &[u8],
+        profile_bytes: &[u8],
+        requirements: RunMechanismRequirementsV1<'_>,
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<String, ForemanError> {
+        let capacity_requirement = requirements
+            .capacity_requirement_bytes
+            .map(validate_capacity_requirement_bytes)
+            .transpose()?
+            .map(|value| {
+                (
+                    value,
+                    requirements.capacity_requirement_bytes.unwrap().to_vec(),
+                )
+            });
+        let execution_availability = match (
+            requirements.execution_availability_requirement_bytes,
+            requirements.execution_availability_policy_bytes,
+        ) {
+            (None, None) => None,
+            (Some(requirement), Some(policy)) => Some(
+                validate_execution_availability_configuration(requirement, policy)?,
+            ),
+            _ => {
+                return Err(ForemanError::Transition(
+                    "execution-availability requirement and policy must be supplied together"
+                        .to_owned(),
+                ))
+            }
+        };
+        self.admit_internal(
+            packet_bytes,
+            admission_bytes,
+            profile_bytes,
+            evaluated_at,
+            capacity_requirement,
+            execution_availability,
         )
     }
 
@@ -821,6 +888,43 @@ impl ForemanStore {
         })
     }
 
+    // FUEL admission and HOLDING dispatch are independently validated in one transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_provider_attempt_with_capacity(
+        &self,
+        run_id: &str,
+        work_item_id: &str,
+        capacity_evidence: CapacityAdmissionEvidenceV1<'_>,
+        dispatch_occurrence_id: &str,
+        adapter_process_occurrence_id: &str,
+        app_server_session_identity: &str,
+        selected_model_ordinal: u16,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<OpenedProviderDispatchV1, ForemanError> {
+        let capacity = validate_capacity_bundle(
+            capacity_evidence.admission_bytes,
+            capacity_evidence.observation_bytes,
+            capacity_evidence.policy_bytes,
+            capacity_evidence.decision_bytes,
+        )?;
+        self.prepare_attempt_internal(
+            run_id,
+            work_item_id,
+            recorded_at,
+            Some(capacity),
+            Some(ProviderDispatchPreparation {
+                dispatch_occurrence_id,
+                adapter_process_occurrence_id,
+                app_server_session_identity,
+                selected_model_ordinal,
+            }),
+        )?
+        .1
+        .ok_or_else(|| {
+            ForemanError::Transition("provider attempt lacks atomic V3 dispatch".to_owned())
+        })
+    }
+
     fn prepare_attempt_internal(
         &self,
         run_id: &str,
@@ -849,18 +953,6 @@ impl ForemanStore {
         if prior_attempt_exists(&transaction, run_id, work_item_id)? {
             return Err(ForemanError::Transition(
                 "V1 admits no automatic or implicit second attempt".to_owned(),
-            ));
-        }
-        let active = projection
-            .work_items
-            .iter()
-            .filter(|item| {
-                item.active_attempt_id.is_some() && !item.scheduler_state.is_explicit_terminal()
-            })
-            .count();
-        if active >= usize::from(projection.maximum_concurrent_workers) {
-            return Err(ForemanError::ResourceUnavailable(
-                "maximum concurrent workers reached".to_owned(),
             ));
         }
         for lock in &item.resource_lock_keys {
@@ -899,6 +991,39 @@ impl ForemanStore {
                 ))
             }
             _ => {}
+        }
+        let mut slot_released_attempts = BTreeSet::new();
+        if let Some(history) = &execution_availability {
+            for transition in &history.resource_transitions {
+                match transition.transition.as_str() {
+                    "RELEASED" => {
+                        slot_released_attempts.insert(transition.work_attempt_id.clone());
+                    }
+                    "REACQUIRED" => {
+                        slot_released_attempts.remove(&transition.work_attempt_id);
+                    }
+                    _ => {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "unknown resource transition projection".to_owned(),
+                        ))
+                    }
+                }
+            }
+        }
+        let active = projection
+            .work_items
+            .iter()
+            .filter(|item| {
+                item.active_attempt_id.as_ref().is_some_and(|attempt_id| {
+                    !item.scheduler_state.is_explicit_terminal()
+                        && !slot_released_attempts.contains(attempt_id)
+                })
+            })
+            .count();
+        if active >= usize::from(projection.maximum_concurrent_workers) {
+            return Err(ForemanError::ResourceUnavailable(
+                "maximum concurrent workers reached".to_owned(),
+            ));
         }
         match (capacity_requirement.as_ref(), capacity.as_ref()) {
             (Some(_), None) => {
@@ -1175,6 +1300,33 @@ impl ForemanStore {
             && history.policy.parked_resource_lock_policy
                 == ParkedResourceLockPolicyV1::ReleaseAndReacquire
         {
+            let resource_lock_keys = profile
+                .work_items
+                .get(work_item_id)
+                .ok_or_else(|| ForemanError::UnknownWorkItem(work_item_id.to_owned()))?
+                .resource_lock_keys
+                .clone();
+            append_execution_availability_bounded(
+                &transaction,
+                &InternalEvent {
+                    schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                    event_id: format!(
+                        "provider-resources-released-{}",
+                        accepted.disposition.disposition_digest
+                    ),
+                    run_id: run_id.to_owned(),
+                    work_item_id: Some(work_item_id.to_owned()),
+                    attempt_id: Some(attempt_id.to_owned()),
+                    recorded_at: accepted.disposition.received_at,
+                    payload: InternalPayload::ProviderResourcesReleased {
+                        disposition_digest: accepted.disposition.disposition_digest.clone(),
+                        dispatch_digest: accepted.disposition.dispatch_digest.clone(),
+                        policy_digest: history.policy.policy_digest.clone(),
+                        resource_lock_keys,
+                    },
+                },
+                profile.maximum_event_bytes,
+            )?;
             transaction.execute(
                 "DELETE FROM resource_claims
                  WHERE run_id = ?1 AND work_item_id = ?2 AND attempt_id = ?3",
@@ -1308,22 +1460,6 @@ impl ForemanStore {
                 "wake model, dispatch bound, or process occurrence is not lawful".to_owned(),
             ));
         }
-        match history.policy.parked_resource_lock_policy {
-            ParkedResourceLockPolicyV1::ReleaseAndReacquire => reacquire_attempt_resource_claims(
-                &transaction,
-                &profile,
-                run_id,
-                work_item_id,
-                attempt_id,
-            )?,
-            ParkedResourceLockPolicyV1::RetainWhileParked => require_attempt_resource_claims(
-                &transaction,
-                &profile,
-                run_id,
-                work_item_id,
-                attempt_id,
-            )?,
-        }
         let predecessor =
             load_attempt_start_request(&transaction, run_id, work_item_id, attempt_id)?;
         let dispatch_ordinal = u16::try_from(lane_dispatches.len() + 1)
@@ -1339,6 +1475,45 @@ impl ForemanStore {
             dispatch_ordinal,
             opened_at,
         )?;
+        match history.policy.parked_resource_lock_policy {
+            ParkedResourceLockPolicyV1::ReleaseAndReacquire => {
+                reacquire_attempt_resource_claims(
+                    &transaction,
+                    &profile,
+                    run_id,
+                    work_item_id,
+                    attempt_id,
+                )?;
+                append_execution_availability_bounded(
+                    &transaction,
+                    &InternalEvent {
+                        schema: INTERNAL_EVENT_SCHEMA.to_owned(),
+                        event_id: format!("provider-resources-reacquired-{wake_occurrence_id}"),
+                        run_id: run_id.to_owned(),
+                        work_item_id: Some(work_item_id.to_owned()),
+                        attempt_id: Some(attempt_id.to_owned()),
+                        recorded_at: opened_at,
+                        payload: InternalPayload::ProviderResourcesReacquired {
+                            wake_occurrence_id: wake_occurrence_id.to_owned(),
+                            deferred_dispatch_digest: deferred.deferred_dispatch_digest.clone(),
+                            next_dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+                            policy_digest: history.policy.policy_digest.clone(),
+                            resource_lock_keys: profile.work_items[work_item_id]
+                                .resource_lock_keys
+                                .clone(),
+                        },
+                    },
+                    profile.maximum_event_bytes,
+                )?;
+            }
+            ParkedResourceLockPolicyV1::RetainWhileParked => require_attempt_resource_claims(
+                &transaction,
+                &profile,
+                run_id,
+                work_item_id,
+                attempt_id,
+            )?,
+        }
         append_execution_availability_bounded(
             &transaction,
             &InternalEvent {
@@ -1409,7 +1584,29 @@ impl ForemanStore {
             .iter()
             .position(|value| value == resume_occurrence_id)
         {
-            if history.resume_execution_identities.get(position) != Some(execution_identity) {
+            if history
+                .resume_work_item_ids
+                .get(position)
+                .map(String::as_str)
+                != Some(work_item_id)
+                || history
+                    .resume_work_attempt_ids
+                    .get(position)
+                    .map(String::as_str)
+                    != Some(attempt_id)
+                || history
+                    .resume_disposition_digests
+                    .get(position)
+                    .map(String::as_str)
+                    != Some(disposition_digest)
+                || history
+                    .resume_adapter_process_occurrence_ids
+                    .get(position)
+                    .map(String::as_str)
+                    != Some(adapter_process_occurrence_id)
+                || history.resume_execution_identities.get(position) != Some(execution_identity)
+                || history.resume_recorded_at.get(position) != Some(&recorded_at)
+            {
                 return Err(ForemanError::DuplicateEvent(
                     resume_occurrence_id.to_owned(),
                 ));
@@ -1427,6 +1624,22 @@ impl ForemanStore {
                     "resume requires exact post-admission disposition".to_owned(),
                 )
             })?;
+        if history
+            .resume_disposition_digests
+            .iter()
+            .any(|value| value == disposition_digest)
+            || history.dispatches.iter().any(|dispatch| {
+                dispatch.adapter_process_occurrence_id == adapter_process_occurrence_id
+            })
+            || history
+                .resume_adapter_process_occurrence_ids
+                .iter()
+                .any(|value| value == adapter_process_occurrence_id)
+        {
+            return Err(ForemanError::Transition(
+                "resume disposition or adapter process occurrence is already retained".to_owned(),
+            ));
+        }
         if disposition.disposition_digest != disposition_digest
             || disposition.mechanism_state != ProviderMechanismStateV1::PostAdmissionInterrupted
             || disposition.provider_execution.as_ref() != Some(execution_identity)
@@ -1508,6 +1721,7 @@ impl ForemanStore {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
+        validate_complete_execution_availability_history(&transaction, run_id)?;
         append_internal(
             &transaction,
             &InternalEvent {
@@ -1730,6 +1944,7 @@ impl ForemanStore {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
+        validate_complete_execution_availability_history(&transaction, run_id)?;
         append_internal(
             &transaction,
             &InternalEvent {
@@ -1975,8 +2190,13 @@ impl ForemanStore {
         };
         let capacity_history =
             validate_capacity_history(&transaction, &events, &packet, &admission, &profile)?;
-        let execution_availability =
-            validate_execution_availability_history_rows(&events, &packet, &admission, &profile)?;
+        let execution_availability = validate_execution_availability_history_rows(
+            &transaction,
+            &events,
+            &packet,
+            &admission,
+            &profile,
+        )?;
         let capacity_requirement = capacity_history.requirement;
         let capacity_admissions = capacity_history.admissions;
         let run_closed = validate_read_only_run_closed_binding(&events)?;
@@ -2213,6 +2433,8 @@ fn validate_read_only_event_row(
             | "provider_disposition"
             | "provider_wake"
             | "provider_resume"
+            | "provider_resources_released"
+            | "provider_resources_reacquired"
     ) {
         let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
             .map_err(|error| ForemanError::Serialization(error.to_string()))?;
@@ -2251,6 +2473,14 @@ fn validate_read_only_event_row(
                 | (
                     "provider_resume",
                     InternalPayload::ProviderExecutionResumeRequested { .. }
+                )
+                | (
+                    "provider_resources_released",
+                    InternalPayload::ProviderResourcesReleased { .. }
+                )
+                | (
+                    "provider_resources_reacquired",
+                    InternalPayload::ProviderResourcesReacquired { .. }
                 )
         );
         if !kind_matches_payload
@@ -2798,6 +3028,20 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
             attempt_id TEXT NOT NULL,
             PRIMARY KEY (run_id, resource_lock_key)
         );
+        CREATE TABLE IF NOT EXISTS execution_availability_event_metadata (
+            run_id TEXT NOT NULL REFERENCES runs(run_id),
+            event_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            event_kind TEXT NOT NULL CHECK (event_kind IN (
+                'execution_availability_requirement', 'provider_dispatch',
+                'provider_disposition', 'provider_wake', 'provider_resume',
+                'provider_resources_released', 'provider_resources_reacquired'
+            )),
+            raw_byte_length INTEGER NOT NULL CHECK (raw_byte_length > 0),
+            PRIMARY KEY (run_id, event_id),
+            UNIQUE (run_id, sequence),
+            FOREIGN KEY (sequence) REFERENCES events(sequence)
+        );
         CREATE TABLE IF NOT EXISTS terminal_receipts (
             run_id TEXT NOT NULL REFERENCES runs(run_id),
             work_item_id TEXT NOT NULL,
@@ -2825,6 +3069,12 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
             BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
         CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
             BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS execution_availability_metadata_no_update
+            BEFORE UPDATE ON execution_availability_event_metadata
+            BEGIN SELECT RAISE(ABORT, 'execution availability metadata is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS execution_availability_metadata_no_delete
+            BEFORE DELETE ON execution_availability_event_metadata
+            BEGIN SELECT RAISE(ABORT, 'execution availability metadata is append-only'); END;
         CREATE TRIGGER IF NOT EXISTS terminal_receipts_no_update BEFORE UPDATE ON terminal_receipts
             BEGIN SELECT RAISE(ABORT, 'terminal receipts are append-only'); END;
         CREATE TRIGGER IF NOT EXISTS terminal_receipts_no_delete BEFORE DELETE ON terminal_receipts
@@ -2871,6 +3121,25 @@ fn validate_execution_availability_configuration(
         policy,
         policy_bytes: policy_bytes.to_vec(),
     })
+}
+
+fn validate_capacity_requirement_bytes(
+    bytes: &[u8],
+) -> Result<ForemanCapacityRequirementV1, ForemanError> {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_CAPACITY_RECORD_BYTES {
+        return Err(ForemanError::InputTooLarge("capacity requirement"));
+    }
+    let requirement = ForemanCapacityRequirementV1::from_slice(bytes)?;
+    requirement.validate()?;
+    if serde_jcs::to_vec(&requirement)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?
+        != bytes
+    {
+        return Err(ForemanError::Transition(
+            "capacity requirement bytes are not exact canonical owner bytes".to_owned(),
+        ));
+    }
+    Ok(requirement)
 }
 
 fn validate_execution_availability_configuration_bindings(
@@ -3611,6 +3880,10 @@ fn execution_availability_row_kind(payload: &InternalPayload) -> Option<&'static
         InternalPayload::ProviderDispositionRecorded { .. } => Some("provider_disposition"),
         InternalPayload::ProviderWakeOpened { .. } => Some("provider_wake"),
         InternalPayload::ProviderExecutionResumeRequested { .. } => Some("provider_resume"),
+        InternalPayload::ProviderResourcesReleased { .. } => Some("provider_resources_released"),
+        InternalPayload::ProviderResourcesReacquired { .. } => {
+            Some("provider_resources_reacquired")
+        }
         _ => None,
     }
 }
@@ -3648,7 +3921,15 @@ fn append_execution_availability_bounded(
             "execution availability journal history",
         ));
     }
-    append_internal_raw(transaction, event, kind, &raw)
+    append_internal_raw(transaction, event, kind, &raw)?;
+    transaction.execute(
+        "INSERT INTO execution_availability_event_metadata
+         (run_id, event_id, sequence, event_kind, raw_byte_length)
+         SELECT run_id, event_id, sequence, kind, length(raw_bytes)
+         FROM events WHERE run_id = ?1 AND event_id = ?2",
+        params![event.run_id, event.event_id],
+    )?;
+    Ok(())
 }
 
 fn append_internal_raw(
@@ -3799,15 +4080,51 @@ fn validate_execution_availability_history_size(
     run_id: &str,
     maximum_event_bytes: u64,
 ) -> Result<(u64, usize), ForemanError> {
-    let mut statement = connection.prepare(
-        "SELECT sequence, length(raw_bytes) FROM events
+    let metadata_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_schema
+             WHERE type = 'table' AND name = 'execution_availability_event_metadata'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !metadata_exists {
+        return Ok((0, 0));
+    }
+    let metadata_count: usize = connection.query_row(
+        "SELECT count(*) FROM execution_availability_event_metadata WHERE run_id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    let provider_row_count: usize = connection.query_row(
+        "SELECT count(*) FROM events
          WHERE run_id = ?1 AND kind IN (
              'execution_availability_requirement', 'provider_dispatch',
-             'provider_disposition', 'provider_wake', 'provider_resume'
-         ) ORDER BY sequence ASC",
+             'provider_disposition', 'provider_wake', 'provider_resume',
+             'provider_resources_released', 'provider_resources_reacquired'
+         )",
+        [run_id],
+        |row| row.get(0),
+    )?;
+    let mut statement = connection.prepare(
+        "SELECT metadata.sequence, metadata.event_id, metadata.event_kind,
+                metadata.raw_byte_length, events.event_id, events.kind,
+                length(events.raw_bytes)
+         FROM execution_availability_event_metadata AS metadata
+         JOIN events ON events.sequence = metadata.sequence
+                    AND events.run_id = metadata.run_id
+         WHERE metadata.run_id = ?1 ORDER BY metadata.sequence ASC",
     )?;
     let rows = statement.query_map([run_id], |row| {
-        Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
+        Ok((
+            row.get::<_, u64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, u64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, u64>(6)?,
+        ))
     })?;
     let mut total = 0_u64;
     let mut count = 0_usize;
@@ -3820,10 +4137,24 @@ fn validate_execution_availability_history_size(
                 "execution availability journal history",
             ));
         }
-        let (_sequence, length) = row?;
+        let (
+            _sequence,
+            metadata_event_id,
+            metadata_kind,
+            metadata_length,
+            event_id,
+            event_kind,
+            length,
+        ) = row?;
         if length == 0 || length > maximum_event_bytes {
             return Err(ForemanError::InputTooLarge(
                 "execution availability journal event",
+            ));
+        }
+        if metadata_event_id != event_id || metadata_length != length || metadata_kind != event_kind
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "execution availability metadata/event identity mismatch".to_owned(),
             ));
         }
         total = total
@@ -3837,6 +4168,11 @@ fn validate_execution_availability_history_size(
             ));
         }
     }
+    if count != metadata_count || count != provider_row_count {
+        return Err(ForemanError::ReadOnlyStore(
+            "execution availability metadata/event row set mismatch".to_owned(),
+        ));
+    }
     Ok((total, count))
 }
 
@@ -3844,7 +4180,11 @@ fn validate_execution_availability_history_size(
 enum AvailabilityLaneEvent {
     Dispatch(String),
     Disposition(String),
-    Wake(String),
+    Wake {
+        next_dispatch_digest: String,
+        sequence: u64,
+        recorded_at: DateTime<Utc>,
+    },
     Resume,
 }
 
@@ -3874,23 +4214,38 @@ fn load_execution_availability_history(
         })
     })?;
     let rows = rows.collect::<Result<Vec<_>, _>>()?;
-    validate_execution_availability_history_rows(&rows, packet, admission, profile)
+    validate_execution_availability_history_rows(connection, &rows, packet, admission, profile)
+}
+
+fn validate_complete_execution_availability_history(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<(), ForemanError> {
+    let (packet, admission, profile, _) = load_contracts(connection, run_id)?;
+    load_execution_availability_history(connection, run_id, &packet, &admission, &profile)?;
+    Ok(())
 }
 
 fn validate_execution_availability_history_rows(
+    connection: &Connection,
     rows: &[ReadOnlyEventRowV1],
     packet: &NightshiftPacketV1,
     admission: &ForemanAdmissionV1,
     profile: &ExecutionProfileV2,
 ) -> Result<Option<ReadOnlyExecutionAvailabilityHistoryV1>, ForemanError> {
     let mut run_admitted: Option<(u64, DateTime<Utc>)> = None;
-    let mut attempts: BTreeMap<(String, String), WorkerStartRequestV2> = BTreeMap::new();
+    let mut attempts: BTreeMap<(String, String), (WorkerStartRequestV2, u64, DateTime<Utc>)> =
+        BTreeMap::new();
     let mut lane_last: BTreeMap<(String, String), AvailabilityLaneEvent> = BTreeMap::new();
     let mut history: Option<ReadOnlyExecutionAvailabilityHistoryV1> = None;
     let mut dispatch_ids = BTreeSet::new();
     let mut dispatch_digests = BTreeSet::new();
     let mut wake_ids = BTreeSet::new();
     let mut resume_ids = BTreeSet::new();
+    let mut adapter_process_ids = BTreeSet::new();
+    let mut app_server_session_ids = BTreeSet::new();
+    let mut disposition_rows: BTreeMap<String, (u64, DateTime<Utc>)> = BTreeMap::new();
+    let mut expected_claims: BTreeMap<String, (String, String)> = BTreeMap::new();
 
     for row in rows {
         validate_read_only_event_row(row, &admission.run_id, &packet.packet_digest, profile)?;
@@ -3910,7 +4265,10 @@ fn validate_execution_availability_history_rows(
                     ));
                 }
             }
-            InternalPayload::AttemptCreated { start_request, .. } => {
+            InternalPayload::AttemptCreated {
+                resource_lock_keys,
+                start_request,
+            } => {
                 let work_item_id = event.work_item_id.ok_or_else(|| {
                     ForemanError::ReadOnlyStore("attempt lacks work-item identity".to_owned())
                 })?;
@@ -3918,12 +4276,25 @@ fn validate_execution_availability_history_rows(
                     ForemanError::ReadOnlyStore("attempt lacks attempt identity".to_owned())
                 })?;
                 if attempts
-                    .insert((work_item_id, attempt_id), *start_request)
+                    .insert(
+                        (work_item_id.clone(), attempt_id.clone()),
+                        (*start_request, row.sequence, event.recorded_at),
+                    )
                     .is_some()
                 {
                     return Err(ForemanError::ReadOnlyStore(
                         "duplicate work-attempt identity".to_owned(),
                     ));
+                }
+                for key in resource_lock_keys {
+                    if expected_claims
+                        .insert(key, (work_item_id.clone(), attempt_id.clone()))
+                        .is_some()
+                    {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "resource claim history has overlapping attempt creation".to_owned(),
+                        ));
+                    }
                 }
             }
             InternalPayload::ExecutionAvailabilityConfigured {
@@ -3943,7 +4314,12 @@ fn validate_execution_availability_history_rows(
                         "execution availability requirement precedes run admission".to_owned(),
                     )
                 })?;
-                if row.sequence != run_sequence + 1 || event.recorded_at != run_time {
+                let capacity_predecessor = rows.iter().any(|candidate| {
+                    candidate.sequence == run_sequence + 1
+                        && candidate.kind == "capacity_requirement"
+                });
+                let expected_sequence = run_sequence + 1 + u64::from(capacity_predecessor);
+                if row.sequence != expected_sequence || event.recorded_at != run_time {
                     return Err(ForemanError::ReadOnlyStore(
                         "execution availability requirement is not adjacent to run admission"
                             .to_owned(),
@@ -3979,8 +4355,13 @@ fn validate_execution_availability_history_rows(
                     wake_work_attempt_ids: Vec::new(),
                     wake_next_dispatch_digests: Vec::new(),
                     resume_occurrence_ids: Vec::new(),
+                    resume_work_item_ids: Vec::new(),
+                    resume_work_attempt_ids: Vec::new(),
                     resume_adapter_process_occurrence_ids: Vec::new(),
                     resume_execution_identities: Vec::new(),
+                    resume_disposition_digests: Vec::new(),
+                    resume_recorded_at: Vec::new(),
+                    resource_transitions: Vec::new(),
                 });
             }
             InternalPayload::ProviderDispatchOpened {
@@ -4011,6 +4392,8 @@ fn validate_execution_availability_history_rows(
                 if event.work_item_id.as_deref() != Some(dispatch.work_item_id.as_str())
                     || event.attempt_id.as_deref() != Some(dispatch.work_attempt_id.as_str())
                     || event.recorded_at != dispatch.opened_at
+                    || event.event_id
+                        != format!("provider-dispatch-{}", dispatch.dispatch_occurrence_id)
                     || !dispatch_ids.insert(dispatch.dispatch_occurrence_id.clone())
                     || !dispatch_digests.insert(dispatch.dispatch_digest.clone())
                 {
@@ -4022,12 +4405,16 @@ fn validate_execution_availability_history_rows(
                     dispatch.work_item_id.clone(),
                     dispatch.work_attempt_id.clone(),
                 );
-                let predecessor = attempts.get(&key).ok_or_else(|| {
-                    ForemanError::ReadOnlyStore(
-                        "provider dispatch lacks exact work-attempt predecessor".to_owned(),
-                    )
-                })?;
+                let (predecessor, attempt_sequence, attempt_recorded_at) =
+                    attempts.get(&key).ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "provider dispatch lacks exact work-attempt predecessor".to_owned(),
+                        )
+                    })?;
                 if start_request.predecessor_v2()? != *predecessor
+                    || (dispatch.dispatch_ordinal == 1
+                        && (row.sequence != attempt_sequence + 1
+                            || event.recorded_at != *attempt_recorded_at))
                     || usize::from(dispatch.dispatch_ordinal)
                         != history
                             .dispatches
@@ -4042,13 +4429,29 @@ fn validate_execution_availability_history_rows(
                 }
                 match lane_last.get(&key) {
                     None if dispatch.dispatch_ordinal == 1 => {}
-                    Some(AvailabilityLaneEvent::Wake(expected))
-                        if expected == &dispatch.dispatch_digest => {}
+                    Some(AvailabilityLaneEvent::Wake {
+                        next_dispatch_digest,
+                        sequence,
+                        recorded_at,
+                    }) if next_dispatch_digest == &dispatch.dispatch_digest
+                        && row.sequence == sequence + 1
+                        && event.recorded_at == *recorded_at => {}
                     _ => {
                         return Err(ForemanError::ReadOnlyStore(
                             "provider dispatch lacks exact attempt/wake predecessor".to_owned(),
                         ))
                     }
+                }
+                if !adapter_process_ids.insert(dispatch.adapter_process_occurrence_id.clone()) {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "adapter process occurrence is not globally unique".to_owned(),
+                    ));
+                }
+                if !app_server_session_ids.insert(dispatch.app_server_session_identity.clone()) {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "App Server session identity is not globally unique per dispatch"
+                            .to_owned(),
+                    ));
                 }
                 lane_last.insert(
                     key,
@@ -4097,6 +4500,8 @@ fn validate_execution_availability_history_rows(
                 if event.work_item_id.as_deref() != Some(disposition.work_item_id.as_str())
                     || event.attempt_id.as_deref() != Some(disposition.work_attempt_id.as_str())
                     || event.recorded_at != disposition.received_at
+                    || event.event_id
+                        != format!("provider-disposition-{}", disposition.disposition_digest)
                 {
                     return Err(ForemanError::ReadOnlyStore(
                         "provider disposition journal identity mismatch".to_owned(),
@@ -4149,6 +4554,10 @@ fn validate_execution_availability_history_rows(
                     AvailabilityLaneEvent::Disposition(disposition.disposition_digest.clone()),
                 );
                 history.observations.push(*observation);
+                disposition_rows.insert(
+                    disposition.disposition_digest.clone(),
+                    (row.sequence, event.recorded_at),
+                );
                 history.dispositions.push(*disposition);
                 if let Some(deferred) = deferred {
                     history.deferred.push(*deferred);
@@ -4194,14 +4603,44 @@ fn validate_execution_availability_history_rows(
                     })?;
                 if event.recorded_at < deferred.wake_at
                     || !wake_ids.insert(wake_occurrence_id.clone())
+                    || event.event_id != format!("provider-wake-{wake_occurrence_id}")
                 {
                     return Err(ForemanError::ReadOnlyStore(
                         "provider wake time or identity mismatch".to_owned(),
                     ));
                 }
+                if history.policy.parked_resource_lock_policy
+                    == ParkedResourceLockPolicyV1::ReleaseAndReacquire
+                {
+                    let transition = history.resource_transitions.last().ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "provider wake lacks exact resource reacquisition".to_owned(),
+                        )
+                    })?;
+                    if transition.transition != "REACQUIRED"
+                        || transition.wake_occurrence_id.as_deref()
+                            != Some(wake_occurrence_id.as_str())
+                        || transition.dispatch_digest != next_dispatch_digest
+                        || transition.recorded_at != event.recorded_at
+                        || row.sequence == 0
+                        || rows
+                            .iter()
+                            .find(|candidate| candidate.sequence == row.sequence - 1)
+                            .map(|candidate| candidate.kind.as_str())
+                            != Some("provider_resources_reacquired")
+                    {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "provider wake resource reacquisition binding mismatch".to_owned(),
+                        ));
+                    }
+                }
                 lane_last.insert(
                     key,
-                    AvailabilityLaneEvent::Wake(next_dispatch_digest.clone()),
+                    AvailabilityLaneEvent::Wake {
+                        next_dispatch_digest: next_dispatch_digest.clone(),
+                        sequence: row.sequence,
+                        recorded_at: event.recorded_at,
+                    },
                 );
                 history.wake_occurrence_ids.push(wake_occurrence_id);
                 history.wake_work_attempt_ids.push(attempt_id);
@@ -4248,31 +4687,196 @@ fn validate_execution_availability_history_rows(
                         != ProviderMechanismStateV1::PostAdmissionInterrupted
                     || disposition.provider_execution.as_ref() != Some(&execution_identity)
                     || event.recorded_at < disposition.received_at
+                    || event.event_id != format!("provider-resume-{resume_occurrence_id}")
                     || !resume_ids.insert(resume_occurrence_id.clone())
+                    || !adapter_process_ids.insert(adapter_process_occurrence_id.clone())
+                    || history
+                        .resume_disposition_digests
+                        .iter()
+                        .any(|value| value == &disposition_digest)
                 {
                     return Err(ForemanError::ReadOnlyStore(
                         "provider resume exact execution binding mismatch".to_owned(),
                     ));
                 }
-                lane_last.insert(key, AvailabilityLaneEvent::Resume);
+                lane_last.insert(key.clone(), AvailabilityLaneEvent::Resume);
                 history.resume_occurrence_ids.push(resume_occurrence_id);
+                history.resume_work_item_ids.push(key.0.clone());
+                history.resume_work_attempt_ids.push(key.1.clone());
                 history
                     .resume_adapter_process_occurrence_ids
                     .push(adapter_process_occurrence_id);
                 history
                     .resume_execution_identities
                     .push(*execution_identity);
+                history.resume_disposition_digests.push(disposition_digest);
+                history.resume_recorded_at.push(event.recorded_at);
+            }
+            InternalPayload::ProviderResourcesReleased {
+                disposition_digest,
+                dispatch_digest,
+                policy_digest,
+                resource_lock_keys,
+            } => {
+                let history = history.as_mut().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "resource release lacks immutable availability requirement".to_owned(),
+                    )
+                })?;
+                let work_item_id = event.work_item_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("resource release lacks work item".to_owned())
+                })?;
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("resource release lacks attempt".to_owned())
+                })?;
+                let disposition = history
+                    .dispositions
+                    .iter()
+                    .find(|value| value.disposition_digest == disposition_digest)
+                    .ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "resource release lacks exact parked disposition".to_owned(),
+                        )
+                    })?;
+                let (disposition_sequence, disposition_time) =
+                    disposition_rows.get(&disposition_digest).ok_or_else(|| {
+                        ForemanError::ReadOnlyStore("missing disposition row".to_owned())
+                    })?;
+                if history.policy.parked_resource_lock_policy
+                    != ParkedResourceLockPolicyV1::ReleaseAndReacquire
+                    || disposition.mechanism_state != ProviderMechanismStateV1::ParkedNotAdmitted
+                    || disposition.dispatch_digest != dispatch_digest
+                    || history.policy.policy_digest != policy_digest
+                    || resource_lock_keys != profile.work_items[&work_item_id].resource_lock_keys
+                    || disposition.work_attempt_id != attempt_id
+                    || row.sequence != disposition_sequence + 1
+                    || event.recorded_at != *disposition_time
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider resource release binding mismatch".to_owned(),
+                    ));
+                }
+                for key in &resource_lock_keys {
+                    if expected_claims.remove(key)
+                        != Some((work_item_id.clone(), attempt_id.clone()))
+                    {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "resource release history disagrees with retained claim".to_owned(),
+                        ));
+                    }
+                }
+                history
+                    .resource_transitions
+                    .push(ReadOnlyProviderResourceTransitionV1 {
+                        transition: "RELEASED".to_owned(),
+                        work_item_id,
+                        work_attempt_id: attempt_id,
+                        dispatch_digest,
+                        policy_digest,
+                        wake_occurrence_id: None,
+                        resource_lock_keys,
+                        recorded_at: event.recorded_at,
+                    });
+            }
+            InternalPayload::ProviderResourcesReacquired {
+                wake_occurrence_id,
+                deferred_dispatch_digest,
+                next_dispatch_digest,
+                policy_digest,
+                resource_lock_keys,
+            } => {
+                let history = history.as_mut().ok_or_else(|| {
+                    ForemanError::ReadOnlyStore(
+                        "resource reacquisition lacks immutable availability requirement"
+                            .to_owned(),
+                    )
+                })?;
+                let work_item_id = event.work_item_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("resource reacquisition lacks work item".to_owned())
+                })?;
+                let attempt_id = event.attempt_id.ok_or_else(|| {
+                    ForemanError::ReadOnlyStore("resource reacquisition lacks attempt".to_owned())
+                })?;
+                let deferred = history
+                    .deferred
+                    .iter()
+                    .find(|value| value.deferred_dispatch_digest == deferred_dispatch_digest)
+                    .ok_or_else(|| {
+                        ForemanError::ReadOnlyStore(
+                            "resource reacquisition lacks exact deferral".to_owned(),
+                        )
+                    })?;
+                if history.policy.parked_resource_lock_policy
+                    != ParkedResourceLockPolicyV1::ReleaseAndReacquire
+                    || history.policy.policy_digest != policy_digest
+                    || deferred.work_attempt_id != attempt_id
+                    || resource_lock_keys != profile.work_items[&work_item_id].resource_lock_keys
+                    || event.recorded_at < deferred.wake_at
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider resource reacquisition binding mismatch".to_owned(),
+                    ));
+                }
+                for key in &resource_lock_keys {
+                    if expected_claims
+                        .insert(key.clone(), (work_item_id.clone(), attempt_id.clone()))
+                        .is_some()
+                    {
+                        return Err(ForemanError::ReadOnlyStore(
+                            "resource reacquisition overlaps a retained claim".to_owned(),
+                        ));
+                    }
+                }
+                history
+                    .resource_transitions
+                    .push(ReadOnlyProviderResourceTransitionV1 {
+                        transition: "REACQUIRED".to_owned(),
+                        work_item_id,
+                        work_attempt_id: attempt_id,
+                        dispatch_digest: next_dispatch_digest,
+                        policy_digest,
+                        wake_occurrence_id: Some(wake_occurrence_id),
+                        resource_lock_keys,
+                        recorded_at: event.recorded_at,
+                    });
+            }
+            InternalPayload::ResourcesReleased => {
+                if let (Some(work_item_id), Some(attempt_id)) =
+                    (event.work_item_id.as_deref(), event.attempt_id.as_deref())
+                {
+                    expected_claims
+                        .retain(|_, holder| holder.0 != work_item_id || holder.1 != attempt_id);
+                }
             }
             _ => {}
         }
     }
     if lane_last
         .values()
-        .any(|value| matches!(value, AvailabilityLaneEvent::Wake(_)))
+        .any(|value| matches!(value, AvailabilityLaneEvent::Wake { .. }))
     {
         return Err(ForemanError::ReadOnlyStore(
             "provider wake lacks atomic next dispatch".to_owned(),
         ));
+    }
+    if history.is_some() {
+        let mut statement = connection.prepare(
+            "SELECT resource_lock_key, work_item_id, attempt_id
+             FROM resource_claims WHERE run_id = ?1 ORDER BY resource_lock_key ASC",
+        )?;
+        let actual = statement
+            .query_map([&admission.run_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+                ))
+            })?
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        if actual != expected_claims {
+            return Err(ForemanError::ReadOnlyStore(
+                "mutable resource claims disagree with exact journal history".to_owned(),
+            ));
+        }
     }
     Ok(history)
 }
@@ -4387,7 +4991,7 @@ fn load_projection(
     })?;
     let rows = rows.collect::<Result<Vec<_>, _>>()?;
     validate_capacity_history(connection, &rows, &packet, &admission, &profile)?;
-    validate_execution_availability_history_rows(&rows, &packet, &admission, &profile)?;
+    validate_execution_availability_history_rows(connection, &rows, &packet, &admission, &profile)?;
 
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
@@ -4416,6 +5020,12 @@ fn load_projection(
                 InternalPayload::ProviderExecutionResumeRequested { .. } => {
                     ReplayKind::ProviderExecutionResumeRequested
                 }
+                InternalPayload::ProviderResourcesReleased { .. } => {
+                    ReplayKind::ProviderResourcesReleased
+                }
+                InternalPayload::ProviderResourcesReacquired {
+                    resource_lock_keys, ..
+                } => ReplayKind::ProviderResourcesReacquired { resource_lock_keys },
                 InternalPayload::AttemptCreated {
                     resource_lock_keys, ..
                 } => ReplayKind::AttemptCreated { resource_lock_keys },

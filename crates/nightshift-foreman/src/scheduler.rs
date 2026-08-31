@@ -97,6 +97,10 @@ pub(crate) enum ReplayKind {
     },
     ProviderWakeOpened,
     ProviderExecutionResumeRequested,
+    ProviderResourcesReleased,
+    ProviderResourcesReacquired {
+        resource_lock_keys: Vec<String>,
+    },
     RunClosed {
         final_receipts_digest: String,
     },
@@ -196,6 +200,26 @@ impl Scheduler {
                     }
                     ReplayKind::ResourcesReleased => {
                         claims.retain(|_, claim| claim.work_item_id != *work_item_id);
+                    }
+                    ReplayKind::ProviderResourcesReleased => {
+                        claims.retain(|_, claim| {
+                            claim.work_item_id != *work_item_id
+                                || event.attempt_id.as_deref() != Some(claim.attempt_id.as_str())
+                        });
+                    }
+                    ReplayKind::ProviderResourcesReacquired { resource_lock_keys } => {
+                        if let Some(attempt_id) = &event.attempt_id {
+                            for key in resource_lock_keys {
+                                claims.insert(
+                                    key.clone(),
+                                    ResourceClaimV1 {
+                                        resource_lock_key: key.clone(),
+                                        work_item_id: work_item_id.clone(),
+                                        attempt_id: attempt_id.clone(),
+                                    },
+                                );
+                            }
+                        }
                     }
                     ReplayKind::ProviderDispatchOpened | ReplayKind::ProviderWakeOpened => {
                         item.scheduler_state = SchedulerStateV1::Dispatching;

@@ -220,12 +220,15 @@ requires every unordered snapshot—including the same-raw approval watermark
 and server-request discrepancy pair—to return the exact raw-only refusal before
 binding inspection, semantic raw-frame replay, or any scheduling meaning.
 The mechanism store enforces a distinct cumulative 16 MiB journal-history
-ceiling for execution-availability rows. It first queries row count and
-`length(raw_bytes)` for the closed availability row kinds, refuses any empty or
-per-event-oversized row, and checked-adds the cumulative length before selecting
-or materializing any raw BLOB. The same preflight runs during query-only reopen
-and every mutating transition under the transition transaction. Legacy
-non-availability rows remain readable under their predecessor law.
+ceiling for execution-availability rows. Each availability append also creates
+an immutable metadata row binding run, sequence, event identity, closed event
+kind, and byte length. Query-only and mutating reopen compare the complete
+metadata and event row sets, then query count and `length(raw_bytes)`, refuse
+empty or per-event-oversized rows, and checked-add the cumulative length before
+selecting or materializing any raw BLOB. Relabeling a provider event as a legacy
+internal row therefore cannot bypass preflight. The same preflight runs during
+query-only reopen and every mutating transition under the immediate transaction.
+Legacy non-availability rows remain readable under their predecessor law.
 The pure contract graph requires the exact ordered prior history for the same
 work attempt. Every entry carries and reopens its exact dispatch occurrence,
 admission disposition, and deferral receipt. The graph binds their digests and
@@ -281,7 +284,12 @@ Unknown wire values remain raw-only and produce
 ## Policy and model selection
 
 An immutable run-level execution-availability requirement is admitted
-atomically with a new run. It binds the packet, admission, execution profile,
+atomically with a new run. A run may simultaneously retain the independent
+FUEL capacity requirement; attempt preparation then validates and appends the
+exact FUEL admission and the exact HOLDING dispatch in one immediate
+transaction. Abundant quota never overwrites an exact execution refusal, and
+UNKNOWN/NO_NEW_WORK capacity never creates a dispatch. Neither owner silently
+stands in for the other. It binds the packet, admission, execution profile,
 provider identity, adapter identity/version, availability policy ID/digest,
 and an ordered exact model-selection list for each work item.
 
@@ -344,13 +352,21 @@ refreshes evidence. Restart replays exact journal state and cannot advance
 Availability-required runs refuse the legacy V2-only preparation path. Initial
 attempt creation, resource-lock acquisition, V3 construction, and first
 dispatch append share one immediate transaction. A construction or validation
-failure therefore leaves no attempt, lock, or dispatch. A parked wake similarly
-reacquires the exact locks and appends the wake plus fresh dispatch atomically.
+failure therefore leaves no attempt, lock, or dispatch. A parked wake similarly reacquires the exact locks and appends the resource
+reacquisition, wake, and fresh dispatch atomically. Under
+`RELEASE_AND_REACQUIRE`, the parked disposition is immediately followed by a
+closed resource-release event and matching mutable claims are removed in the
+same transaction; `RETAIN_WHILE_PARKED` keeps them. Replay reconstructs the
+exact expected claims from attempt, release, reacquisition, and terminal
+history and refuses any mutable-table discrepancy. Attempt creation is
+immediately followed by its first dispatch at the same time; every wake is
+immediately followed by the bound next dispatch at the same time.
 
 The shared restart validator runs before scheduler state is usable. It requires
-the singular immutable requirement adjacent to run admission, exact canonical
-row bytes and retained digests, the complete dispatch/disposition/deferred/wake/
-resume ordering, exact V3 graph binding, and the accepted execution-availability
+the singular immutable requirement adjacent to run admission (after the exact
+capacity requirement when both owners are configured), exact canonical row
+bytes and retained digests, the complete dispatch/disposition/deferred/wake/
+resume and resource-transition ordering, exact V3 graph binding, and the accepted execution-availability
 graph for every retained occurrence. Query-only snapshots expose these exact
 facts but perform no scheduling transition.
 

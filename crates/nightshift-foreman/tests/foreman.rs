@@ -27,7 +27,7 @@ use nightshift_foreman::{
     ParkedResourceLockPolicyV1, ProviderAdmissionDispositionKindV1, ProviderAdmissionDispositionV1,
     ProviderAdmissionOwnerPinsV1, ProviderDispatchOccurrenceV1, ProviderDispositionEvidenceV1,
     ProviderExecutionIdentityV1, ProviderMechanismStateV1, ProviderModelSelectionV1,
-    WorkerStartRequestV3, DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1,
+    RunMechanismRequirementsV1, WorkerStartRequestV3, DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1,
     EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1, EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1,
     FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1,
 };
@@ -3760,10 +3760,9 @@ fn holding_requirement(
     value
 }
 
-fn holding_setup() -> (
+fn holding_fixture_contracts() -> (
     TempDir,
     PathBuf,
-    ForemanStore,
     NightshiftPacketV1,
     ForemanAdmissionV1,
     ExecutionProfileV2,
@@ -3831,6 +3830,127 @@ fn holding_setup() -> (
     };
     profile.seal().unwrap();
     let policy = holding_policy();
+    let requirement = holding_requirement(&packet, &admission, &profile, &policy);
+    (
+        directory,
+        path,
+        packet,
+        admission,
+        profile,
+        policy,
+        requirement,
+    )
+}
+
+fn holding_setup() -> (
+    TempDir,
+    PathBuf,
+    ForemanStore,
+    NightshiftPacketV1,
+    ForemanAdmissionV1,
+    ExecutionProfileV2,
+    ExecutionAvailabilityPolicyV1,
+    ForemanExecutionAvailabilityRequirementV1,
+) {
+    let (directory, path, packet, admission, profile, policy, requirement) =
+        holding_fixture_contracts();
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .admit_with_execution_availability(
+            &packet.canonical_bytes().unwrap(),
+            &holding_canonical(&admission),
+            &holding_canonical(&profile),
+            &holding_canonical(&requirement),
+            &holding_canonical(&policy),
+            admission.admitted_at,
+        )
+        .unwrap();
+    (
+        directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        policy,
+        requirement,
+    )
+}
+
+fn holding_setup_combined() -> (
+    TempDir,
+    PathBuf,
+    ForemanStore,
+    NightshiftPacketV1,
+    ForemanAdmissionV1,
+    ExecutionProfileV2,
+    ExecutionAvailabilityPolicyV1,
+    ForemanExecutionAvailabilityRequirementV1,
+    CapacityPolicyV1,
+    ForemanCapacityRequirementV1,
+) {
+    let (directory, path, packet, admission, profile, policy, requirement) =
+        holding_fixture_contracts();
+    let mut capacity_policy = CapacityPolicyV1::default();
+    capacity_policy.policy_id = profile.budget_policy_ref.clone();
+    capacity_policy.policy_digest = capacity_policy.compute_digest().unwrap();
+    let capacity_requirement =
+        capacity_requirement(&packet, &admission, &profile, &capacity_policy);
+    let store = ForemanStore::open(&path).unwrap();
+    let capacity_requirement_bytes = holding_canonical(&capacity_requirement);
+    let requirement_bytes = holding_canonical(&requirement);
+    let policy_bytes = holding_canonical(&policy);
+    store
+        .admit_with_mechanism_requirements(
+            &packet.canonical_bytes().unwrap(),
+            &holding_canonical(&admission),
+            &holding_canonical(&profile),
+            RunMechanismRequirementsV1 {
+                capacity_requirement_bytes: Some(&capacity_requirement_bytes),
+                execution_availability_requirement_bytes: Some(&requirement_bytes),
+                execution_availability_policy_bytes: Some(&policy_bytes),
+            },
+            admission.admitted_at,
+        )
+        .unwrap();
+    (
+        directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        policy,
+        requirement,
+        capacity_policy,
+        capacity_requirement,
+    )
+}
+
+fn holding_setup_with_policy(
+    maximum_concurrent_workers: u16,
+    lock_policy: ParkedResourceLockPolicyV1,
+    allow_ordered_model_fallback: bool,
+) -> (
+    TempDir,
+    PathBuf,
+    ForemanStore,
+    NightshiftPacketV1,
+    ForemanAdmissionV1,
+    ExecutionProfileV2,
+    ExecutionAvailabilityPolicyV1,
+    ForemanExecutionAvailabilityRequirementV1,
+) {
+    let (directory, path, packet, mut admission, mut profile, mut policy, _) =
+        holding_fixture_contracts();
+    admission.maximum_concurrent_workers = maximum_concurrent_workers;
+    admission.seal().unwrap();
+    profile.admission_digest = admission.admission_digest.clone();
+    profile.seal().unwrap();
+    policy.parked_resource_lock_policy = lock_policy;
+    policy.provider_capacity_released_while_parked = true;
+    policy.allow_ordered_model_fallback = allow_ordered_model_fallback;
+    policy.seal().unwrap();
     let requirement = holding_requirement(&packet, &admission, &profile, &policy);
     let store = ForemanStore::open(&path).unwrap();
     store
@@ -4235,6 +4355,270 @@ fn holding_store_parks_restarts_wakes_falls_back_and_allows_independent_lane() {
 }
 
 #[test]
+fn holding_combines_abundant_fuel_with_exact_model_capacity_without_owner_overwrite() {
+    let (
+        _directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        holding_policy,
+        holding_requirement,
+        capacity_policy,
+        capacity_requirement,
+    ) = holding_setup_combined();
+    let (capacity_admission, observation, policy, decision, derived) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &packet,
+            admission: &admission,
+            profile: &profile,
+            requirement: &capacity_requirement,
+            policy: &capacity_policy,
+        },
+        "work-a",
+        holding_time("2026-08-31T12:01:00Z"),
+        0.99,
+    );
+    assert_eq!(derived.state, CapacityState::Abundant);
+    assert_eq!(
+        derived.admission,
+        CapacityAdmissionDisposition::OrdinaryBounded
+    );
+    let opened = store
+        .prepare_provider_attempt_with_capacity(
+            "run-holding-store",
+            "work-a",
+            capacity_evidence(&capacity_admission, &observation, &policy, &decision),
+            "dispatch-combined-1",
+            "adapter-process-combined-1",
+            "session-combined-1",
+            0,
+            holding_time("2026-08-31T12:01:00Z"),
+        )
+        .unwrap();
+    let parked = holding_record(
+        &store,
+        &holding_requirement,
+        &holding_policy,
+        &opened,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    assert_eq!(
+        parked.disposition,
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity
+    );
+    drop(store);
+
+    let snapshot = read_only_run_snapshot(&path, "run-holding-store").unwrap();
+    assert_eq!(snapshot.capacity_admissions.len(), 1);
+    let retained_decision: CapacityDecisionV1 =
+        serde_json::from_slice(&snapshot.capacity_admissions[0].decision_bytes).unwrap();
+    assert_eq!(retained_decision.state, CapacityState::Abundant);
+    let availability = snapshot.execution_availability.unwrap();
+    assert_eq!(availability.dispositions, vec![parked]);
+    assert_eq!(availability.resource_transitions.len(), 1);
+    assert_eq!(availability.resource_transitions[0].transition, "RELEASED");
+}
+
+#[test]
+fn holding_combined_unknown_fuel_refuses_before_dispatch_without_overwriting_either_owner() {
+    let (
+        _directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        _holding_policy,
+        _holding_requirement,
+        capacity_policy,
+        capacity_requirement,
+    ) = holding_setup_combined();
+    let (mut capacity_admission, mut observation, policy, _decision, _) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &packet,
+            admission: &admission,
+            profile: &profile,
+            requirement: &capacity_requirement,
+            policy: &capacity_policy,
+        },
+        "work-a",
+        holding_time("2026-08-31T12:01:00Z"),
+        0.99,
+    );
+    let mut unknown: CapacityObservationV1 = serde_json::from_slice(&observation).unwrap();
+    unknown.source_class = SourceClass::Unknown;
+    unknown.confidence = Confidence::Low;
+    unknown.disposition = ObservationDisposition::Unknown;
+    unknown.unknown_reasons = vec!["FIXTURE_SOURCE_UNAVAILABLE".to_owned()];
+    unknown.windows.clear();
+    unknown.observation_digest = unknown.compute_digest().unwrap();
+    let derived = decide_capacity(
+        &unknown,
+        &capacity_policy,
+        holding_time("2026-08-31T12:01:00Z"),
+    )
+    .unwrap();
+    assert_eq!(derived.state, CapacityState::Unknown);
+    assert_eq!(derived.admission, CapacityAdmissionDisposition::NoNewWork);
+    let mut exact = ForemanCapacityAdmissionV1::from_slice(&capacity_admission).unwrap();
+    exact.observation_digest = unknown.observation_digest.clone();
+    exact.decision_digest = derived.decision_digest.clone();
+    exact.seal().unwrap();
+    capacity_admission = holding_canonical(&exact);
+    observation = holding_canonical(&unknown);
+    let decision = holding_canonical(&derived);
+    assert!(store
+        .prepare_provider_attempt_with_capacity(
+            "run-holding-store",
+            "work-a",
+            capacity_evidence(&capacity_admission, &observation, &policy, &decision),
+            "dispatch-unknown-refused",
+            "adapter-process-unknown-refused",
+            "session-unknown-refused",
+            0,
+            holding_time("2026-08-31T12:01:00Z"),
+        )
+        .is_err());
+    drop(store);
+
+    let snapshot = read_only_run_snapshot(&path, "run-holding-store").unwrap();
+    assert!(snapshot.capacity_admissions.is_empty());
+    let availability = snapshot.execution_availability.unwrap();
+    assert!(availability.dispatches.is_empty());
+    assert!(availability.dispositions.is_empty());
+}
+
+#[test]
+fn holding_release_policy_frees_worker_slot_while_retain_policy_keeps_it_consumed() {
+    {
+        let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup_with_policy(1, ParkedResourceLockPolicyV1::ReleaseAndReacquire, true);
+        let (_attempt, opened) = holding_open_initial(&store);
+        holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        let independent = store
+            .prepare_provider_attempt(
+                "run-holding-store",
+                "work-b",
+                "dispatch-slot-released",
+                "adapter-process-slot-released",
+                "session-slot-released",
+                0,
+                holding_time("2026-08-31T12:01:03Z"),
+            )
+            .unwrap();
+        assert_eq!(independent.worker_start_request.work_item_id, "work-b");
+    }
+
+    {
+        let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup_with_policy(1, ParkedResourceLockPolicyV1::RetainWhileParked, true);
+        let (_attempt, opened) = holding_open_initial(&store);
+        holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        assert!(matches!(
+            store.prepare_provider_attempt(
+                "run-holding-store",
+                "work-b",
+                "dispatch-slot-retained",
+                "adapter-process-slot-retained",
+                "session-slot-retained",
+                0,
+                holding_time("2026-08-31T12:01:03Z"),
+            ),
+            Err(ForemanError::ResourceUnavailable(message))
+                if message.contains("maximum concurrent workers")
+        ));
+    }
+}
+
+#[test]
+fn holding_repeated_refusal_uses_next_backoff_and_disabled_fallback_cannot_advance_model() {
+    let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup();
+    let (attempt, first) = holding_open_initial(&store);
+    let first_park = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &first,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    let second = store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-repeat-1",
+            "dispatch-repeat-2",
+            "adapter-process-repeat-2",
+            "session-repeat-2",
+            1,
+            first_park.provider_retry_after.unwrap(),
+        )
+        .unwrap();
+    let second_park = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &second,
+        "parked",
+        holding_time("2026-08-31T12:01:08Z"),
+        None,
+    );
+    assert_eq!(
+        second_park.provider_retry_after.unwrap() - holding_time("2026-08-31T12:01:08Z"),
+        Duration::seconds(5)
+    );
+
+    let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+        holding_setup_with_policy(2, ParkedResourceLockPolicyV1::ReleaseAndReacquire, false);
+    let (attempt, first) = holding_open_initial(&store);
+    let parked = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &first,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    assert!(store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-fallback-forbidden",
+            "dispatch-fallback-forbidden",
+            "adapter-process-fallback-forbidden",
+            "session-fallback-forbidden",
+            1,
+            parked.provider_retry_after.unwrap(),
+        )
+        .is_err());
+}
+
+#[test]
 fn holding_indeterminate_requires_exact_reconciliation_before_redispatch() {
     let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
         holding_setup();
@@ -4337,6 +4721,30 @@ fn holding_post_admission_restart_resumes_only_exact_execution() {
             holding_time("2026-08-31T12:01:10Z"),
         )
         .unwrap();
+    assert!(restarted
+        .resume_provider_execution(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "resume-store-1",
+            &interrupted.disposition_digest,
+            "adapter-process-resume-1",
+            &execution,
+            holding_time("2026-08-31T12:01:11Z"),
+        )
+        .is_err());
+    assert!(restarted
+        .resume_provider_execution(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "resume-store-fresh-duplicate",
+            &interrupted.disposition_digest,
+            "adapter-process-resume-fresh-duplicate",
+            &execution,
+            holding_time("2026-08-31T12:01:11Z"),
+        )
+        .is_err());
     restarted
         .resume_provider_execution(
             "run-holding-store",
@@ -4373,6 +4781,43 @@ fn holding_post_admission_restart_resumes_only_exact_execution() {
             .scheduler_state,
         SchedulerStateV1::Dispatching
     );
+}
+
+#[test]
+fn holding_fresh_dispatch_refuses_reused_process_or_session_identity_globally() {
+    let (_directory, _path, store, _packet, _admission, _profile, _policy, _requirement) =
+        holding_setup();
+    let (_attempt, _opened) = holding_open_initial(&store);
+    assert!(store
+        .prepare_provider_attempt(
+            "run-holding-store",
+            "work-b",
+            "dispatch-reused-process",
+            "adapter-process-store-1",
+            "session-distinct",
+            0,
+            holding_time("2026-08-31T12:01:01Z"),
+        )
+        .is_err());
+    assert!(store
+        .prepare_provider_attempt(
+            "run-holding-store",
+            "work-b",
+            "dispatch-reused-session",
+            "adapter-process-distinct",
+            "session-store-1",
+            0,
+            holding_time("2026-08-31T12:01:01Z"),
+        )
+        .is_err());
+    let snapshot = store.projection("run-holding-store").unwrap();
+    assert!(snapshot
+        .work_items
+        .iter()
+        .find(|item| item.work_item_id == "work-b")
+        .unwrap()
+        .active_attempt_id
+        .is_none());
 }
 
 #[test]
@@ -4599,7 +5044,8 @@ fn holding_metadata_preflight_refuses_huge_event_before_raw_materialization() {
         .unwrap();
     connection
         .execute(
-            "UPDATE events SET raw_bytes = zeroblob(?1) WHERE kind = 'provider_dispatch'",
+            "UPDATE events SET kind = 'internal', raw_bytes = zeroblob(?1)
+             WHERE kind = 'provider_dispatch'",
             [profile.maximum_event_bytes + 1],
         )
         .unwrap();
@@ -4619,6 +5065,51 @@ fn holding_metadata_preflight_refuses_huge_event_before_raw_materialization() {
             "execution availability journal event"
         ))
     ));
+}
+
+#[test]
+fn holding_metadata_refuses_small_provider_row_kind_alias_and_lock_table_discrepancy() {
+    {
+        let (_directory, path, store, _packet, _admission, _profile, _policy, _requirement) =
+            holding_setup();
+        let (_attempt, _opened) = holding_open_initial(&store);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_update;
+                 UPDATE events SET kind = 'internal' WHERE kind = 'provider_dispatch';",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            ForemanStore::open(&path)
+                .unwrap()
+                .projection("run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("metadata/event identity mismatch")
+        ));
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, _profile, _policy, _requirement) =
+            holding_setup();
+        let (_attempt, _opened) = holding_open_initial(&store);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "DELETE FROM resource_claims WHERE run_id = 'run-holding-store'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("mutable resource claims disagree")
+        ));
+    }
 }
 
 #[test]
@@ -4642,6 +5133,15 @@ fn holding_metadata_preflight_refuses_cumulative_history_before_raw_materializat
                     row_bytes,
                     format!("sha256:{}", "0".repeat(64)),
                 ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO execution_availability_event_metadata
+                 (run_id, event_id, sequence, event_kind, raw_byte_length)
+                 SELECT run_id, event_id, sequence, kind, length(raw_bytes)
+                 FROM events WHERE event_id = ?1",
+                [format!("provider-wake-bound-{ordinal}")],
             )
             .unwrap();
     }
@@ -4723,4 +5223,326 @@ fn holding_restart_refuses_coherently_resealed_nested_dispatch_substitution() {
     assert!(store.projection("run-holding-store").is_err());
     drop(store);
     assert!(read_only_run_snapshot(&path, "run-holding-store").is_err());
+}
+
+fn holding_reseal_internal_event_row(
+    connection: &Connection,
+    kind: &str,
+    mutate: impl FnOnce(&mut Value),
+) {
+    connection
+        .execute_batch(
+            "DROP TRIGGER events_no_update;
+             DROP TRIGGER execution_availability_metadata_no_update;",
+        )
+        .unwrap();
+    let (sequence, raw): (u64, Vec<u8>) = connection
+        .query_row(
+            "SELECT sequence, raw_bytes FROM events WHERE kind = ?1 ORDER BY sequence DESC LIMIT 1",
+            [kind],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut event: Value = serde_json::from_slice(&raw).unwrap();
+    mutate(&mut event);
+    let event_id = event["event_id"].as_str().unwrap().to_owned();
+    let raw = serde_jcs::to_vec(&event).unwrap();
+    connection
+        .execute(
+            "UPDATE events SET event_id = ?1, raw_bytes = ?2, raw_digest = ?3
+             WHERE sequence = ?4",
+            rusqlite::params![event_id, raw, retained_raw_digest(&raw), sequence],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE execution_availability_event_metadata
+             SET event_id = ?1, raw_byte_length = ?2 WHERE sequence = ?3",
+            rusqlite::params![event_id, raw.len(), sequence],
+        )
+        .unwrap();
+}
+
+#[test]
+fn holding_every_mutator_refuses_malformed_history_before_append() {
+    let (_directory, path, store, _packet, _admission, _profile, _policy, _requirement) =
+        holding_setup();
+    let (attempt, _opened) = holding_open_initial(&store);
+    drop(store);
+
+    let connection = Connection::open(&path).unwrap();
+    holding_reseal_internal_event_row(&connection, "provider_dispatch", |event| {
+        event["event_id"] = Value::String("provider-dispatch-substituted".to_owned());
+    });
+    let before: u64 = connection
+        .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(store
+        .record_dispatch_requested(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            holding_time("2026-08-31T12:01:02Z"),
+        )
+        .is_err());
+    assert!(store
+        .record_terminal_refusal(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "deterministic fixture refusal",
+            holding_time("2026-08-31T12:01:03Z"),
+        )
+        .is_err());
+    drop(store);
+    let connection = Connection::open(&path).unwrap();
+    let after: u64 = connection
+        .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn holding_resource_history_substitution_and_missing_atomic_dispatch_refuse_on_restart() {
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (_attempt, opened) = holding_open_initial(&store);
+        holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        holding_reseal_internal_event_row(&connection, "provider_resources_released", |event| {
+            event["payload"]["resource_lock_keys"] = json!(["provider-slot-substituted"]);
+        });
+        drop(connection);
+        assert!(read_only_run_snapshot(&path, "run-holding-store").is_err());
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let parked = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "parked",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        store
+            .wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "wake-missing-dispatch",
+                "dispatch-missing-after-wake",
+                "adapter-process-missing-after-wake",
+                "session-missing-after-wake",
+                1,
+                parked.provider_retry_after.unwrap(),
+            )
+            .unwrap();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_delete;
+                 DROP TRIGGER execution_availability_metadata_no_delete;
+                 DELETE FROM execution_availability_event_metadata
+                 WHERE event_id = 'provider-dispatch-dispatch-missing-after-wake';
+                 DELETE FROM events
+                 WHERE event_id = 'provider-dispatch-dispatch-missing-after-wake';",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(matches!(
+            read_only_run_snapshot(&path, "run-holding-store"),
+            Err(ForemanError::ReadOnlyStore(message))
+                if message.contains("provider wake lacks atomic next dispatch")
+        ));
+    }
+}
+
+#[test]
+fn holding_indeterminate_reconciliation_can_only_retain_exact_admitted_execution_or_stop() {
+    {
+        let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let indeterminate = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "indeterminate",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        let interrupted = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "interrupted",
+            holding_time("2026-08-31T12:01:03Z"),
+            Some(&indeterminate.disposition_digest),
+        );
+        assert_eq!(
+            interrupted.mechanism_state,
+            ProviderMechanismStateV1::PostAdmissionInterrupted
+        );
+        assert!(store
+            .wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "wake-after-admitted-reconciliation",
+                "dispatch-after-admitted-reconciliation",
+                "adapter-process-after-admitted-reconciliation",
+                "session-after-admitted-reconciliation",
+                1,
+                holding_time("2026-08-31T12:01:20Z"),
+            )
+            .is_err());
+        let execution = interrupted.provider_execution.clone().unwrap();
+        store
+            .resume_provider_execution(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "resume-after-reconciliation",
+                &interrupted.disposition_digest,
+                "adapter-process-resume-after-reconciliation",
+                &execution,
+                holding_time("2026-08-31T12:01:20Z"),
+            )
+            .unwrap();
+    }
+
+    {
+        let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let first = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "indeterminate",
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        let second = holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            "indeterminate",
+            holding_time("2026-08-31T12:01:03Z"),
+            Some(&first.disposition_digest),
+        );
+        assert_eq!(
+            second.mechanism_state,
+            ProviderMechanismStateV1::AdmissionIndeterminate
+        );
+        assert!(store
+            .wake_provider_dispatch(
+                "run-holding-store",
+                "work-a",
+                &attempt.attempt_id,
+                "wake-after-indeterminate-reconciliation",
+                "dispatch-after-indeterminate-reconciliation",
+                "adapter-process-after-indeterminate-reconciliation",
+                "session-after-indeterminate-reconciliation",
+                0,
+                holding_time("2026-08-31T12:01:20Z"),
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn holding_dispatch_occurrence_bound_stops_repeated_refusal_without_hammering() {
+    let (directory, path, packet, admission, profile, mut policy, _) = holding_fixture_contracts();
+    policy.maximum_dispatch_occurrences_per_attempt = 2;
+    policy.backoff_seconds = vec![5, 10];
+    policy.maximum_total_deferral_seconds = 20;
+    policy.seal().unwrap();
+    let requirement = holding_requirement(&packet, &admission, &profile, &policy);
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .admit_with_execution_availability(
+            &packet.canonical_bytes().unwrap(),
+            &holding_canonical(&admission),
+            &holding_canonical(&profile),
+            &holding_canonical(&requirement),
+            &holding_canonical(&policy),
+            admission.admitted_at,
+        )
+        .unwrap();
+    let (attempt, first) = holding_open_initial(&store);
+    let first_park = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &first,
+        "parked",
+        holding_time("2026-08-31T12:01:02Z"),
+        None,
+    );
+    let second = store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-bounded-2",
+            "dispatch-bounded-2",
+            "adapter-process-bounded-2",
+            "session-bounded-2",
+            1,
+            first_park.provider_retry_after.unwrap(),
+        )
+        .unwrap();
+    let second_park = holding_record(
+        &store,
+        &requirement,
+        &policy,
+        &second,
+        "parked",
+        holding_time("2026-08-31T12:01:08Z"),
+        None,
+    );
+    assert!(store
+        .wake_provider_dispatch(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            "wake-bounded-refused",
+            "dispatch-bounded-refused",
+            "adapter-process-bounded-refused",
+            "session-bounded-refused",
+            1,
+            second_park.provider_retry_after.unwrap(),
+        )
+        .is_err());
+    let history = read_only_run_snapshot(&path, "run-holding-store")
+        .unwrap()
+        .execution_availability
+        .unwrap();
+    assert_eq!(history.dispatches.len(), 2);
+    assert_eq!(history.wake_occurrence_ids, vec!["wake-bounded-2"]);
+    drop(directory);
 }
