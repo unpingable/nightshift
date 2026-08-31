@@ -1,5 +1,7 @@
 # SILICON-ORCHARD installed-browser trace
 
+Regeneration note: the accepted Monitor `bb75c4325f903f2c544e9758b5ea8d30c8bbc773` and NQ `78ba5137c83089d6f1cd2bada65f6f7bdda2669c` owner binding re-emitted all 20 condition directories byte-for-byte. The 100 served raw artifacts and compiled UI inputs are unchanged, so this installed-browser trace remains exact fixture evidence; no replacement browser session was required.
+
 Browser: installed Google Chrome `143.0.7499.109`.
 
 Surface: the compiled production Casework UI served by one ephemeral

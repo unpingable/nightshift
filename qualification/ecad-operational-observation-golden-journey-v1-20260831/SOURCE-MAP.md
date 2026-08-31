@@ -10,10 +10,13 @@ Packet: `sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc
 - FIELD Monitor result: `b2d52fe34f146774cbf5601819982c267c7fb082`.
 - FIELD NQ result: `39b9f84f2f70955dd12e5cbfe798c740f9e52854`.
 - DISTANT-BELL remote result: `8a1adaae27a5da70398b445c152cd4e7548b0289`.
-- Rejected SILICON Monitor fixture subject: `d75a062d42ccf339db200ffcee6559d3ddb18000`.
-- Corrected SILICON Monitor fixture subject: `b00609c8d13c09f68debc884ec1a56b77f1234ce`.
-- Rejected SILICON NQ profile subject: `96a4ee826584fb0e27d7bec4fe168c05aa777cc8`.
-- Corrected SILICON NQ profile subject: `019cc169e2204b901c8777a8cb552d6a994f1a67`.
+- Historical rejected SILICON Monitor subjects include `d75a062d42ccf339db200ffcee6559d3ddb18000` and `b00609c8d13c09f68debc884ec1a56b77f1234ce`.
+- Accepted SILICON Monitor fixture subject: `bb75c4325f903f2c544e9758b5ea8d30c8bbc773`.
+- Historical rejected SILICON NQ subjects include `96a4ee826584fb0e27d7bec4fe168c05aa777cc8` and `019cc169e2204b901c8777a8cb552d6a994f1a67`.
+- Accepted SILICON NQ result: `78ba5137c83089d6f1cd2bada65f6f7bdda2669c`.
+- Historical standalone-accepted Nightshift subject: `79a917634369d04eeafb508104802196e308c534`.
+- The campaign-owned `owner-binding.v1.json` binds those accepted owner heads, exact Monitor bytes `sha256:fa51387ed569064281f63576e46de44628e2833bfbec2955fc7d990209ae173f`, exact NQ bytes `sha256:ee4c077d32d033c81fd97d17a2f7b6451c68d5fca25a1257ec9865367e3aa8d2`, and immutable deck `sha256:7f9ba67910df6962e4e02cb2e1fa75562a59889e16cef3c9133c90aa090cea0d`; it grants no authority.
+- Machine contract: `schemas/nightshift.silicon-owner-binding.v1.schema.json` (Draft 2020-12, closed fields, exact owner heads and deck, authority false).
 - Research note: research main `29c14a8d4b65efcba4b9c33c387461581f99f2f6`,
   `docs/architecture/2026-08-17-proof-carrying-systems-eda.md`.
 

@@ -1,0 +1,9 @@
+{
+  "schema": "nightshift.silicon-owner-binding/v1",
+  "monitor_fixture_head": "bb75c4325f903f2c544e9758b5ea8d30c8bbc773",
+  "nq_result_head": "78ba5137c83089d6f1cd2bada65f6f7bdda2669c",
+  "monitor_bundle_sha256": "sha256:fa51387ed569064281f63576e46de44628e2833bfbec2955fc7d990209ae173f",
+  "nq_artifact_sha256": "sha256:ee4c077d32d033c81fd97d17a2f7b6451c68d5fca25a1257ec9865367e3aa8d2",
+  "claim_deck_digest": "sha256:7f9ba67910df6962e4e02cb2e1fa75562a59889e16cef3c9133c90aa090cea0d",
+  "grants_authority": false
+}

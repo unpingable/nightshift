@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use nightshift_casework::{load_operational_conditions_at, server::Api};
 use nightshiftd::operational_lineage::ReobservationDispositionV1;
+use sha2::{Digest as _, Sha256};
 
 const CONDITIONS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -187,9 +188,17 @@ fn operational_api_keeps_raw_bytes_head_parity_and_no_write_plane() {
             assert_eq!(raw_head.etag, raw_get.etag);
             assert_eq!(raw_head.content_type, raw_get.content_type);
             assert_eq!(raw_head.allow, raw_get.allow);
+            for method in ["POST", "PUT", "PATCH", "DELETE"] {
+                assert_eq!(api.response(method, &path).status, 405);
+            }
         }
         for method in ["POST", "PUT", "PATCH", "DELETE"] {
             assert_eq!(api.response(method, &detail).status, 405);
+            assert_eq!(
+                api.response(method, "/api/v1/operational-conditions")
+                    .status,
+                405
+            );
         }
     }
     let projections = loaded
@@ -200,4 +209,55 @@ fn operational_api_keeps_raw_bytes_head_parity_and_no_write_plane() {
     for forbidden in ["action_url", "commands", "controls", "aggregate_health"] {
         assert!(!serialized.contains(forbidden), "{forbidden}");
     }
+}
+
+#[test]
+fn accepted_owner_heads_and_exact_source_bytes_are_closed() {
+    let monitor = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../qualification/ecad-operational-observation-golden-journey-v1-20260831/source/monitor-bundle.v1.json"
+    ));
+    let nq = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../qualification/ecad-operational-observation-golden-journey-v1-20260831/source/nq-artifact.v1.json"
+    ));
+    let owner: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../qualification/ecad-operational-observation-golden-journey-v1-20260831/source/owner-binding.v1.json"
+    )))
+    .unwrap();
+    let monitor_digest = format!("sha256:{:x}", Sha256::digest(monitor));
+    let nq_digest = format!("sha256:{:x}", Sha256::digest(nq));
+    assert_eq!(owner["schema"], "nightshift.silicon-owner-binding/v1");
+    assert_eq!(
+        owner["monitor_fixture_head"],
+        "bb75c4325f903f2c544e9758b5ea8d30c8bbc773"
+    );
+    assert_eq!(
+        owner["nq_result_head"],
+        "78ba5137c83089d6f1cd2bada65f6f7bdda2669c"
+    );
+    assert_eq!(owner["monitor_bundle_sha256"], monitor_digest);
+    assert_eq!(owner["nq_artifact_sha256"], nq_digest);
+    assert_eq!(
+        owner["claim_deck_digest"],
+        "sha256:7f9ba67910df6962e4e02cb2e1fa75562a59889e16cef3c9133c90aa090cea0d"
+    );
+    assert_eq!(owner["grants_authority"], false);
+
+    let nq_value: serde_json::Value = serde_json::from_slice(nq).unwrap();
+    assert_eq!(
+        nq_value["monitor_fixture_head"],
+        owner["monitor_fixture_head"]
+    );
+    assert_eq!(
+        nq_value["monitor_bundle_digest"],
+        owner["monitor_bundle_sha256"]
+    );
+    assert!(nq_value["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|case| case["eligibility"]["deck_digest"] == owner["claim_deck_digest"]));
+    assert_eq!(nq_value["cases"].as_array().unwrap().len(), 20);
 }
