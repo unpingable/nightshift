@@ -1861,6 +1861,11 @@ fn validate_switchyard_snapshot_complete(
                 let step = normalized
                     .get("provider_execution_step_identity")
                     .ok_or(ContractError::InvalidField("provider step identity"))?;
+                if saw_approval {
+                    return Err(ContractError::InvalidField(
+                        "provider activity followed unanswered approval",
+                    ));
+                }
                 let (pending, sampling_ordinal, request_order, started_at_ms) =
                     pending_request.take().ok_or(ContractError::InvalidField(
                         "response without provider request",
@@ -2037,7 +2042,15 @@ fn validate_switchyard_snapshot_complete(
                     return Err(ContractError::InvalidField("local fact admission widening"));
                 }
                 if method == "turn/completed" {
-                    if open_response.is_some() || pending_request.is_some() {
+                    let exact_refusal_close = execution.is_none()
+                        && refusal.is_some()
+                        && open_response.is_none()
+                        && pending_request.is_none();
+                    let exact_execution_close = execution.is_some()
+                        && open_response.is_none()
+                        && pending_request.is_none()
+                        && !saw_approval;
+                    if !exact_refusal_close && !exact_execution_close {
                         return Err(ContractError::InvalidField("premature turn completion"));
                     }
                     saw_turn_completed = true;
@@ -2943,7 +2956,19 @@ fn validate_switchyard_raw_replay(
             }
         }
         "ACQUISITION_WATERMARK" => {
-            if normalized != &serde_json::json!({"proves_provider_admission":false}) {
+            if method == "error"
+                || matches!(method, "thread/started" | "turn/started" | "turn/completed")
+                || (saw_approval
+                    && lane.is_none()
+                    && matches!(
+                        method,
+                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                    ))
+                || method.starts_with("providerAdmission/")
+                || method.starts_with("providerRequest/")
+                || method.starts_with("rawResponse/")
+                || normalized != &serde_json::json!({"proves_provider_admission":false})
+            {
                 return Err(ContractError::InvalidField("watermark normalized replay"));
             }
         }

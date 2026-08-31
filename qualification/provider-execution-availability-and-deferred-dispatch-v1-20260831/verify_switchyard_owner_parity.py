@@ -259,6 +259,54 @@ def main() -> int:
                         message=owner_message("providerRequest/started", request()),
                     )
                 )
+
+                turn_completed = {
+                    "threadId": "thread-holding-1",
+                    "turn": {"id": "turn-holding-1"},
+                }
+                before_boundary = ProviderAdmissionMapper(copy.deepcopy(base_binding))
+                before_boundary.consume_envelope(
+                    AcquisitionEnvelope(
+                        0,
+                        "NOTIFICATION",
+                        message=owner_message("turn/completed", turn_completed),
+                    )
+                )
+
+                def waiting_mapper() -> ProviderAdmissionMapper:
+                    mapper = ProviderAdmissionMapper(copy.deepcopy(base_binding))
+                    for ordinal, kind, method, params in (
+                        (0, "NOTIFICATION", "providerRequest/started", request()),
+                        (1, "NOTIFICATION", "rawResponse/started", response()),
+                        (2, "NOTIFICATION", "rawResponse/completed", completion()),
+                        (3, "SERVER_REQUEST", approval_method, approval),
+                    ):
+                        mapper.consume_envelope(
+                            AcquisitionEnvelope(
+                                ordinal,
+                                kind,
+                                message=owner_message(method, params),
+                            )
+                        )
+                    return mapper
+
+                waiting_completion = waiting_mapper()
+                waiting_completion.consume_envelope(
+                    AcquisitionEnvelope(
+                        4,
+                        "NOTIFICATION",
+                        message=owner_message("turn/completed", turn_completed),
+                    )
+                )
+
+                waiting_provider_activity = waiting_mapper()
+                waiting_provider_activity.consume_envelope(
+                    AcquisitionEnvelope(
+                        4,
+                        "NOTIFICATION",
+                        message=owner_message("rawResponse/started", response()),
+                    )
+                )
                 client_discrepancy.consume_envelope(
                     AcquisitionEnvelope(
                         1,
@@ -331,6 +379,33 @@ def main() -> int:
                 )
                 and snapshot["admission_disposition"] == "ADMISSION_INDETERMINATE"
                 and snapshot["acquisition_cut"]["clean"] is False
+                for snapshot in snapshots
+            ),
+            "turn_completed_before_boundary_discrepancy": sum(
+                any(
+                    record["method"] == "turn/completed"
+                    and record["normalized"].get("detail")
+                    == "turn completed without exact provider execution identity"
+                    for record in snapshot["records"]
+                )
+                for snapshot in snapshots
+            ),
+            "turn_completed_during_approval_discrepancy": sum(
+                any(
+                    record["method"] == "turn/completed"
+                    and record["normalized"].get("detail")
+                    == "turn completed before exact response/approval sequence closed"
+                    for record in snapshot["records"]
+                )
+                for snapshot in snapshots
+            ),
+            "provider_activity_after_approval_discrepancy": sum(
+                any(
+                    record["method"] == "rawResponse/started"
+                    and record["normalized"].get("detail")
+                    == "provider activity followed unanswered approval"
+                    for record in snapshot["records"]
+                )
                 for snapshot in snapshots
             ),
         }
