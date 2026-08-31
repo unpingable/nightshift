@@ -27,6 +27,15 @@ reopens canonical mapper snapshot bytes, verifies binding/evidence/snapshot
 digests and exact identity relations, then projects only the closed owner
 meanings.
 
+The checked deterministic mapper vectors are retained byte-exactly with plain
+SHA-256 custody:
+
+- parked not admitted: `362d56fde662c92c2a34849341f6b2af890ed2ce284558d801e77753676f778e`;
+- provider completed: `cee936c7d33c983a6b15892531f7167130cab90d2b0cdcd1013d59a6868960c7`;
+- post-admission interrupted: `6d966b7ca74460731569c6f1f7fb41ca028217ce8a7935cb97cb5db04e67801a`;
+- approval interrupted: `c05646531bacc83260fc4f4c104b31a2b858e5808214d636859feff80f1e89c7`; and
+- admission indeterminate: `6b15689989daa2eaeefd602ccfb000c681217bc49ffdcb80c35d81b657e07bf1`.
+
 
 Nightshift owns provider-neutral scheduling mechanism state:
 
@@ -55,7 +64,7 @@ Quota and execution availability are independent. In particular:
   availability observation; and
 - absent availability evidence is `UNKNOWN`.
 
-## Frozen App Server finding
+## Owner-corrected App Server finding
 
 The accepted TUNNEL consumer at
 `f0fe2563a99148a86fa3a0061e3af2dafdd6f077` has no positive provider
@@ -67,9 +76,10 @@ admission witness:
   Server notification or retained response identity; and
 - `rawResponse/completed` exposes a response identity only after completion.
 
-Therefore the accepted V2 Codex mapping must classify every pre-completion
-dispatch as `ADMISSION_INDETERMINATE`. Completion may prove retrospectively
-that execution occurred, but cannot make an earlier automatic redispatch safe.
+Those findings explain why the accepted TUNNEL V1 mapping remains insufficient
+for automatic deferral. The accepted Codex and Switchyard owner subjects pinned
+above add the exact evidence described below; Nightshift consumes that evidence
+without reconstructing it from the older local-turn facts.
 
 The additive Codex owner correction is:
 
@@ -103,10 +113,9 @@ connection, stream, protocol, and unknown errors remain independently recorded
 and cannot establish a retryable availability meaning. Authentication refusal
 stops. Transport or protocol uncertainty is admission-indeterminate.
 
-Until the Codex owner correction and exact built executable qualify, all Codex
-specific positive-admission and pre-admission-refusal dimensions remain
-`NOT_QUALIFIED`. Deterministic provider-neutral qualification uses a fake
-adapter and does not contact a provider.
+The pinned Codex and Switchyard subjects qualified these meanings with a
+deterministic mock provider only. They do not qualify a real provider lifecycle,
+credential profile, inherited executable, or production activation.
 
 ## Identity law
 
@@ -144,9 +153,12 @@ The implementation adds closed, domain-separated records:
 
 Every record uses RFC 8785 serialization and a distinct
 `<schema>.digest/v1\0` domain. Exact raw evidence uses hex encoding, an
-explicit byte length, plain SHA-256, and a 16 KiB per-record ceiling. One run's
-complete availability/dispatch journal has a separate 16 MiB cumulative
-canonical-byte ceiling, checked before BLOB materialization.
+explicit byte length, plain SHA-256, and a 16 KiB per-evidence ceiling. The
+complete canonical Switchyard mapper snapshot is a distinct carrier with
+representation `RFC8785_SWITCHYARD_MAPPER_SNAPSHOT` and a 16 MiB ceiling.
+This contract checkpoint does not yet claim a cumulative journal-history bound;
+that metadata-first pre-acquisition invariant belongs to the held storage
+implementation and must qualify before journal mutation is accepted.
 
 The worker-adapter successor is V3. V2 remains readable and unchanged, but a
 run admitted with an execution-availability requirement refuses the V2 start

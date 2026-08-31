@@ -33,7 +33,7 @@ pub const ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256: &str =
 pub const ACCEPTED_SWITCHYARD_DETERMINISTIC_FIXTURE_SHA256: &str =
     "sha256:cafa673ac58f60029fd6c1de229b4f57d9f42ba918b7ecb2a3bfb20cb2b41a31";
 pub const MAXIMUM_AVAILABILITY_EVIDENCE_BYTES: usize = 16 * 1024;
-pub const MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAXIMUM_SWITCHYARD_MAPPER_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAXIMUM_DISPATCH_OCCURRENCES: u16 = 16;
 pub const MAXIMUM_TOTAL_DEFERRAL_SECONDS: u64 = 7 * 24 * 60 * 60;
 
@@ -76,7 +76,16 @@ impl ExactAvailabilityEvidenceV1 {
     }
 
     pub fn validate(&self) -> Result<Vec<u8>, ContractError> {
-        id("evidence representation", &self.representation)?;
+        if !matches!(
+            self.representation.as_str(),
+            "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES"
+                | "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR"
+                | "EXACT_ACQUIRED_FRAME_BYTES_INCLUDING_LINE_TERMINATOR"
+        ) {
+            return Err(ContractError::InvalidField(
+                "availability evidence representation",
+            ));
+        }
         digest("evidence sha256", &self.sha256)?;
         if self.encoding != "hex"
             || self.byte_length == 0
@@ -93,6 +102,51 @@ impl ExactAvailabilityEvidenceV1 {
             return Err(ContractError::DigestMismatch(
                 "availability evidence sha256",
             ));
+        }
+        Ok(raw)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactMapperSnapshotV1 {
+    pub representation: String,
+    pub byte_length: u64,
+    pub sha256: String,
+    pub encoding: String,
+    pub bytes_hex: String,
+}
+
+impl ExactMapperSnapshotV1 {
+    pub fn from_bytes(raw: &[u8]) -> Result<Self, ContractError> {
+        if raw.is_empty() || raw.len() > MAXIMUM_SWITCHYARD_MAPPER_SNAPSHOT_BYTES {
+            return Err(ContractError::InvalidField("mapper snapshot bytes"));
+        }
+        let value = Self {
+            representation: "RFC8785_SWITCHYARD_MAPPER_SNAPSHOT".to_owned(),
+            byte_length: raw.len() as u64,
+            sha256: plain_sha256(raw),
+            encoding: "hex".to_owned(),
+            bytes_hex: hex::encode(raw),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn validate(&self) -> Result<Vec<u8>, ContractError> {
+        digest("mapper snapshot sha256", &self.sha256)?;
+        if self.representation != "RFC8785_SWITCHYARD_MAPPER_SNAPSHOT"
+            || self.encoding != "hex"
+            || self.byte_length == 0
+            || self.byte_length as usize > MAXIMUM_SWITCHYARD_MAPPER_SNAPSHOT_BYTES
+            || self.bytes_hex.len() != self.byte_length as usize * 2
+        {
+            return Err(ContractError::InvalidField("mapper snapshot encoding"));
+        }
+        let raw = hex::decode(&self.bytes_hex)
+            .map_err(|_| ContractError::InvalidField("mapper snapshot hex"))?;
+        if plain_sha256(&raw) != self.sha256 {
+            return Err(ContractError::DigestMismatch("mapper snapshot sha256"));
         }
         Ok(raw)
     }
@@ -184,7 +238,7 @@ impl ExecutionAvailabilityObservationV1 {
         Ok(())
     }
     pub fn is_current_at(&self, evaluated_at: DateTime<Utc>) -> bool {
-        self.observed_at <= evaluated_at && evaluated_at < self.expires_at
+        self.received_at <= evaluated_at && evaluated_at < self.expires_at
     }
 }
 
@@ -533,6 +587,17 @@ impl ProviderExecutionIdentityV1 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProviderMechanismStateV1 {
+    ParkedNotAdmitted,
+    AdmissionIndeterminate,
+    ExecutionAdmitted,
+    PostAdmissionInterrupted,
+    WaitingApproval,
+    ProviderCompleted,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderAdmissionDispositionV1 {
@@ -554,6 +619,7 @@ pub struct ProviderAdmissionDispositionV1 {
     pub thread_id: String,
     pub turn_id: String,
     pub disposition: ProviderAdmissionDispositionKindV1,
+    pub mechanism_state: ProviderMechanismStateV1,
     pub received_at: DateTime<Utc>,
     pub response_created: bool,
     pub will_retry: bool,
@@ -562,7 +628,7 @@ pub struct ProviderAdmissionDispositionV1 {
     pub provider_execution: Option<ProviderExecutionIdentityV1>,
     pub mapper_snapshot_schema: String,
     pub mapper_snapshot_digest: String,
-    pub mapper_snapshot: ExactAvailabilityEvidenceV1,
+    pub mapper_snapshot: ExactMapperSnapshotV1,
     pub approval_response_sent: bool,
     pub protected_effect_absent: bool,
     pub authority_effect: String,
@@ -624,7 +690,7 @@ impl ProviderAdmissionDispositionV1 {
             return Err(ContractError::InvalidField("mapper snapshot schema"));
         }
         let raw = self.mapper_snapshot.validate()?;
-        validate_switchyard_snapshot(self, &raw)?;
+        validate_switchyard_snapshot_complete(self, &raw)?;
         if self.will_retry || self.approval_response_sent || !self.protected_effect_absent {
             return Err(ContractError::InvalidField(
                 "provider admission authority boundary",
@@ -640,7 +706,6 @@ impl ProviderAdmissionDispositionV1 {
                         ))?;
                 execution.validate()?;
                 if !self.response_created
-                    || !self.acquisition_complete
                     || execution.provider_id != self.provider_id
                     || execution.model_id != self.model_id
                     || execution.app_server_session_identity != self.app_server_session_identity
@@ -853,7 +918,9 @@ fn schema(actual: &str, expected: &str) -> Result<(), ContractError> {
 fn digest(field: &'static str, value: &str) -> Result<(), ContractError> {
     if value.len() != 71
         || !value.starts_with("sha256:")
-        || !value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
     {
         return Err(ContractError::InvalidField(field));
     }
@@ -1255,4 +1322,758 @@ fn canonical_value_digest(
     hash.update(domain);
     hash.update(canonical);
     Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
+fn validate_switchyard_snapshot_complete(
+    disposition: &ProviderAdmissionDispositionV1,
+    raw: &[u8],
+) -> Result<(), ContractError> {
+    validate_switchyard_snapshot(disposition, raw)?;
+    let snapshot: Value = serde_json::from_slice(raw).map_err(json_error)?;
+    validate_safe_json(&snapshot)?;
+    let records = snapshot["records"]
+        .as_array()
+        .ok_or(ContractError::InvalidField("mapper records"))?;
+    if records.is_empty() {
+        return Err(ContractError::InvalidField("empty mapper evidence"));
+    }
+
+    let mut next_acquisition_ordinal = 0_i64;
+    let mut pending_request: Option<String> = None;
+    let mut execution: Option<ProviderExecutionIdentityV1> = None;
+    let mut open_response: Option<String> = None;
+    let mut completed_responses = BTreeSet::new();
+    let mut refusal: Option<(String, Option<i64>, i64)> = None;
+    let mut saw_turn_completed = false;
+    let mut saw_approval = false;
+    let mut saw_discrepancy = false;
+    let mut cut_value: Option<&Value> = None;
+
+    for (index, record) in records.iter().enumerate() {
+        let kind = string(record, "kind")?;
+        let method = string(record, "method")?;
+        let acquisition_ordinal = record
+            .get("acquisition_ordinal")
+            .ok_or(ContractError::InvalidField("acquisition ordinal"))?;
+        let acquisition_kind = record
+            .get("acquisition_kind")
+            .ok_or(ContractError::InvalidField("acquisition kind"))?;
+        let normalized = record
+            .get("normalized")
+            .ok_or(ContractError::InvalidField("mapper normalized evidence"))?;
+        let raw_evidence = record
+            .get("raw")
+            .ok_or(ContractError::InvalidField("mapper raw evidence"))?;
+
+        if kind == "ACQUISITION_CUT" {
+            if index + 1 != records.len()
+                || !acquisition_ordinal.is_null()
+                || !acquisition_kind.is_null()
+                || !raw_evidence.is_null()
+                || method != "adapter/acquisition-cut"
+            {
+                return Err(ContractError::InvalidField(
+                    "terminal acquisition-cut order",
+                ));
+            }
+            exact_object_keys(
+                normalized,
+                &[
+                    "adapter_process_occurrence_id",
+                    "app_server_session_identity",
+                    "stream_quiesced",
+                    "loss_generation",
+                    "process_disposition",
+                    "ordered_high_water",
+                    "consumed_ordinal_count",
+                    "outstanding_client_request_count",
+                    "clean",
+                ],
+                "acquisition-cut closure",
+            )?;
+            cut_value = Some(normalized);
+            continue;
+        }
+        if cut_value.is_some() {
+            return Err(ContractError::InvalidField("evidence after terminal cut"));
+        }
+
+        if let Some(ordinal) = acquisition_ordinal.as_i64() {
+            if ordinal != next_acquisition_ordinal {
+                return Err(ContractError::InvalidField(
+                    "acquisition ordinal continuity",
+                ));
+            }
+            next_acquisition_ordinal += 1;
+            let lane = acquisition_kind
+                .as_str()
+                .ok_or(ContractError::InvalidField("acquisition kind"))?;
+            if !matches!(
+                lane,
+                "LOSS"
+                    | "NOTIFICATION"
+                    | "SERVER_REQUEST"
+                    | "CLIENT_REQUEST"
+                    | "CLIENT_RESPONSE"
+                    | "UNKNOWN"
+            ) {
+                return Err(ContractError::InvalidField("acquisition kind"));
+            }
+            if let Some(raw_value) = raw_evidence.as_object() {
+                let representation = raw_value
+                    .get("representation")
+                    .and_then(Value::as_str)
+                    .ok_or(ContractError::InvalidField("mapper raw representation"))?;
+                let expected = if lane == "LOSS" {
+                    "EXACT_ACQUIRED_FRAME_BYTES_INCLUDING_LINE_TERMINATOR"
+                } else {
+                    "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR"
+                };
+                if representation != expected {
+                    return Err(ContractError::InvalidField(
+                        "mapper raw lane representation",
+                    ));
+                }
+            } else if lane != "LOSS" {
+                return Err(ContractError::InvalidField("mapper raw evidence absence"));
+            }
+            validate_kind_lane(kind, method, lane)?;
+        } else if !acquisition_kind.is_null() {
+            return Err(ContractError::InvalidField("partial acquisition identity"));
+        }
+
+        match kind {
+            "PROVIDER_REQUEST_STARTED" => {
+                exact_object_keys(
+                    normalized,
+                    &[
+                        "request_occurrence_id",
+                        "sampling_ordinal",
+                        "request_order",
+                        "started_at_ms",
+                        "proves_provider_admission",
+                    ],
+                    "provider request normalized closure",
+                )?;
+                if normalized
+                    .get("proves_provider_admission")
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                    || pending_request.is_some()
+                    || saw_approval
+                {
+                    return Err(ContractError::InvalidField("provider request transition"));
+                }
+                pending_request = Some(string(normalized, "request_occurrence_id")?.to_owned());
+            }
+            "PROVIDER_EXECUTION_STEP" => {
+                exact_object_keys(
+                    normalized,
+                    &[
+                        "provider_execution_identity",
+                        "provider_execution_step_identity",
+                        "first_admission_boundary",
+                        "observed_at_ms",
+                    ],
+                    "provider step normalized closure",
+                )?;
+                let step = normalized
+                    .get("provider_execution_step_identity")
+                    .ok_or(ContractError::InvalidField("provider step identity"))?;
+                let pending = pending_request.take().ok_or(ContractError::InvalidField(
+                    "response without provider request",
+                ))?;
+                if string(step, "request_occurrence_id")? != pending
+                    || string(step, "provider")? != disposition.provider_id
+                    || string(step, "model")? != disposition.model_id
+                    || string(step, "thread_id")? != disposition.thread_id
+                    || string(step, "turn_id")? != disposition.turn_id
+                {
+                    return Err(ContractError::InvalidField("provider step request binding"));
+                }
+                let identity = normalized
+                    .get("provider_execution_identity")
+                    .ok_or(ContractError::InvalidField("provider execution identity"))?;
+                let observed = ProviderExecutionIdentityV1 {
+                    provider_id: string(identity, "provider")?.to_owned(),
+                    model_id: string(identity, "model")?.to_owned(),
+                    app_server_session_identity: string(identity, "app_server_session_identity")?
+                        .to_owned(),
+                    thread_id: string(identity, "thread_id")?.to_owned(),
+                    turn_id: string(identity, "turn_id")?.to_owned(),
+                    first_response_id: string(identity, "first_response_id")?.to_owned(),
+                };
+                observed.validate()?;
+                if execution.as_ref().is_some_and(|prior| prior != &observed)
+                    || open_response.is_some()
+                {
+                    return Err(ContractError::InvalidField("provider execution continuity"));
+                }
+                let response_id = string(step, "response_id")?.to_owned();
+                if response_id != observed.first_response_id && execution.is_none() {
+                    return Err(ContractError::InvalidField("first response identity"));
+                }
+                execution = Some(observed);
+                open_response = Some(response_id);
+            }
+            "PROVIDER_ADMISSION_REFUSED" => {
+                if refusal.is_some() || execution.is_some() || pending_request.is_none() {
+                    return Err(ContractError::InvalidField("refusal transition"));
+                }
+                let occurrence = string(normalized, "request_occurrence_id")?.to_owned();
+                if pending_request.take().as_deref() != Some(occurrence.as_str()) {
+                    return Err(ContractError::InvalidField("refusal request binding"));
+                }
+                let retry_after = match normalized.get("retry_after_ms") {
+                    Some(Value::Null) => None,
+                    Some(value) => value.as_i64(),
+                    None => return Err(ContractError::InvalidField("retry_after_ms")),
+                };
+                refusal = Some((
+                    occurrence,
+                    retry_after,
+                    integer(normalized, "observed_at_ms")?,
+                ));
+            }
+            "PROVIDER_RESPONSE_COMPLETED" => {
+                exact_object_keys(
+                    normalized,
+                    &["response_id", "proves_new_admission"],
+                    "provider completion normalized closure",
+                )?;
+                if normalized
+                    .get("proves_new_admission")
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                {
+                    return Err(ContractError::InvalidField(
+                        "completion admission substitution",
+                    ));
+                }
+                let response_id = string(normalized, "response_id")?;
+                if open_response.as_deref() != Some(response_id)
+                    || !completed_responses.insert(response_id.to_owned())
+                {
+                    return Err(ContractError::InvalidField("response completion order"));
+                }
+                open_response = None;
+            }
+            "WAITING_APPROVAL" => {
+                exact_object_keys(
+                    normalized,
+                    &[
+                        "approval_response_sent",
+                        "protected_effect_absent",
+                        "provider_execution_identity",
+                    ],
+                    "approval normalized closure",
+                )?;
+                if execution.is_none()
+                    || open_response.is_some()
+                    || saw_approval
+                    || normalized
+                        .get("approval_response_sent")
+                        .and_then(Value::as_bool)
+                        != Some(false)
+                    || normalized
+                        .get("protected_effect_absent")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                {
+                    return Err(ContractError::InvalidField("approval transition"));
+                }
+                saw_approval = true;
+            }
+            "LOCAL_TURN_FACT" => {
+                exact_object_keys(
+                    normalized,
+                    &["proves_provider_admission"],
+                    "local fact normalized closure",
+                )?;
+                if normalized
+                    .get("proves_provider_admission")
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                {
+                    return Err(ContractError::InvalidField("local fact admission widening"));
+                }
+                if method == "turn/completed" {
+                    if open_response.is_some() || pending_request.is_some() {
+                        return Err(ContractError::InvalidField("premature turn completion"));
+                    }
+                    saw_turn_completed = true;
+                }
+            }
+            "ADMISSION_DISCREPANCY" => {
+                exact_object_keys(
+                    normalized,
+                    &[
+                        "detail",
+                        "provider_execution_identity",
+                        "resume_same_attempt_only",
+                    ],
+                    "discrepancy normalized closure",
+                )?;
+                if normalized
+                    .get("resume_same_attempt_only")
+                    .and_then(Value::as_bool)
+                    != Some(execution.is_some())
+                {
+                    return Err(ContractError::InvalidField("discrepancy resume law"));
+                }
+                saw_discrepancy = true;
+            }
+            "CLIENT_REQUEST_ISSUED" => {
+                exact_object_keys(
+                    normalized,
+                    &[
+                        "request_id",
+                        "request_method",
+                        "params_sha256",
+                        "proves_provider_admission",
+                    ],
+                    "client request normalized closure",
+                )?;
+                digest("client params sha256", string(normalized, "params_sha256")?)?;
+            }
+            "CLIENT_RESPONSE_RETAINED" => {
+                exact_object_keys(
+                    normalized,
+                    &[
+                        "request_id",
+                        "request_method",
+                        "params_sha256",
+                        "result_sha256",
+                        "proves_provider_admission",
+                    ],
+                    "client response normalized closure",
+                )?;
+                digest("client params sha256", string(normalized, "params_sha256")?)?;
+                digest("client result sha256", string(normalized, "result_sha256")?)?;
+            }
+            "ACQUISITION_WATERMARK" => {
+                exact_object_keys(
+                    normalized,
+                    &["proves_provider_admission"],
+                    "watermark normalized closure",
+                )?;
+            }
+            "ACQUISITION_CUT" => unreachable!(),
+            _ => return Err(ContractError::InvalidField("mapper evidence kind")),
+        }
+    }
+
+    let cut = cut_value.ok_or(ContractError::InvalidField(
+        "terminal acquisition cut absence",
+    ))?;
+    if snapshot.get("acquisition_cut") != Some(cut) {
+        return Err(ContractError::InvalidField(
+            "snapshot acquisition-cut record binding",
+        ));
+    }
+    let process = string(cut, "process_disposition")?;
+    let process_closed = matches!(
+        process,
+        "EXITED" | "EXITED_AFTER_TERMINATE" | "EXITED_AFTER_KILL"
+    );
+    if !matches!(
+        process,
+        "UNKNOWN"
+            | "ABSENT"
+            | "RUNNING"
+            | "EXITED"
+            | "EXITED_AFTER_TERMINATE"
+            | "EXITED_AFTER_KILL"
+            | "EXIT_UNCONFIRMED"
+    ) || string(cut, "adapter_process_occurrence_id")?
+        != disposition.adapter_process_occurrence_id
+        || string(cut, "app_server_session_identity")? != disposition.app_server_session_identity
+        || integer(cut, "ordered_high_water")? != next_acquisition_ordinal
+        || integer(cut, "consumed_ordinal_count")? != next_acquisition_ordinal
+    {
+        return Err(ContractError::InvalidField("acquisition-cut identity"));
+    }
+    let stream_quiesced = cut
+        .get("stream_quiesced")
+        .and_then(Value::as_bool)
+        .ok_or(ContractError::InvalidField("stream_quiesced"))?;
+    let loss_generation = integer(cut, "loss_generation")?;
+    let outstanding = integer(cut, "outstanding_client_request_count")?;
+    let semantic_closed = (refusal.is_some() && saw_turn_completed)
+        || (execution.is_some()
+            && open_response.is_none()
+            && saw_turn_completed
+            && !saw_approval
+            && !saw_discrepancy);
+    let expected_clean = stream_quiesced
+        && process_closed
+        && loss_generation == 0
+        && outstanding == 0
+        && semantic_closed;
+    if cut.get("clean").and_then(Value::as_bool) != Some(expected_clean)
+        || disposition.acquisition_complete != expected_clean
+    {
+        return Err(ContractError::InvalidField("acquisition-cut clean law"));
+    }
+
+    let snapshot_state = string(&snapshot, "mechanism_state")?;
+    let expected_state = match disposition.mechanism_state {
+        ProviderMechanismStateV1::ParkedNotAdmitted => "PARKED_NOT_ADMITTED",
+        ProviderMechanismStateV1::AdmissionIndeterminate => "ADMISSION_INDETERMINATE",
+        ProviderMechanismStateV1::ExecutionAdmitted => "EXECUTION_ADMITTED",
+        ProviderMechanismStateV1::PostAdmissionInterrupted => "POST_ADMISSION_INTERRUPTED",
+        ProviderMechanismStateV1::WaitingApproval => "WAITING_APPROVAL",
+        ProviderMechanismStateV1::ProviderCompleted => "PROVIDER_COMPLETED",
+    };
+    if snapshot_state != expected_state {
+        return Err(ContractError::InvalidField(
+            "mapper mechanism-state binding",
+        ));
+    }
+    match disposition.mechanism_state {
+        ProviderMechanismStateV1::ParkedNotAdmitted => {
+            if refusal.is_none() || !expected_clean || execution.is_some() {
+                return Err(ContractError::InvalidField("parked mechanism state"));
+            }
+        }
+        ProviderMechanismStateV1::ProviderCompleted => {
+            if execution.is_none() || !expected_clean {
+                return Err(ContractError::InvalidField("completed mechanism state"));
+            }
+        }
+        ProviderMechanismStateV1::PostAdmissionInterrupted => {
+            if execution.is_none() || expected_clean {
+                return Err(ContractError::InvalidField(
+                    "post-admission interruption state",
+                ));
+            }
+        }
+        ProviderMechanismStateV1::WaitingApproval => {
+            if !saw_approval || cut_value.is_some() {
+                return Err(ContractError::InvalidField("waiting approval terminal cut"));
+            }
+        }
+        ProviderMechanismStateV1::AdmissionIndeterminate => {
+            if execution.is_some() {
+                return Err(ContractError::InvalidField(
+                    "indeterminate execution identity",
+                ));
+            }
+        }
+        ProviderMechanismStateV1::ExecutionAdmitted => {
+            if execution.is_none() || cut_value.is_some() {
+                return Err(ContractError::InvalidField("pre-cut admitted state"));
+            }
+        }
+    }
+    if let Some((occurrence, retry_after_ms, observed_at_ms)) = refusal {
+        if occurrence != disposition.provider_request_occurrence_id {
+            return Err(ContractError::InvalidField("refusal occurrence binding"));
+        }
+        let received_ms = disposition.received_at.timestamp_millis();
+        if received_ms < observed_at_ms {
+            return Err(ContractError::InvalidField("pre-receipt disposition time"));
+        }
+        let expected_retry =
+            retry_after_ms.map(|delay| disposition.received_at + Duration::milliseconds(delay));
+        if expected_retry != disposition.provider_retry_after {
+            return Err(ContractError::InvalidField("provider retry-after binding"));
+        }
+    } else if disposition.provider_retry_after.is_some() {
+        return Err(ContractError::InvalidField(
+            "unwitnessed provider retry-after",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_kind_lane(kind: &str, method: &str, lane: &str) -> Result<(), ContractError> {
+    let valid = match kind {
+        "CLIENT_REQUEST_ISSUED" => {
+            lane == "CLIENT_REQUEST" && method.starts_with("client-request/")
+        }
+        "CLIENT_RESPONSE_RETAINED" => {
+            lane == "CLIENT_RESPONSE" && method.starts_with("client-response/")
+        }
+        "PROVIDER_REQUEST_STARTED" => lane == "NOTIFICATION" && method == "providerRequest/started",
+        "PROVIDER_EXECUTION_STEP" => lane == "NOTIFICATION" && method == "rawResponse/started",
+        "PROVIDER_ADMISSION_REFUSED" => {
+            lane == "NOTIFICATION" && method == "providerAdmission/refused"
+        }
+        "PROVIDER_RESPONSE_COMPLETED" => {
+            lane == "NOTIFICATION" && method == "rawResponse/completed"
+        }
+        "WAITING_APPROVAL" => {
+            lane == "SERVER_REQUEST"
+                && matches!(
+                    method,
+                    "commandExecution/requestApproval" | "fileChange/requestApproval"
+                )
+        }
+        "LOCAL_TURN_FACT" | "ACQUISITION_WATERMARK" => lane == "NOTIFICATION",
+        "ADMISSION_DISCREPANCY" => matches!(
+            lane,
+            "LOSS"
+                | "UNKNOWN"
+                | "NOTIFICATION"
+                | "SERVER_REQUEST"
+                | "CLIENT_REQUEST"
+                | "CLIENT_RESPONSE"
+        ),
+        _ => false,
+    };
+    if !valid {
+        return Err(ContractError::InvalidField(
+            "evidence kind/lane/method binding",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_safe_json(value: &Value) -> Result<(), ContractError> {
+    const SAFE: i64 = 9_007_199_254_740_991;
+    match value {
+        Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
+        Value::Number(number) => {
+            let valid = number
+                .as_i64()
+                .is_some_and(|value| (-SAFE..=SAFE).contains(&value))
+                || number.as_u64().is_some_and(|value| value <= SAFE as u64)
+                || number
+                    .as_f64()
+                    .is_some_and(|value| value.is_finite() && value.abs() <= SAFE as f64);
+            if valid {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidField("RFC8785 safe number"))
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                validate_safe_json(value)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for value in values.values() {
+                validate_safe_json(value)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Validate one complete provider-execution availability graph before journal admission.
+///
+/// This function is pure. It grants no authority and performs no store, adapter,
+/// provider, lock, timer, or process operation.
+pub fn validate_execution_availability_graph(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    policy: &ExecutionAvailabilityPolicyV1,
+    dispatch: &ProviderDispatchOccurrenceV1,
+    observation: &ExecutionAvailabilityObservationV1,
+    disposition: &ProviderAdmissionDispositionV1,
+    deferred: Option<&DeferredProviderDispatchV1>,
+) -> Result<(), ContractError> {
+    requirement.validate()?;
+    policy.validate()?;
+    dispatch.validate()?;
+    observation.validate()?;
+    disposition.validate()?;
+    if requirement.policy_id != policy.policy_id
+        || requirement.policy_digest != policy.policy_digest
+        || dispatch.requirement_digest != requirement.requirement_digest
+        || dispatch.policy_digest != policy.policy_digest
+        || dispatch.packet_digest != requirement.packet_digest
+        || dispatch.run_id != requirement.run_id
+        || dispatch.adapter_id != requirement.adapter_id
+        || dispatch.adapter_version != requirement.adapter_version
+        || dispatch.adapter_protocol != requirement.adapter_protocol
+        || dispatch.dispatch_ordinal > policy.maximum_dispatch_occurrences_per_attempt
+    {
+        return Err(ContractError::InvalidField(
+            "requirement policy dispatch graph",
+        ));
+    }
+    let selections = requirement
+        .work_item_model_selections
+        .get(&dispatch.work_item_id)
+        .ok_or(ContractError::InvalidField("dispatch work-item selection"))?;
+    if selections.get(usize::from(dispatch.selected_model_ordinal)) != Some(&dispatch.selection) {
+        return Err(ContractError::InvalidField("selected model ordinal"));
+    }
+    if disposition.dispatch_digest != dispatch.dispatch_digest
+        || disposition.requirement_digest != requirement.requirement_digest
+        || disposition.policy_digest != policy.policy_digest
+        || disposition.packet_digest != requirement.packet_digest
+        || disposition.run_id != requirement.run_id
+        || disposition.work_item_id != dispatch.work_item_id
+        || disposition.work_attempt_id != dispatch.work_attempt_id
+        || disposition.dispatch_occurrence_id != dispatch.dispatch_occurrence_id
+        || disposition.provider_id != dispatch.selection.provider_id
+        || disposition.model_id != dispatch.selection.model_id
+        || disposition.adapter_process_occurrence_id != dispatch.adapter_process_occurrence_id
+        || disposition.app_server_session_identity != dispatch.app_server_session_identity
+    {
+        return Err(ContractError::InvalidField("dispatch disposition graph"));
+    }
+    if observation.provider_id != dispatch.selection.provider_id
+        || observation.model_id != dispatch.selection.model_id
+        || observation.model_class != dispatch.selection.model_class
+        || observation.received_at != disposition.received_at
+        || !observation.is_current_at(disposition.received_at)
+    {
+        return Err(ContractError::InvalidField(
+            "availability observation graph",
+        ));
+    }
+    let expected_observation_state = match disposition.disposition {
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
+            ExecutionAvailabilityStateV1::ModelAtCapacity
+        }
+        ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable => {
+            ExecutionAvailabilityStateV1::ProviderUnavailable
+        }
+        ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited => {
+            ExecutionAvailabilityStateV1::RateLimited
+        }
+        ProviderAdmissionDispositionKindV1::AuthenticationRefused => {
+            ExecutionAvailabilityStateV1::AuthenticationRefused
+        }
+        ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => {
+            if !matches!(
+                observation.state,
+                ExecutionAvailabilityStateV1::Unknown
+                    | ExecutionAvailabilityStateV1::TransportError
+                    | ExecutionAvailabilityStateV1::ProtocolError
+            ) {
+                return Err(ContractError::InvalidField(
+                    "indeterminate observation state",
+                ));
+            }
+            observation.state
+        }
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted => {
+            ExecutionAvailabilityStateV1::Available
+        }
+        ProviderAdmissionDispositionKindV1::QuotaExhaustedFuelOwned => {
+            return Err(ContractError::InvalidField("quota is FUEL-owned"));
+        }
+    };
+    if observation.state != expected_observation_state {
+        return Err(ContractError::InvalidField("disposition observation state"));
+    }
+    let expected_source = switchyard_source_evidence(disposition)?;
+    if observation.exact_evidence.as_ref() != expected_source.as_ref() {
+        return Err(ContractError::InvalidField(
+            "exact observation source binding",
+        ));
+    }
+
+    if disposition.disposition.permits_automatic_park() {
+        let parked = deferred.ok_or(ContractError::InvalidField("deferred dispatch absence"))?;
+        parked.validate()?;
+        if parked.requirement_digest != requirement.requirement_digest
+            || parked.policy_digest != policy.policy_digest
+            || parked.disposition_digest != disposition.disposition_digest
+            || parked.packet_digest != requirement.packet_digest
+            || parked.run_id != requirement.run_id
+            || parked.work_item_id != dispatch.work_item_id
+            || parked.work_attempt_id != dispatch.work_attempt_id
+            || parked.last_dispatch_occurrence_id != dispatch.dispatch_occurrence_id
+            || parked.provider_id != dispatch.selection.provider_id
+            || parked.model_id != dispatch.selection.model_id
+            || parked.selected_model_ordinal != dispatch.selected_model_ordinal
+            || parked.parked_resource_lock_policy != policy.parked_resource_lock_policy
+            || !parked.provider_capacity_released
+            || parked.semantic_retry
+            || parked.wake_at - dispatch.opened_at
+                > Duration::seconds(policy.maximum_total_deferral_seconds as i64)
+        {
+            return Err(ContractError::InvalidField("deferred dispatch graph"));
+        }
+        let expected_remaining: Vec<u16> = if policy.allow_ordered_model_fallback {
+            ((dispatch.selected_model_ordinal + 1)..(selections.len() as u16)).collect()
+        } else {
+            Vec::new()
+        };
+        if parked.remaining_model_ordinals != expected_remaining {
+            return Err(ContractError::InvalidField("ordered fallback suffix"));
+        }
+        match parked.wake_basis {
+            DeferredWakeBasisV1::ProviderRetryAfter => {
+                let retry_after = disposition
+                    .provider_retry_after
+                    .ok_or(ContractError::InvalidField("provider retry-after absence"))?;
+                let seconds = (retry_after - disposition.received_at).num_seconds();
+                if parked.provider_retry_after != Some(retry_after)
+                    || seconds <= 0
+                    || parked.backoff_seconds != seconds as u64
+                {
+                    return Err(ContractError::InvalidField("provider retry-after wake"));
+                }
+            }
+            DeferredWakeBasisV1::PolicyBackoff => {
+                let expected = policy
+                    .backoff_seconds
+                    .get(usize::from(parked.backoff_ordinal))
+                    .ok_or(ContractError::InvalidField("backoff ordinal"))?;
+                if disposition.provider_retry_after.is_some()
+                    || parked.provider_retry_after.is_some()
+                    || parked.backoff_seconds != *expected
+                {
+                    return Err(ContractError::InvalidField("policy backoff wake"));
+                }
+            }
+        }
+    } else if deferred.is_some() {
+        return Err(ContractError::InvalidField("unlawful automatic park"));
+    }
+    if matches!(
+        disposition.mechanism_state,
+        ProviderMechanismStateV1::PostAdmissionInterrupted
+    ) && (disposition.provider_execution.is_none() || deferred.is_some())
+    {
+        return Err(ContractError::InvalidField(
+            "post-admission resume-only law",
+        ));
+    }
+    Ok(())
+}
+
+fn switchyard_source_evidence(
+    disposition: &ProviderAdmissionDispositionV1,
+) -> Result<Option<ExactAvailabilityEvidenceV1>, ContractError> {
+    let raw = disposition.mapper_snapshot.validate()?;
+    let snapshot: Value = serde_json::from_slice(&raw).map_err(json_error)?;
+    let kind = match disposition.disposition {
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
+            "PROVIDER_ADMISSION_REFUSED"
+        }
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted => "PROVIDER_EXECUTION_STEP",
+        ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => "ADMISSION_DISCREPANCY",
+        _ => return Ok(None),
+    };
+    let record = snapshot["records"]
+        .as_array()
+        .and_then(|records| {
+            records
+                .iter()
+                .find(|record| record.get("kind").and_then(Value::as_str) == Some(kind))
+        })
+        .ok_or(ContractError::InvalidField("observation source evidence"))?;
+    match record.get("raw") {
+        Some(Value::Null)
+            if matches!(
+                disposition.disposition,
+                ProviderAdmissionDispositionKindV1::AdmissionIndeterminate
+            ) =>
+        {
+            Ok(None)
+        }
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(json_error),
+        None => Err(ContractError::InvalidField("observation source raw")),
+    }
 }

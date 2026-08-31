@@ -16,6 +16,8 @@ NAMES = [
     "nightshift.provider-admission-disposition.v1.schema.json",
     "nightshift.deferred-provider-dispatch.v1.schema.json",
 ]
+SWITCHYARD_SCHEMA = "vendor/switchyard.codex-provider-admission.v1.schema.json"
+FIXTURES = ROOT / "qualification" / "provider-execution-availability-and-deferred-dispatch-v1-20260831" / "fixtures"
 D = "sha256:" + "0" * 64
 
 
@@ -25,14 +27,22 @@ def load(name):
 
 class ExecutionAvailabilitySchemaTest(unittest.TestCase):
     def test_schemas_are_draft_2020_12_and_top_level_closed(self):
-        for name in NAMES:
+        for name in [*NAMES, SWITCHYARD_SCHEMA]:
             with self.subTest(name=name):
                 schema = load(name)
                 Draft202012Validator.check_schema(schema)
                 self.assertEqual(
                     schema["$schema"], "https://json-schema.org/draft/2020-12/schema"
                 )
-                self.assertFalse(schema["additionalProperties"])
+                if name != SWITCHYARD_SCHEMA:
+                    self.assertFalse(schema["additionalProperties"])
+
+    def test_exact_accepted_switchyard_vectors_satisfy_vendored_schema(self):
+        schema = load(SWITCHYARD_SCHEMA)
+        validator = Draft202012Validator(schema)
+        for path in sorted(FIXTURES.glob("switchyard-*.snapshot.v1.json")):
+            with self.subTest(path=path.name):
+                validator.validate(json.loads(path.read_bytes()))
 
     def test_policy_vocabulary_and_non_authorizing_constants_are_closed(self):
         schema = load(NAMES[1])
@@ -130,6 +140,65 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
         self.assertEqual(
             disposition["properties"]["mapper_snapshot_schema"]["const"],
             "switchyard.codex-provider-admission-snapshot/v1",
+        )
+        self.assertEqual(
+            disposition["$defs"]["snapshot"]["properties"]["representation"]["const"],
+            "RFC8785_SWITCHYARD_MAPPER_SNAPSHOT",
+        )
+        self.assertEqual(
+            disposition["$defs"]["snapshot"]["properties"]["byte_length"]["maximum"],
+            16 * 1024 * 1024,
+        )
+
+    def test_canonical_time_lowercase_digest_and_evidence_representation(self):
+        requirement = {
+            "schema": "nightshift.foreman-execution-availability-requirement/v1",
+            "requirement_digest": D,
+            "packet_digest": D,
+            "admission_digest": D,
+            "profile_digest": D,
+            "run_id": "run-holding",
+            "adapter_id": "switchyard-codex",
+            "adapter_protocol": "switchyard.codex-app-server/v2",
+            "adapter_version": "2.0.0",
+            "adapter_executable_identity": D,
+            "owner_pins": {
+                "codex_owner_head": "c36a8137638decf8b04a49611354a90f32c5a945",
+                "switchyard_owner_head": "2ba25db66d8b29dd215bd87e05f4ea794024b3b7",
+                "switchyard_schema_sha256": "sha256:131f1f6e0cf8cb0aea26ed225c584440c81ffedd443c68ace23adecbe493cf93",
+                "deterministic_fixture_sha256": "sha256:cafa673ac58f60029fd6c1de229b4f57d9f42ba918b7ecb2a3bfb20cb2b41a31",
+            },
+            "policy_id": "holding-policy",
+            "policy_digest": D,
+            "work_item_model_selections": {
+                "WORK-A": [{"provider_id": "openai", "model_id": "gpt-5.6-sol", "model_class": "large"}]
+            },
+            "admitted_at": "2026-08-31T12:00:00.123Z",
+            "authority_effect": "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+        }
+        validator = Draft202012Validator(load(NAMES[2]), format_checker=FormatChecker())
+        validator.validate(requirement)
+        for timestamp in (
+            "2026-08-31T08:00:00-04:00",
+            "2026-08-31T12:00:00.123000Z",
+        ):
+            changed = copy.deepcopy(requirement)
+            changed["admitted_at"] = timestamp
+            with self.assertRaises(ValidationError):
+                validator.validate(changed)
+        changed = copy.deepcopy(requirement)
+        changed["packet_digest"] = "sha256:" + "A" * 64
+        with self.assertRaises(ValidationError):
+            validator.validate(changed)
+
+        observation_schema = load(NAMES[0])
+        self.assertEqual(
+            set(observation_schema["$defs"]["evidence"]["properties"]["representation"]["enum"]),
+            {
+                "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+                "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+                "EXACT_ACQUIRED_FRAME_BYTES_INCLUDING_LINE_TERMINATOR",
+            },
         )
 
 

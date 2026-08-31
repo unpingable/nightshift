@@ -29,6 +29,8 @@ fn canonical<T: Serialize>(value: &T) -> Vec<u8> {
     serde_jcs::to_vec(value).unwrap()
 }
 
+type SnapshotMutation = (&'static str, fn(&mut Value));
+
 fn policy() -> ExecutionAvailabilityPolicyV1 {
     let mut value = ExecutionAvailabilityPolicyV1 {
         schema: EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1.to_owned(),
@@ -101,16 +103,16 @@ fn dispatch(
         packet_digest: requirement.packet_digest.clone(),
         run_id: requirement.run_id.clone(),
         work_item_id: "WORK-A".to_owned(),
-        work_attempt_id: "attempt-a".to_owned(),
-        dispatch_occurrence_id: "dispatch-a-1".to_owned(),
+        work_attempt_id: "attempt-holding-1".to_owned(),
+        dispatch_occurrence_id: "dispatch-holding-1".to_owned(),
         dispatch_ordinal: 1,
         selected_model_ordinal: 0,
         selection: requirement.work_item_model_selections["WORK-A"][0].clone(),
         adapter_id: requirement.adapter_id.clone(),
         adapter_version: requirement.adapter_version.clone(),
         adapter_protocol: requirement.adapter_protocol.clone(),
-        adapter_process_occurrence_id: "adapter-process-a".to_owned(),
-        app_server_session_identity: "session-a".to_owned(),
+        adapter_process_occurrence_id: "adapter-process-holding-1".to_owned(),
+        app_server_session_identity: "fixture-estate-holding-1".to_owned(),
         worker_start_request_schema: "nightshift.worker-start-request/v3".to_owned(),
         worker_start_request_digest: placeholder(),
         worker_brief_digest: placeholder(),
@@ -123,127 +125,10 @@ fn dispatch(
     value
 }
 
-fn evidence_record(
-    sequence: u64,
-    binding: &Value,
-    kind: &str,
-    method: &str,
-    normalized: Value,
-) -> Value {
-    seal_value(
-        json!({
-            "schema": "switchyard.codex-provider-admission-evidence/v1",
-            "evidence_digest": placeholder(),
-            "sequence": sequence,
-            "acquisition_ordinal": sequence,
-            "acquisition_kind": "NOTIFICATION",
-            "binding_digest": binding["binding_digest"],
-            "work_attempt_id": "attempt-a",
-            "dispatch_occurrence_id": "dispatch-a-1",
-            "adapter_process_occurrence_id": "adapter-process-a",
-            "app_server_session_identity": "session-a",
-            "thread_id": "thread-a",
-            "turn_id": "turn-a",
-            "provider": "openai",
-            "model": "gpt-5.6-sol",
-            "kind": kind,
-            "method": method,
-            "normalized": normalized,
-            "raw": null
-        }),
-        "evidence_digest",
-        b"switchyard.codex-provider-admission-evidence.digest/v1\0",
-    )
-}
-
 fn parked_snapshot() -> Value {
-    let binding = seal_value(
-        json!({
-            "schema": "switchyard.codex-provider-admission-binding/v1",
-            "binding_digest": placeholder(),
-            "work_attempt_id": "attempt-a",
-            "dispatch_occurrence_id": "dispatch-a-1",
-            "adapter_process_occurrence_id": "adapter-process-a",
-            "app_server_session_identity": "session-a",
-            "thread_id": "thread-a",
-            "turn_id": "turn-a",
-            "provider": "openai",
-            "model": "gpt-5.6-sol",
-            "codex_source_head": ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD,
-            "executable_kind": "DETERMINISTIC_FIXTURE",
-            "app_server_executable_identity": "fixture-holding",
-            "app_server_executable_sha256": ACCEPTED_SWITCHYARD_DETERMINISTIC_FIXTURE_SHA256,
-            "internal_provider_request_retries": 0
-        }),
-        "binding_digest",
-        b"switchyard.codex-provider-admission-binding.digest/v1\0",
-    );
-    let cut = json!({
-        "adapter_process_occurrence_id": "adapter-process-a",
-        "app_server_session_identity": "session-a",
-        "stream_quiesced": true,
-        "loss_generation": 0,
-        "process_disposition": "EXITED",
-        "ordered_high_water": 3,
-        "consumed_ordinal_count": 3,
-        "outstanding_client_request_count": 0,
-        "clean": true
-    });
-    let records = vec![
-        evidence_record(
-            0,
-            &binding,
-            "PROVIDER_REQUEST_STARTED",
-            "providerRequest/started",
-            json!({
-                "request_occurrence_id": "request-a",
-                "sampling_ordinal": 0,
-                "request_order": 0,
-                "started_at_ms": 1,
-                "proves_provider_admission": false
-            }),
-        ),
-        evidence_record(
-            1,
-            &binding,
-            "PROVIDER_ADMISSION_REFUSED",
-            "providerAdmission/refused",
-            json!({
-                "request_occurrence_id": "request-a",
-                "sampling_ordinal": 0,
-                "request_order": 0,
-                "response_created": false,
-                "will_retry": false,
-                "refusal_kind": "MODEL_AT_CAPACITY",
-                "codex_error_info": "serverOverloaded",
-                "retry_after_ms": 5000,
-                "diagnostic": "typed fixture",
-                "observed_at_ms": 2,
-                "provider_execution_identity": null
-            }),
-        ),
-        evidence_record(
-            2,
-            &binding,
-            "ACQUISITION_CUT",
-            "adapter/acquisition-cut",
-            cut.clone(),
-        ),
-    ];
-    seal_value(
-        json!({
-            "schema": "switchyard.codex-provider-admission-snapshot/v1",
-            "snapshot_digest": placeholder(),
-            "binding": binding,
-            "admission_disposition": "NOT_ADMITTED_MODEL_AT_CAPACITY",
-            "mechanism_state": "PARKED_NOT_ADMITTED",
-            "provider_execution_identity": null,
-            "acquisition_cut": cut,
-            "records": records
-        }),
-        "snapshot_digest",
-        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
-    )
+    serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-parked-not-admitted.snapshot.v1.json"
+    )).unwrap()
 }
 
 fn disposition(
@@ -265,12 +150,13 @@ fn disposition(
         dispatch_occurrence_id: dispatch.dispatch_occurrence_id.clone(),
         provider_id: dispatch.selection.provider_id.clone(),
         model_id: dispatch.selection.model_id.clone(),
-        provider_request_occurrence_id: "request-a".to_owned(),
+        provider_request_occurrence_id: "request-0".to_owned(),
         adapter_process_occurrence_id: dispatch.adapter_process_occurrence_id.clone(),
         app_server_session_identity: dispatch.app_server_session_identity.clone(),
-        thread_id: "thread-a".to_owned(),
-        turn_id: "turn-a".to_owned(),
+        thread_id: "thread-holding-1".to_owned(),
+        turn_id: "turn-holding-1".to_owned(),
         disposition: ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity,
+        mechanism_state: ProviderMechanismStateV1::ParkedNotAdmitted,
         received_at: time("2026-08-31T12:01:02Z"),
         response_created: false,
         will_retry: false,
@@ -279,11 +165,7 @@ fn disposition(
         provider_execution: None,
         mapper_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1".to_owned(),
         mapper_snapshot_digest: snapshot["snapshot_digest"].as_str().unwrap().to_owned(),
-        mapper_snapshot: ExactAvailabilityEvidenceV1::from_bytes(
-            "RFC8785_SWITCHYARD_MAPPER_SNAPSHOT",
-            &bytes,
-        )
-        .unwrap(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_bytes(&bytes).unwrap(),
         approval_response_sent: false,
         protected_effect_absent: true,
         authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
@@ -299,14 +181,10 @@ fn closed_contracts_bind_independent_quota_execution_and_dispatch_identities() {
     let dispatch = dispatch(&requirement);
     let disposition = disposition(&requirement, &dispatch);
 
-    for bytes in [
-        canonical(&policy),
-        canonical(&requirement),
-        canonical(&dispatch),
-        canonical(&disposition),
-    ] {
-        assert!(bytes.len() < MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES as usize);
-    }
+    assert!(
+        disposition.mapper_snapshot.byte_length as usize
+            <= MAXIMUM_SWITCHYARD_MAPPER_SNAPSHOT_BYTES
+    );
     ExecutionAvailabilityPolicyV1::from_slice(&canonical(&policy))
         .unwrap()
         .validate()
@@ -340,7 +218,9 @@ fn closed_contracts_bind_independent_quota_execution_and_dispatch_identities() {
         source_identity: "switchyard:provider-admission".to_owned(),
         source_version: "v1".to_owned(),
         provider_retry_after: disposition.provider_retry_after,
-        exact_evidence: Some(disposition.mapper_snapshot.clone()),
+        exact_evidence: Some(
+            serde_json::from_value(parked_snapshot()["records"][1]["raw"].clone()).unwrap(),
+        ),
         authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
     };
     observation.seal().unwrap();
@@ -378,6 +258,15 @@ fn closed_contracts_bind_independent_quota_execution_and_dispatch_identities() {
         .unwrap()
         .validate()
         .unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &dispatch,
+        &observation,
+        &disposition,
+        Some(&deferred),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -423,11 +312,7 @@ fn owner_pin_mapper_and_transition_substitutions_fail_closed() {
     );
     let mut substituted = disposition.clone();
     substituted.mapper_snapshot_digest = snapshot["snapshot_digest"].as_str().unwrap().to_owned();
-    substituted.mapper_snapshot = ExactAvailabilityEvidenceV1::from_bytes(
-        "RFC8785_SWITCHYARD_MAPPER_SNAPSHOT",
-        &canonical(&snapshot),
-    )
-    .unwrap();
+    substituted.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
     substituted.seal().unwrap_err();
 
     let mut unknown = ExecutionAvailabilityObservationV1 {
@@ -477,4 +362,381 @@ fn owner_pin_mapper_and_transition_substitutions_fail_closed() {
         authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
     };
     wrong_wake.seal().unwrap_err();
+}
+
+fn disposition_from_exact_snapshot(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    dispatch: &ProviderDispatchOccurrenceV1,
+    raw: &[u8],
+    received_at: DateTime<Utc>,
+) -> ProviderAdmissionDispositionV1 {
+    let snapshot: Value = serde_json::from_slice(raw).unwrap();
+    let execution = snapshot["provider_execution_identity"]
+        .as_object()
+        .map(|identity| ProviderExecutionIdentityV1 {
+            provider_id: identity["provider"].as_str().unwrap().to_owned(),
+            model_id: identity["model"].as_str().unwrap().to_owned(),
+            app_server_session_identity: identity["app_server_session_identity"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            thread_id: identity["thread_id"].as_str().unwrap().to_owned(),
+            turn_id: identity["turn_id"].as_str().unwrap().to_owned(),
+            first_response_id: identity["first_response_id"].as_str().unwrap().to_owned(),
+        });
+    let disposition_kind = match snapshot["admission_disposition"].as_str().unwrap() {
+        "EXECUTION_ADMITTED" => ProviderAdmissionDispositionKindV1::ExecutionAdmitted,
+        "NOT_ADMITTED_MODEL_AT_CAPACITY" => {
+            ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity
+        }
+        "ADMISSION_INDETERMINATE" => ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+        value => panic!("unexpected fixture disposition {value}"),
+    };
+    let mechanism_state = match snapshot["mechanism_state"].as_str().unwrap() {
+        "PARKED_NOT_ADMITTED" => ProviderMechanismStateV1::ParkedNotAdmitted,
+        "ADMISSION_INDETERMINATE" => ProviderMechanismStateV1::AdmissionIndeterminate,
+        "POST_ADMISSION_INTERRUPTED" => ProviderMechanismStateV1::PostAdmissionInterrupted,
+        "PROVIDER_COMPLETED" => ProviderMechanismStateV1::ProviderCompleted,
+        value => panic!("unexpected fixture mechanism state {value}"),
+    };
+    let request_occurrence = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|record| {
+            record["normalized"]["request_occurrence_id"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .unwrap();
+    let retry_after_ms = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|record| record["normalized"]["retry_after_ms"].as_i64());
+    let mut value = ProviderAdmissionDispositionV1 {
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1.to_owned(),
+        disposition_digest: placeholder(),
+        dispatch_digest: dispatch.dispatch_digest.clone(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: requirement.policy_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: requirement.run_id.clone(),
+        work_item_id: dispatch.work_item_id.clone(),
+        work_attempt_id: dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: dispatch.dispatch_occurrence_id.clone(),
+        provider_id: dispatch.selection.provider_id.clone(),
+        model_id: dispatch.selection.model_id.clone(),
+        provider_request_occurrence_id: request_occurrence,
+        adapter_process_occurrence_id: dispatch.adapter_process_occurrence_id.clone(),
+        app_server_session_identity: dispatch.app_server_session_identity.clone(),
+        thread_id: "thread-holding-1".to_owned(),
+        turn_id: "turn-holding-1".to_owned(),
+        disposition: disposition_kind,
+        mechanism_state,
+        received_at,
+        response_created: execution.is_some(),
+        will_retry: false,
+        acquisition_complete: snapshot["acquisition_cut"]["clean"]
+            .as_bool()
+            .unwrap_or(false),
+        provider_retry_after: retry_after_ms.map(|ms| received_at + Duration::milliseconds(ms)),
+        provider_execution: execution,
+        mapper_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1".to_owned(),
+        mapper_snapshot_digest: snapshot["snapshot_digest"].as_str().unwrap().to_owned(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_bytes(raw).unwrap(),
+        approval_response_sent: false,
+        protected_effect_absent: true,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    value.seal().unwrap();
+    value
+}
+
+fn observation_for_disposition(
+    disposition: &ProviderAdmissionDispositionV1,
+) -> ExecutionAvailabilityObservationV1 {
+    let raw = disposition.mapper_snapshot.validate().unwrap();
+    let snapshot: Value = serde_json::from_slice(&raw).unwrap();
+    let source_kind = match disposition.disposition {
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
+            "PROVIDER_ADMISSION_REFUSED"
+        }
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted => "PROVIDER_EXECUTION_STEP",
+        ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => "ADMISSION_DISCREPANCY",
+        _ => unreachable!(),
+    };
+    let exact_evidence = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == source_kind)
+        .and_then(|record| {
+            if record["raw"].is_null() {
+                None
+            } else {
+                Some(serde_json::from_value(record["raw"].clone()).unwrap())
+            }
+        });
+    let state = match disposition.disposition {
+        ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
+            ExecutionAvailabilityStateV1::ModelAtCapacity
+        }
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted => {
+            ExecutionAvailabilityStateV1::Available
+        }
+        ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => {
+            ExecutionAvailabilityStateV1::Unknown
+        }
+        _ => unreachable!(),
+    };
+    let mut value = ExecutionAvailabilityObservationV1 {
+        schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        observation_digest: placeholder(),
+        provider_id: disposition.provider_id.clone(),
+        model_id: disposition.model_id.clone(),
+        model_class: "large".to_owned(),
+        observed_at: disposition.received_at,
+        received_at: disposition.received_at,
+        expires_at: disposition.received_at + Duration::seconds(60),
+        state,
+        source_identity: "switchyard:provider-admission".to_owned(),
+        source_version: "v1".to_owned(),
+        provider_retry_after: disposition.provider_retry_after,
+        exact_evidence,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    value.seal().unwrap();
+    value
+}
+
+fn deferred_for(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    policy: &ExecutionAvailabilityPolicyV1,
+    dispatch: &ProviderDispatchOccurrenceV1,
+    disposition: &ProviderAdmissionDispositionV1,
+) -> DeferredProviderDispatchV1 {
+    let mut value = DeferredProviderDispatchV1 {
+        schema: DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1.to_owned(),
+        deferred_dispatch_digest: placeholder(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: policy.policy_digest.clone(),
+        disposition_digest: disposition.disposition_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: requirement.run_id.clone(),
+        work_item_id: dispatch.work_item_id.clone(),
+        work_attempt_id: dispatch.work_attempt_id.clone(),
+        last_dispatch_occurrence_id: dispatch.dispatch_occurrence_id.clone(),
+        provider_id: dispatch.selection.provider_id.clone(),
+        model_id: dispatch.selection.model_id.clone(),
+        selected_model_ordinal: dispatch.selected_model_ordinal,
+        remaining_model_ordinals: vec![1],
+        refusal_received_at: disposition.received_at,
+        wake_basis: DeferredWakeBasisV1::ProviderRetryAfter,
+        backoff_ordinal: 0,
+        backoff_seconds: 5,
+        provider_retry_after: disposition.provider_retry_after,
+        wake_at: disposition.provider_retry_after.unwrap(),
+        parked_resource_lock_policy: policy.parked_resource_lock_policy,
+        provider_capacity_released: true,
+        semantic_retry: false,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    value.seal().unwrap();
+    value
+}
+
+#[test]
+fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let disposition = disposition(&requirement, &dispatch);
+    let observation = observation_for_disposition(&disposition);
+    let deferred = deferred_for(&requirement, &policy, &dispatch, &disposition);
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &dispatch,
+        &observation,
+        &disposition,
+        Some(&deferred),
+    )
+    .unwrap();
+
+    let mut substituted_observation = observation.clone();
+    substituted_observation.received_at += Duration::seconds(1);
+    substituted_observation.seal().unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &dispatch,
+        &substituted_observation,
+        &disposition,
+        Some(&deferred),
+    )
+    .unwrap_err();
+
+    let mut stale = observation.clone();
+    stale.expires_at = disposition.received_at;
+    stale.seal().unwrap_err();
+
+    for mut substituted in [
+        {
+            let mut value = deferred.clone();
+            value.remaining_model_ordinals.clear();
+            value
+        },
+        {
+            let mut value = deferred.clone();
+            value.parked_resource_lock_policy = ParkedResourceLockPolicyV1::RetainWhileParked;
+            value
+        },
+        {
+            let mut value = deferred.clone();
+            value.backoff_seconds += 1;
+            value.provider_retry_after = value
+                .provider_retry_after
+                .map(|time| time + Duration::seconds(1));
+            value.wake_at += Duration::seconds(1);
+            value
+        },
+    ] {
+        substituted.seal().unwrap();
+        validate_execution_availability_graph(
+            &requirement,
+            &policy,
+            &dispatch,
+            &observation,
+            &disposition,
+            Some(&substituted),
+        )
+        .unwrap_err();
+    }
+
+    let completed = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"),
+        disposition.received_at,
+    );
+    let available = observation_for_disposition(&completed);
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &dispatch,
+        &available,
+        &completed,
+        Some(&deferred),
+    )
+    .unwrap_err();
+}
+
+#[test]
+fn mapper_cut_ordinal_representation_number_and_receipt_time_substitutions_fail_closed() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let original = disposition(&requirement, &dispatch);
+    let raw = original.mapper_snapshot.validate().unwrap();
+
+    let mutations: &[SnapshotMutation] = &[
+        ("cut-session", |snapshot| {
+            snapshot["acquisition_cut"]["app_server_session_identity"] = json!("other-session")
+        }),
+        ("ordinal-gap", |snapshot| {
+            snapshot["records"][1]["acquisition_ordinal"] = json!(7)
+        }),
+        ("representation", |snapshot| {
+            snapshot["records"][1]["raw"]["representation"] =
+                json!("EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES")
+        }),
+        ("unsafe-number", |snapshot| {
+            snapshot["records"][0]["normalized"]["started_at_ms"] = json!(9_007_199_254_740_992_i64)
+        }),
+    ];
+    for (name, mutate) in mutations {
+        let mut snapshot: Value = serde_json::from_slice(&raw).unwrap();
+        mutate(&mut snapshot);
+        for record in snapshot["records"].as_array_mut().unwrap() {
+            *record = seal_value(
+                record.clone(),
+                "evidence_digest",
+                b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+            );
+        }
+        snapshot = seal_value(
+            snapshot,
+            "snapshot_digest",
+            b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+        );
+        let mut substituted = original.clone();
+        substituted.mapper_snapshot_digest =
+            snapshot["snapshot_digest"].as_str().unwrap().to_owned();
+        substituted.mapper_snapshot =
+            ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
+        assert!(substituted.seal().is_err(), "accepted {name} substitution");
+    }
+
+    let mut pre_receipt = original;
+    pre_receipt.received_at = time("2026-08-31T08:00:00Z");
+    pre_receipt.provider_retry_after = Some(time("2026-08-31T08:00:05Z"));
+    pre_receipt.seal().unwrap_err();
+}
+
+#[test]
+fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let received = time("2026-08-31T12:01:02Z");
+    let cases: &[(&[u8], ProviderMechanismStateV1, bool, bool)] = &[
+        (
+            include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"),
+            ProviderMechanismStateV1::ProviderCompleted,
+            true,
+            true,
+        ),
+        (
+            include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-post-admission-interrupted.snapshot.v1.json"),
+            ProviderMechanismStateV1::PostAdmissionInterrupted,
+            false,
+            true,
+        ),
+        (
+            include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"),
+            ProviderMechanismStateV1::PostAdmissionInterrupted,
+            false,
+            true,
+        ),
+        (
+            include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-admission-indeterminate.snapshot.v1.json"),
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            false,
+            false,
+        ),
+    ];
+    for (raw, expected_state, clean, admitted) in cases {
+        let disposition = disposition_from_exact_snapshot(&requirement, &dispatch, raw, received);
+        assert_eq!(disposition.mechanism_state, *expected_state);
+        assert_eq!(disposition.acquisition_complete, *clean);
+        assert_eq!(disposition.provider_execution.is_some(), *admitted);
+        let observation = observation_for_disposition(&disposition);
+        validate_execution_availability_graph(
+            &requirement,
+            &policy,
+            &dispatch,
+            &observation,
+            &disposition,
+            None,
+        )
+        .unwrap();
+        if matches!(
+            expected_state,
+            ProviderMechanismStateV1::PostAdmissionInterrupted
+        ) {
+            assert!(disposition.provider_execution.is_some());
+            assert!(!disposition.disposition.permits_automatic_park());
+        }
+    }
 }
