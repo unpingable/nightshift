@@ -1,4 +1,5 @@
 import copy
+from decimal import Decimal
 import json
 import pathlib
 import unittest
@@ -22,6 +23,7 @@ class ForemanSchemaTests(unittest.TestCase):
             "nightshift.foreman-execution-profile.v1.schema.json",
             "nightshift.foreman-execution-profile.v2.schema.json",
             "nightshift.worker-adapter.v1.schema.json",
+            "nightshift.worker-adapter.v2.schema.json",
         ]:
             Draft202012Validator.check_schema(schema(name))
 
@@ -96,8 +98,10 @@ class ForemanSchemaTests(unittest.TestCase):
 
     def test_adapter_start_request_has_no_approval_response_extension(self):
         document = {
-            "schema": "nightshift.worker-start-request/v1",
+            "schema": "nightshift.worker-start-request/v2",
             "request_digest": DIGEST,
+            "adapter_id": "fixture-adapter",
+            "adapter_version": "fixture.adapter/v1",
             "adapter_protocol": "fixture.adapter/v1",
             "packet_digest": DIGEST,
             "run_id": "run-fixture",
@@ -113,14 +117,153 @@ class ForemanSchemaTests(unittest.TestCase):
             "expected_receipt_schema": "nightshift.worker-terminal-receipt/v1",
         }
         validator = Draft202012Validator(
-            schema("nightshift.worker-adapter.v1.schema.json")
+            schema("nightshift.worker-adapter.v2.schema.json")
         )
         validator.validate(document)
+        verification = {
+            "schema": "nightshift.adapter-contract-verification/v1",
+            "capabilities_raw_digest": DIGEST,
+            "profile_digest": DIGEST,
+            "request_digest": DIGEST,
+            "adapter_id": "fixture-adapter",
+            "adapter_protocol": "fixture.adapter/v1",
+            "adapter_version": "fixture.adapter/v1",
+            "adapter_executable_identity": DIGEST,
+            "disposition": "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED",
+        }
+        validator.validate(verification)
         unknown = copy.deepcopy(document)
+        excessive_timeout = copy.deepcopy(document)
+        excessive_timeout["timeout_seconds"] = 86401
+        with self.assertRaises(ValidationError):
+            validator.validate(excessive_timeout)
+        excessive_output = copy.deepcopy(document)
+        excessive_output["maximum_output_bytes"] = 16777217
+        with self.assertRaises(ValidationError):
+            validator.validate(excessive_output)
         unknown["respond_to_approval"] = True
         with self.assertRaises(ValidationError):
             validator.validate(unknown)
 
+
+    def test_adapter_extensions_use_the_recursively_closed_interoperable_subset(self):
+        document = {
+            "schema": "nightshift.worker-adapter-event/v1",
+            "event_digest": DIGEST,
+            "packet_digest": DIGEST,
+            "run_id": "run-fixture",
+            "work_item_id": "root-a",
+            "attempt_id": "attempt-fixture",
+            "adapter_id": "fixture-adapter",
+            "adapter_version": "fixture.adapter/v1",
+            "event_id": "event-fixture",
+            "occurred_at": "2026-08-29T16:01:00Z",
+            "kind": "checkpoint",
+            "provider_identity": None,
+            "model_identity": None,
+            "session_identity": None,
+            "thread_identity": None,
+            "turn_identity": None,
+            "queue_identity": None,
+            "message": "bounded local progress",
+            "human_question": None,
+            "extensions": {"nested": {"safe_key": ["unicode value \u20ac", 0.0000001, None, True]}},
+        }
+        validator = Draft202012Validator(
+            schema("nightshift.worker-adapter.v2.schema.json")
+        )
+        validator.validate(document)
+        unicode_key = copy.deepcopy(document)
+        unicode_key["extensions"] = {"nested": {"\U0001f600": "not admitted as an object key"}}
+        with self.assertRaises(ValidationError):
+            validator.validate(unicode_key)
+        for unsafe_number in (
+            9007199254740992,
+            -9007199254740992,
+            Decimal("9007199254740991.5"),
+            Decimal("-9007199254740991.5"),
+            Decimal("1E+400"),
+        ):
+            numeric = copy.deepcopy(document)
+            numeric["extensions"] = {"nested": {"unsafe_number": unsafe_number}}
+            with self.assertRaises(ValidationError):
+                validator.validate(numeric)
+
+    def test_v2_worker_brief_is_closed_and_carries_exact_sources(self):
+        document = {
+            "schema": "nightshift.worker-brief-basis/v2",
+            "packet_digest": DIGEST,
+            "packet_source": {
+                "retained_raw_digest": DIGEST,
+                "encoding": "hex",
+                "bytes_hex": "7b7d",
+            },
+            "work_item": {"contract": "nightshift.orientation-packet/v1#work-item", "canonical_json": "{\"dependencies\":[\"root-a\"],\"id\":\"dependent\"}"},
+            "predecessor_receipts": {
+                "root-a": {
+                    "receipt_kind": "terminal",
+                    "retained_raw_digest": DIGEST,
+                    "encoding": "hex",
+                    "bytes_hex": "7b2022657874656e73696f6e223a2074727565207d",
+                }
+            },
+            "global_constraints": {"contract": "nightshift.orientation-packet/v1#global-constraints", "canonical_json": "{}"},
+            "execution": {"contract": "nightshift.foreman-execution-profile/v2#work-item", "canonical_json": "{}"},
+        }
+        validator = Draft202012Validator(
+            schema("nightshift.worker-adapter.v2.schema.json")
+        )
+        validator.validate(document)
+        verification = {
+            "schema": "nightshift.adapter-contract-verification/v1",
+            "capabilities_raw_digest": DIGEST,
+            "profile_digest": DIGEST,
+            "request_digest": DIGEST,
+            "adapter_id": "fixture-adapter",
+            "adapter_protocol": "fixture.adapter/v1",
+            "adapter_version": "fixture.adapter/v1",
+            "adapter_executable_identity": DIGEST,
+            "disposition": "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED",
+        }
+        validator.validate(verification)
+        unknown = copy.deepcopy(document)
+        unknown["semantic_summary"] = "not admitted"
+        with self.assertRaises(ValidationError):
+            validator.validate(unknown)
+        too_many = copy.deepcopy(document)
+        too_many["predecessor_receipts"] = {
+            f"p{index}": document["predecessor_receipts"]["root-a"]
+            for index in range(1025)
+        }
+        with self.assertRaises(ValidationError):
+            validator.validate(too_many)
+        nested_unknown = copy.deepcopy(document)
+        nested_unknown["work_item"]["interpreted_result"] = "not admitted"
+        with self.assertRaises(ValidationError):
+            validator.validate(nested_unknown)
+
+    def test_receipt_timestamp_lexical_law_is_canonical_utc(self):
+        contract = schema("nightshift.worker-adapter.v2.schema.json")
+        validator = Draft202012Validator({
+            "$schema": contract["$schema"],
+            "$ref": "#/$defs/canonical_timestamp",
+            "$defs": contract["$defs"],
+        })
+        for admitted in (
+            "2026-08-29T16:00:01Z",
+            "2026-08-29T16:00:01.123Z",
+            "2026-08-29T16:00:01.123456Z",
+            "2026-08-29T16:00:01.000000100Z",
+        ):
+            validator.validate(admitted)
+        for refused in (
+            "2026-08-29T12:00:01-04:00",
+            "2026-08-29T16:00:01.1000Z",
+            "2026-08-29T16:00:01.123000Z",
+            "2026-08-29T16:00:01.0000001Z",
+        ):
+            with self.assertRaises(ValidationError):
+                validator.validate(refused)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
+use nightshiftd::packet::{GlobalConstraintsV1, NightshiftPacketV1, WorkItemV1};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -8,16 +9,22 @@ use thiserror::Error;
 
 use crate::{
     FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V1,
-    WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+    MAXIMUM_ADAPTER_TIMEOUT_SECONDS, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
+    MAXIMUM_WORKER_OUTPUT_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
+    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_ATTEMPT_BINDING_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2,
+    WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 
 const ADMISSION_DOMAIN: &[u8] = b"nightshift.foreman-admission.digest/v1\0";
 const PROFILE_DOMAIN_V2: &[u8] = b"nightshift.foreman-execution-profile.digest/v2\0";
-const START_DOMAIN: &[u8] = b"nightshift.worker-start-request.digest/v1\0";
+const START_DOMAIN_V2: &[u8] = b"nightshift.worker-start-request.digest/v2\0";
 const EVENT_DOMAIN: &[u8] = b"nightshift.worker-adapter-event.digest/v1\0";
 const TERMINAL_DOMAIN: &[u8] = b"nightshift.worker-terminal-receipt.digest/v1\0";
 const NOT_STARTED_DOMAIN: &[u8] = b"nightshift.work-item-not-started-receipt.digest/v1\0";
+const RETAINED_RAW_DOMAIN: &[u8] = b"nightshift.foreman-retained-raw.digest/v1\0";
+const CAPABILITIES_RAW_DOMAIN: &[u8] = b"nightshift.worker-adapter-capabilities.raw/v1\0";
+const WORKER_BRIEF_DOMAIN_V2: &[u8] = b"nightshift.worker-brief.digest/v2\0";
 
 #[derive(Debug, Error, Clone, Eq, PartialEq)]
 pub enum ContractError {
@@ -192,6 +199,158 @@ impl ExecutionProfileV2 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerAdapterCapabilitiesV1 {
+    pub schema: String,
+    pub adapter_id: String,
+    pub adapter_protocol: String,
+    pub adapter_version: String,
+    pub adapter_executable_identity: String,
+    pub provider_kind: String,
+    pub commands: Vec<String>,
+    pub approval_policy: String,
+    pub expected_start_request_schema: String,
+    pub event_schema: String,
+    pub terminal_receipt_schema: String,
+    pub target_effects_authorized: bool,
+}
+
+impl WorkerAdapterCapabilitiesV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        parse(bytes)
+    }
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1)?;
+        for (field, value) in [
+            ("adapter_id", &self.adapter_id),
+            ("adapter_protocol", &self.adapter_protocol),
+            ("adapter_version", &self.adapter_version),
+            ("provider_kind", &self.provider_kind),
+        ] {
+            id(field, value)?;
+        }
+        digest(
+            "adapter_executable_identity",
+            &self.adapter_executable_identity,
+        )?;
+        let expected = ["capabilities", "start", "resume", "status", "collect"];
+        if self.commands.iter().map(String::as_str).collect::<Vec<_>>() != expected
+            || self.approval_policy != "SURFACE_ONLY_NO_RESPONSE"
+            || self.expected_start_request_schema != WORKER_START_REQUEST_SCHEMA_V2
+            || self.event_schema != WORKER_ADAPTER_EVENT_SCHEMA_V1
+            || self.terminal_receipt_schema != WORKER_TERMINAL_RECEIPT_SCHEMA_V1
+            || self.target_effects_authorized
+        {
+            return Err(ContractError::InvalidField("adapter capabilities boundary"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterContractVerificationV1 {
+    pub schema: String,
+    pub capabilities_raw_digest: String,
+    pub profile_digest: String,
+    pub request_digest: String,
+    pub adapter_id: String,
+    pub adapter_protocol: String,
+    pub adapter_version: String,
+    pub adapter_executable_identity: String,
+    pub disposition: String,
+}
+
+pub fn verify_adapter_contract(
+    profile: &ExecutionProfileV2,
+    work_item_id: &str,
+    capabilities_raw: &[u8],
+    start: &WorkerStartRequestV2,
+) -> Result<AdapterContractVerificationV1, ContractError> {
+    profile.validate()?;
+    start.validate()?;
+    let capabilities = WorkerAdapterCapabilitiesV1::from_slice(capabilities_raw)?;
+    capabilities.validate()?;
+    if serde_jcs::to_vec(&capabilities).map_err(json_error)? != capabilities_raw {
+        return Err(ContractError::InvalidField("capabilities canonical bytes"));
+    }
+    let execution = profile
+        .work_items
+        .get(work_item_id)
+        .ok_or(ContractError::InvalidField("capability work item"))?;
+    let registration =
+        profile
+            .adapters
+            .get(&execution.adapter_id)
+            .ok_or(ContractError::InvalidField(
+                "capability adapter registration",
+            ))?;
+    if registration.adapter_id != capabilities.adapter_id
+        || registration.protocol != capabilities.adapter_protocol
+        || registration.adapter_version != capabilities.adapter_version
+        || registration.executable_identity != capabilities.adapter_executable_identity
+        || start.packet_digest != profile.packet_digest
+        || start.work_item_id != work_item_id
+        || start.adapter_id != registration.adapter_id
+        || start.adapter_protocol != registration.protocol
+        || start.adapter_version != registration.adapter_version
+        || start.workspace_identity != execution.workspace_identity
+        || start.provider_model_class != execution.provider_model_class
+        || start.timeout_seconds != profile.adapter_timeout_seconds
+        || start.maximum_output_bytes != profile.maximum_event_bytes
+    {
+        return Err(ContractError::InvalidField(
+            "profile capability start binding",
+        ));
+    }
+    Ok(AdapterContractVerificationV1 {
+        schema: "nightshift.adapter-contract-verification/v1".to_owned(),
+        capabilities_raw_digest: domain_digest_bytes(CAPABILITIES_RAW_DOMAIN, capabilities_raw),
+        profile_digest: profile.profile_digest.clone(),
+        request_digest: start.request_digest.clone(),
+        adapter_id: registration.adapter_id.clone(),
+        adapter_protocol: registration.protocol.clone(),
+        adapter_version: registration.adapter_version.clone(),
+        adapter_executable_identity: registration.executable_identity.clone(),
+        disposition: "EXACT_PROFILE_CAPABILITIES_START_BINDING_VERIFIED".to_owned(),
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerAttemptBindingV1 {
+    pub schema: String,
+    pub request_digest: String,
+    pub packet_digest: String,
+    pub run_id: String,
+    pub work_item_id: String,
+    pub attempt_id: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
+}
+
+impl WorkerAttemptBindingV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        parse(bytes)
+    }
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(&self.schema, WORKER_ATTEMPT_BINDING_SCHEMA_V1)?;
+        digest("request_digest", &self.request_digest)?;
+        digest("packet_digest", &self.packet_digest)?;
+        for (field, value) in [
+            ("run_id", &self.run_id),
+            ("work_item_id", &self.work_item_id),
+            ("attempt_id", &self.attempt_id),
+            ("adapter_id", &self.adapter_id),
+            ("adapter_version", &self.adapter_version),
+        ] {
+            id(field, value)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SchedulerStateV1 {
     WaitingDependencies,
@@ -217,9 +376,186 @@ impl SchedulerStateV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkerStartRequestV1 {
+pub struct RetainedRawBytesV1 {
+    pub retained_raw_digest: String,
+    pub encoding: String,
+    pub bytes_hex: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedPredecessorReceiptV1 {
+    pub receipt_kind: String,
+    pub retained_raw_digest: String,
+    pub encoding: String,
+    pub bytes_hex: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecognizedContractJsonV1 {
+    pub contract: String,
+    pub canonical_json: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerBriefV2 {
+    pub schema: String,
+    pub packet_digest: String,
+    pub packet_source: RetainedRawBytesV1,
+    pub work_item: RecognizedContractJsonV1,
+    pub predecessor_receipts: BTreeMap<String, RetainedPredecessorReceiptV1>,
+    pub global_constraints: RecognizedContractJsonV1,
+    pub execution: RecognizedContractJsonV1,
+}
+
+impl WorkerBriefV2 {
+    pub fn from_slice_for_start(
+        bytes: &[u8],
+        start: &WorkerStartRequestV2,
+    ) -> Result<Self, ContractError> {
+        if bytes.len() > MAXIMUM_WORKER_BRIEF_BYTES {
+            return Err(ContractError::InvalidField("worker brief size"));
+        }
+        let brief: Self = parse(bytes)?;
+        if serde_jcs::to_vec(&brief).map_err(json_error)? != bytes {
+            return Err(ContractError::InvalidField("worker brief canonical bytes"));
+        }
+        schema(&brief.schema, WORKER_BRIEF_BASIS_SCHEMA_V2)?;
+        digest("packet_digest", &brief.packet_digest)?;
+        if brief.packet_digest != start.packet_digest
+            || domain_digest_bytes(WORKER_BRIEF_DOMAIN_V2, bytes) != start.worker_brief_digest
+        {
+            return Err(ContractError::DigestMismatch("worker brief binding"));
+        }
+        if brief.predecessor_receipts.len() > MAXIMUM_PREDECESSOR_RECEIPTS {
+            return Err(ContractError::InvalidField("predecessor receipt count"));
+        }
+        let packet_raw = decode_retained(
+            &brief.packet_source.retained_raw_digest,
+            &brief.packet_source.encoding,
+            &brief.packet_source.bytes_hex,
+        )?;
+        let packet = NightshiftPacketV1::from_slice(&packet_raw)
+            .map_err(|_| ContractError::InvalidField("retained packet"))?;
+        packet
+            .validate_integrity()
+            .map_err(|_| ContractError::InvalidField("retained packet integrity"))?;
+        if packet.packet_digest != brief.packet_digest {
+            return Err(ContractError::DigestMismatch("retained packet"));
+        }
+        let selected = packet
+            .work_items
+            .iter()
+            .find(|item| item.id == start.work_item_id)
+            .ok_or(ContractError::InvalidField("retained work item"))?;
+        let recognized_work: WorkItemV1 = recognized(
+            &brief.work_item,
+            "nightshift.orientation-packet/v1#work-item",
+        )?;
+        if &recognized_work != selected {
+            return Err(ContractError::InvalidField("recognized work item"));
+        }
+        let recognized_global: GlobalConstraintsV1 = recognized(
+            &brief.global_constraints,
+            "nightshift.orientation-packet/v1#global-constraints",
+        )?;
+        if recognized_global != packet.global_constraints {
+            return Err(ContractError::InvalidField("recognized global constraints"));
+        }
+        let execution: WorkItemExecutionV1 = recognized(
+            &brief.execution,
+            "nightshift.foreman-execution-profile/v2#work-item",
+        )?;
+        if execution.adapter_id != start.adapter_id
+            || execution.workspace_identity != start.workspace_identity
+            || execution.provider_model_class != start.provider_model_class
+        {
+            return Err(ContractError::InvalidField("recognized execution binding"));
+        }
+        let expected: BTreeSet<_> = selected.dependencies.iter().cloned().collect();
+        let observed: BTreeSet<_> = brief.predecessor_receipts.keys().cloned().collect();
+        if expected != observed {
+            return Err(ContractError::InvalidField("predecessor receipt set"));
+        }
+        for (dependency, retained) in &brief.predecessor_receipts {
+            let raw = decode_retained(
+                &retained.retained_raw_digest,
+                &retained.encoding,
+                &retained.bytes_hex,
+            )?;
+            match retained.receipt_kind.as_str() {
+                "terminal" => {
+                    let receipt = TerminalReceiptV1::from_slice(&raw)?;
+                    receipt.validate()?;
+                    if receipt.packet_digest != brief.packet_digest
+                        || receipt.run_id != start.run_id
+                        || receipt.work_item_id != *dependency
+                    {
+                        return Err(ContractError::InvalidField("predecessor terminal binding"));
+                    }
+                }
+                "not_started" => {
+                    let receipt = NotStartedReceiptV1::from_slice(&raw)?;
+                    receipt.validate()?;
+                    if receipt.packet_digest != brief.packet_digest
+                        || receipt.run_id != start.run_id
+                        || receipt.work_item_id != *dependency
+                    {
+                        return Err(ContractError::InvalidField(
+                            "predecessor not-started binding",
+                        ));
+                    }
+                }
+                _ => return Err(ContractError::InvalidField("predecessor receipt kind")),
+            }
+        }
+        Ok(brief)
+    }
+}
+
+fn decode_retained(
+    retained_raw_digest: &str,
+    encoding: &str,
+    bytes_hex: &str,
+) -> Result<Vec<u8>, ContractError> {
+    digest("retained_raw_digest", retained_raw_digest)?;
+    if encoding != "hex"
+        || bytes_hex.len() > MAXIMUM_WORKER_BRIEF_BYTES.saturating_mul(2)
+        || bytes_hex.len() % 2 != 0
+    {
+        return Err(ContractError::InvalidField("retained raw encoding"));
+    }
+    let raw =
+        hex::decode(bytes_hex).map_err(|_| ContractError::InvalidField("retained raw hex"))?;
+    if domain_digest_bytes(RETAINED_RAW_DOMAIN, &raw) != retained_raw_digest {
+        return Err(ContractError::DigestMismatch("retained raw"));
+    }
+    Ok(raw)
+}
+
+fn recognized<T: DeserializeOwned + Serialize>(
+    wrapper: &RecognizedContractJsonV1,
+    expected_contract: &str,
+) -> Result<T, ContractError> {
+    if wrapper.contract != expected_contract {
+        return Err(ContractError::InvalidField("recognized contract"));
+    }
+    let value: T = serde_json::from_str(&wrapper.canonical_json).map_err(json_error)?;
+    if serde_jcs::to_string(&value).map_err(json_error)? != wrapper.canonical_json {
+        return Err(ContractError::InvalidField("recognized canonical JSON"));
+    }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerStartRequestV2 {
     pub schema: String,
     pub request_digest: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
     pub adapter_protocol: String,
     pub packet_digest: String,
     pub run_id: String,
@@ -235,19 +571,33 @@ pub struct WorkerStartRequestV1 {
     pub expected_receipt_schema: String,
 }
 
-impl WorkerStartRequestV1 {
+impl WorkerStartRequestV2 {
     pub fn seal(&mut self) -> Result<(), ContractError> {
-        self.request_digest = digest_without(self, "request_digest", START_DOMAIN)?;
+        self.request_digest = digest_without(self, "request_digest", START_DOMAIN_V2)?;
         self.validate()
     }
+    pub fn attempt_binding(&self) -> WorkerAttemptBindingV1 {
+        WorkerAttemptBindingV1 {
+            schema: WORKER_ATTEMPT_BINDING_SCHEMA_V1.to_owned(),
+            request_digest: self.request_digest.clone(),
+            packet_digest: self.packet_digest.clone(),
+            run_id: self.run_id.clone(),
+            work_item_id: self.work_item_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            adapter_id: self.adapter_id.clone(),
+            adapter_version: self.adapter_version.clone(),
+        }
+    }
     pub fn validate(&self) -> Result<(), ContractError> {
-        schema(&self.schema, WORKER_START_REQUEST_SCHEMA_V1)?;
+        schema(&self.schema, WORKER_START_REQUEST_SCHEMA_V2)?;
         digest("request_digest", &self.request_digest)?;
-        if digest_without(self, "request_digest", START_DOMAIN)? != self.request_digest {
+        if digest_without(self, "request_digest", START_DOMAIN_V2)? != self.request_digest {
             return Err(ContractError::DigestMismatch("request_digest"));
         }
         digest("packet_digest", &self.packet_digest)?;
         for (field, value) in [
+            ("adapter_id", &self.adapter_id),
+            ("adapter_version", &self.adapter_version),
             ("adapter_protocol", &self.adapter_protocol),
             ("run_id", &self.run_id),
             ("work_item_id", &self.work_item_id),
@@ -259,7 +609,9 @@ impl WorkerStartRequestV1 {
         }
         digest("worker_brief_digest", &self.worker_brief_digest)?;
         if self.timeout_seconds == 0
+            || self.timeout_seconds > MAXIMUM_ADAPTER_TIMEOUT_SECONDS
             || self.maximum_output_bytes < 1024
+            || self.maximum_output_bytes > MAXIMUM_WORKER_OUTPUT_BYTES
             || !self.recursive_worker_swarms_forbidden
             || self.approval_policy != "SURFACE_ONLY_NO_RESPONSE"
             || self.expected_receipt_schema != WORKER_TERMINAL_RECEIPT_SCHEMA_V1
@@ -343,11 +695,11 @@ impl AdapterEventV1 {
         if self
             .message
             .as_ref()
-            .is_some_and(|value| value.len() > 65_536)
-            || self.extensions.len() > 64
+            .is_some_and(|value| value.chars().count() > 65_536)
         {
             return Err(ContractError::InvalidField("adapter event bounds"));
         }
+        extensions(&self.extensions)?;
         for (field, value) in [
             ("provider_identity", &self.provider_identity),
             ("model_identity", &self.model_identity),
@@ -442,7 +794,10 @@ pub struct TerminalReceiptV1 {
 
 impl TerminalReceiptV1 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
-        parse(bytes)
+        let value: Value = parse(bytes)?;
+        canonical_timestamp_value("started_at", &value)?;
+        canonical_timestamp_value("ended_at", &value)?;
+        serde_json::from_value(value).map_err(json_error)
     }
     pub fn seal(&mut self) -> Result<(), ContractError> {
         self.receipt_digest = digest_without(self, "receipt_digest", TERMINAL_DOMAIN)?;
@@ -490,9 +845,7 @@ impl TerminalReceiptV1 {
         for question in &self.human_questions {
             question.validate()?;
         }
-        if self.extensions.len() > 64 {
-            return Err(ContractError::InvalidField("extensions"));
-        }
+        extensions(&self.extensions)?;
         Ok(())
     }
 }
@@ -517,7 +870,9 @@ pub struct NotStartedReceiptV1 {
 
 impl NotStartedReceiptV1 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
-        parse(bytes)
+        let value: Value = parse(bytes)?;
+        canonical_timestamp_value("recorded_at", &value)?;
+        serde_json::from_value(value).map_err(json_error)
     }
     pub fn seal(&mut self) -> Result<(), ContractError> {
         self.receipt_digest = digest_without(self, "receipt_digest", NOT_STARTED_DOMAIN)?;
@@ -543,11 +898,86 @@ impl NotStartedReceiptV1 {
         for question in &self.human_questions {
             question.validate()?;
         }
-        if self.extensions.len() > 64 {
-            return Err(ContractError::InvalidField("extensions"));
-        }
+        extensions(&self.extensions)?;
         Ok(())
     }
+}
+
+fn extensions(values: &BTreeMap<String, Value>) -> Result<(), ContractError> {
+    if values.len() > 64 {
+        return Err(ContractError::InvalidField("extensions"));
+    }
+    for (key, value) in values {
+        id("RFC8785 object key", key)?;
+        interoperable_json(value)?;
+    }
+    Ok(())
+}
+
+fn interoperable_json(value: &Value) -> Result<(), ContractError> {
+    const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+    match value {
+        Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
+        Value::Number(number) => {
+            let admitted = if let Some(value) = number.as_i64() {
+                (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value)
+            } else if let Some(value) = number.as_u64() {
+                value <= MAX_SAFE_INTEGER as u64
+            } else {
+                number.as_f64().is_some_and(|value| {
+                    value.is_finite() && value.abs() <= MAX_SAFE_INTEGER as f64
+                })
+            };
+            if admitted {
+                Ok(())
+            } else {
+                Err(ContractError::InvalidField("RFC8785 number"))
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                interoperable_json(value)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            if values.len() > 64 {
+                return Err(ContractError::InvalidField("extensions"));
+            }
+            for (key, value) in values {
+                id("RFC8785 object key", key)?;
+                interoperable_json(value)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn json_error(error: impl std::fmt::Display) -> ContractError {
+    ContractError::Json(error.to_string())
+}
+
+fn canonical_timestamp_value(field: &'static str, object: &Value) -> Result<(), ContractError> {
+    let raw = object
+        .as_object()
+        .and_then(|values| values.get(field))
+        .and_then(Value::as_str)
+        .ok_or(ContractError::InvalidField(field))?;
+    let parsed = DateTime::parse_from_rfc3339(raw)
+        .map_err(|_| ContractError::InvalidField(field))?
+        .with_timezone(&Utc);
+    let canonical = serde_json::to_value(parsed).map_err(json_error)?;
+    if canonical.as_str() != Some(raw) {
+        return Err(ContractError::InvalidField(field));
+    }
+    Ok(())
+}
+
+fn domain_digest_bytes(domain: &[u8], bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(bytes);
+    format!("sha256:{:x}", digest.finalize())
 }
 
 fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ContractError> {
@@ -624,7 +1054,7 @@ fn custody_root(value: &str) -> Result<(), ContractError> {
 }
 
 fn text(field: &'static str, value: &str) -> Result<(), ContractError> {
-    if value.trim().is_empty() || value.len() > 65_536 {
+    if value.trim().is_empty() || value.chars().count() > 65_536 {
         return Err(ContractError::InvalidField(field));
     }
     Ok(())

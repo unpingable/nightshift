@@ -6,12 +6,15 @@ use std::{
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
-    AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, ExecutionProfileV2,
-    ForemanAdmissionV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
-    ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
-    WorkItemExecutionV1, FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
-    WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+    verify_adapter_contract, AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2,
+    ContractError, ExecutionProfileV2, ForemanAdmissionV1, ForemanError, ForemanStore,
+    HumanQuestionV1, NotStartedReceiptV1, ReceiptRepositoryV1, SchedulerStateV1,
+    TeardownDeclarationV1, TerminalReceiptV1, WorkItemExecutionV1, WorkerAdapterCapabilitiesV1,
+    WorkerBriefV2, WorkerStartRequestV2, FOREMAN_ADMISSION_SCHEMA_V1,
+    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_WORKER_BRIEF_BYTES,
+    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
+    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
+    WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshiftd::packet::{
     AuthoringIdentityV1, CampaignIdentityV1, CanonicalizationV1, ExactWorkRefV1,
@@ -24,6 +27,29 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
+
+fn bind_predecessor_fixture(
+    mut brief: Value,
+    dependency: &str,
+    receipt_raw: &[u8],
+    request: &WorkerStartRequestV2,
+) -> (Vec<u8>, WorkerStartRequestV2) {
+    let mut retained = Sha256::new();
+    retained.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    retained.update(receipt_raw);
+    brief["predecessor_receipts"][dependency]["retained_raw_digest"] =
+        Value::String(format!("sha256:{:x}", retained.finalize()));
+    brief["predecessor_receipts"][dependency]["bytes_hex"] =
+        Value::String(hex::encode(receipt_raw));
+    let raw = serde_jcs::to_vec(&brief).unwrap();
+    let mut rebound = request.clone();
+    let mut digest = Sha256::new();
+    digest.update(b"nightshift.worker-brief.digest/v2\0");
+    digest.update(&raw);
+    rebound.worker_brief_digest = format!("sha256:{:x}", digest.finalize());
+    rebound.seal().unwrap();
+    (raw, rebound)
+}
 
 fn instant(second: u32) -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 29, 16, 0, second).unwrap()
@@ -217,7 +243,7 @@ fn setup() -> (
 
 fn terminal(
     packet: &NightshiftPacketV1,
-    request: &nightshift_foreman::WorkerStartRequestV1,
+    request: &nightshift_foreman::WorkerStartRequestV2,
     state: &str,
     classification: &str,
 ) -> TerminalReceiptV1 {
@@ -345,11 +371,32 @@ fn admission_is_closed_bound_and_current() {
     assert!(
         ExecutionProfileV2::from_slice(&serde_json::to_vec(&unversioned_adapter).unwrap()).is_err()
     );
+
+    let capabilities = WorkerAdapterCapabilitiesV1 {
+        schema: WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1.into(),
+        adapter_id: "fixture-adapter".into(),
+        adapter_protocol: "fixture.adapter/v1".into(),
+        adapter_version: "fixture.adapter/v1".into(),
+        adapter_executable_identity: format!("sha256:{}", "e".repeat(64)),
+        provider_kind: "fixture-provider".into(),
+        commands: ["capabilities", "start", "resume", "status", "collect"]
+            .map(str::to_owned)
+            .to_vec(),
+        approval_policy: "SURFACE_ONLY_NO_RESPONSE".into(),
+        expected_start_request_schema: WORKER_START_REQUEST_SCHEMA_V2.into(),
+        event_schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+        terminal_receipt_schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.into(),
+        target_effects_authorized: false,
+    };
+    capabilities.validate().unwrap();
+    let mut widened = capabilities;
+    widened.commands.push("approve".into());
+    assert!(widened.validate().is_err());
 }
 
 #[test]
 fn wal_journal_locks_restart_and_classification_separation_qualify() {
-    let (directory, store, packet, _, _) = setup();
+    let (directory, store, packet, _, profile) = setup();
     assert_eq!(store.journal_mode().unwrap().to_ascii_lowercase(), "wal");
     let initial = store.projection("run-fixture").unwrap();
     let root_a_initial = initial
@@ -380,6 +427,96 @@ fn wal_journal_locks_restart_and_classification_separation_qualify() {
     let root_a = store
         .prepare_attempt("run-fixture", "root-a", instant(1))
         .unwrap();
+    assert_eq!(root_a.schema, WORKER_START_REQUEST_SCHEMA_V2);
+    assert_eq!(root_a.adapter_id, "fixture-adapter");
+    assert_eq!(root_a.adapter_version, "fixture.adapter/v1");
+    let mut excessive_timeout = root_a.clone();
+    excessive_timeout.timeout_seconds = 86_401;
+    assert!(matches!(
+        excessive_timeout.seal(),
+        Err(ContractError::InvalidField("worker start boundary"))
+    ));
+    let mut excessive_output = root_a.clone();
+    excessive_output.maximum_output_bytes = 16 * 1024 * 1024 + 1;
+    assert!(matches!(
+        excessive_output.seal(),
+        Err(ContractError::InvalidField("worker start boundary"))
+    ));
+    let registration = &profile.adapters["fixture-adapter"];
+    let capabilities = WorkerAdapterCapabilitiesV1 {
+        schema: WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1.into(),
+        adapter_id: registration.adapter_id.clone(),
+        adapter_protocol: registration.protocol.clone(),
+        adapter_version: registration.adapter_version.clone(),
+        adapter_executable_identity: registration.executable_identity.clone(),
+        provider_kind: "fixture-provider".into(),
+        commands: ["capabilities", "start", "resume", "status", "collect"]
+            .map(str::to_owned)
+            .to_vec(),
+        approval_policy: "SURFACE_ONLY_NO_RESPONSE".into(),
+        expected_start_request_schema: WORKER_START_REQUEST_SCHEMA_V2.into(),
+        event_schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+        terminal_receipt_schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.into(),
+        target_effects_authorized: false,
+    };
+    let capabilities_raw = serde_jcs::to_vec(&capabilities).unwrap();
+    let verified = verify_adapter_contract(&profile, "root-a", &capabilities_raw, &root_a).unwrap();
+    assert_eq!(verified.adapter_version, "fixture.adapter/v1");
+    assert!(verified.capabilities_raw_digest.starts_with("sha256:"));
+    let mut capabilities_digest = Sha256::new();
+    capabilities_digest.update(b"nightshift.worker-adapter-capabilities.raw/v1\0");
+    capabilities_digest.update(&capabilities_raw);
+    assert_eq!(
+        verified.capabilities_raw_digest,
+        format!("sha256:{:x}", capabilities_digest.finalize())
+    );
+    assert!(verify_adapter_contract(
+        &profile,
+        "root-a",
+        &serde_json::to_vec_pretty(&capabilities).unwrap(),
+        &root_a,
+    )
+    .is_err());
+    let mut substituted_capabilities = capabilities.clone();
+    substituted_capabilities.adapter_executable_identity = format!("sha256:{}", "f".repeat(64));
+    assert!(verify_adapter_contract(
+        &profile,
+        "root-a",
+        &serde_jcs::to_vec(&substituted_capabilities).unwrap(),
+        &root_a,
+    )
+    .is_err());
+    let mut substituted_start = root_a.clone();
+    substituted_start.adapter_version = "fixture.adapter/v2".into();
+    substituted_start.seal().unwrap();
+    assert!(
+        verify_adapter_contract(&profile, "root-a", &capabilities_raw, &substituted_start,)
+            .is_err()
+    );
+    let binding = root_a.attempt_binding();
+    binding.validate().unwrap();
+    assert_eq!(binding.request_digest, root_a.request_digest);
+    let brief = store.worker_brief("run-fixture", "root-a").unwrap();
+    let brief_value: Value = serde_json::from_slice(&brief).unwrap();
+    WorkerBriefV2::from_slice_for_start(&brief, &root_a).unwrap();
+    assert_eq!(brief_value["schema"], WORKER_BRIEF_BASIS_SCHEMA_V2);
+    assert_eq!(brief_value["packet_digest"], packet.packet_digest);
+    assert_eq!(
+        serde_json::from_str::<Value>(brief_value["work_item"]["canonical_json"].as_str().unwrap())
+            .unwrap()["id"],
+        "root-a"
+    );
+    assert_eq!(
+        hex::decode(brief_value["packet_source"]["bytes_hex"].as_str().unwrap()).unwrap(),
+        packet.canonical_bytes().unwrap()
+    );
+    let mut digest = Sha256::new();
+    digest.update(b"nightshift.worker-brief.digest/v2\0");
+    digest.update(&brief);
+    assert_eq!(
+        root_a.worker_brief_digest,
+        format!("sha256:{:x}", digest.finalize())
+    );
     assert!(matches!(
         store.prepare_attempt("run-fixture", "root-c", instant(1)),
         Err(ForemanError::ResourceUnavailable(_))
@@ -672,11 +809,35 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
     assert!(item.accepted_terminal_outcome.is_none());
 
     assert!(store.accept_terminal_receipt(b"{}").is_err());
+    for number in [
+        serde_json::json!(1e-7),
+        serde_json::json!(1e-6),
+        serde_json::json!(1.25),
+        serde_json::json!(-0.0),
+        serde_json::json!(9_007_199_254_740_991_i64),
+        serde_json::json!(-9_007_199_254_740_991_i64),
+    ] {
+        let mut admitted = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+        admitted.extensions.insert("number".into(), number);
+        admitted.seal().unwrap();
+        let canonical = serde_jcs::to_vec(&admitted).unwrap();
+        let parsed = TerminalReceiptV1::from_slice(&canonical).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(serde_jcs::to_vec(&parsed).unwrap(), canonical);
+    }
+
     let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
     receipt.thread_identity = Some("thread:fixture".into());
     receipt.turn_identity = Some("turn:fixture".into());
     receipt.queue_identity = Some("queue:fixture".into());
     receipt.seal().unwrap();
+    let mut wrong_attempt_receipt = receipt.clone();
+    wrong_attempt_receipt.attempt_id = "attempt-substitution".into();
+    wrong_attempt_receipt.seal().unwrap();
+    assert!(matches!(
+        store.accept_terminal_receipt(&serde_jcs::to_vec(&wrong_attempt_receipt).unwrap()),
+        Err(ForemanError::IdentityMismatch("attempt_id"))
+    ));
     for field in [
         "adapter_version",
         "provider_identity",
@@ -743,6 +904,273 @@ fn provider_completion_wrong_identity_and_receipt_bounds_fail_closed() {
     assert!(matches!(
         store.record_resume_requested("run-fixture", "root-a", &request.attempt_id, instant(6)),
         Err(ForemanError::Transition(_))
+    ));
+}
+
+#[test]
+fn worker_brief_v2_digest_has_an_independent_fixed_vector() {
+    let mut v2 = Sha256::new();
+    v2.update(b"nightshift.worker-brief.digest/v2\0");
+    v2.update(b"{}");
+    assert_eq!(
+        format!("sha256:{:x}", v2.finalize()),
+        "sha256:ddd2a21b47c3abf533d27d85a53eb3ac93805d5d938f612929ea410a6ec705e7"
+    );
+    let mut retained = Sha256::new();
+    retained.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    retained.update(b"{}");
+    assert_eq!(
+        format!("sha256:{:x}", retained.finalize()),
+        "sha256:defbb1499ef874d99cdf029e5c1dc04dc253d0fc1e0f88f966278cf3934302fe"
+    );
+    let mut capabilities = Sha256::new();
+    capabilities.update(b"nightshift.worker-adapter-capabilities.raw/v1\0");
+    capabilities.update(b"{}");
+    assert_eq!(
+        format!("sha256:{:x}", capabilities.finalize()),
+        "sha256:4dbc0996b158b29f3e54274c8fd1ccb774422f75fb38b3fd1a1aae0662ff5c4c"
+    );
+    let mut v1 = Sha256::new();
+    v1.update(b"nightshift.worker-brief.digest/v1\0");
+    v1.update(b"{}");
+    assert_ne!(
+        format!("sha256:{:x}", v1.finalize()),
+        "sha256:ddd2a21b47c3abf533d27d85a53eb3ac93805d5d938f612929ea410a6ec705e7"
+    );
+}
+
+#[test]
+fn rfc8785_cross_language_vector_covers_numeric_unicode_and_escape_edges() {
+    let value = serde_json::json!({
+        "numbers": [
+            1e-7, 1e-6, 1e20, 1e21, -0.0,
+            9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64
+        ],
+        "unicode": {"€": "euro", "\r": "cr", "דּ": "hebrew", "😀": "grin", "\u{0080}": "control"},
+        "escapes": "\u{0008}\t\n\u{000c}\r\"\\\0",
+    });
+    let canonical = serde_json_canonicalizer::to_vec(&value).unwrap();
+    let expected = "{\"escapes\":\"\\b\\t\\n\\f\\r\\\"\\\\\\u0000\",\"numbers\":[1e-7,0.000001,100000000000000000000,1e+21,0,9007199254740991,-9007199254740991],\"unicode\":{\"\\r\":\"cr\",\"\u{0080}\":\"control\",\"€\":\"euro\",\"😀\":\"grin\",\"דּ\":\"hebrew\"}}";
+    assert_eq!(canonical, expected.as_bytes());
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&canonical)),
+        "3e01e561f7ea8f1c5774a2d6f5608067675a43316cb41c9d91cdcd2440b4d90f"
+    );
+
+    let admitted = serde_json::json!({
+        "numbers": [
+            1e-7, 1e-6, 1.25, -0.0,
+            9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64
+        ],
+        "unicode_values": ["€", "\u{0080}", "😀", "דּ"],
+        "escapes": "\u{0008}\t\n\u{000c}\r\"\\\0",
+    });
+    assert_eq!(
+        serde_jcs::to_vec(&admitted).unwrap(),
+        serde_json_canonicalizer::to_vec(&admitted).unwrap()
+    );
+}
+
+#[test]
+fn worker_receipts_enforce_a_serialize_parse_closed_numeric_domain() {
+    let (_directory, store, packet, _, _) = setup();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    receipt.extensions.insert(
+        "nested".into(),
+        serde_json::json!({"unsafe_integer": 9_007_199_254_740_992_u64}),
+    );
+    assert!(matches!(
+        receipt.seal(),
+        Err(ContractError::InvalidField("RFC8785 number"))
+    ));
+
+    let mut integral_float = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    integral_float.extensions.insert(
+        "nested".into(),
+        serde_json::json!({"unsafe_integral_float": 1e20}),
+    );
+    assert!(matches!(
+        integral_float.seal(),
+        Err(ContractError::InvalidField("RFC8785 number"))
+    ));
+
+    let mut top_level_unicode_key =
+        terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    top_level_unicode_key.extensions.insert(
+        "😀".into(),
+        serde_json::json!("not in the admitted object-key alphabet"),
+    );
+    assert!(matches!(
+        top_level_unicode_key.seal(),
+        Err(ContractError::InvalidField("RFC8785 object key"))
+    ));
+
+    let mut nested_unicode_key = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    nested_unicode_key.extensions.insert(
+        "nested".into(),
+        serde_json::json!({"😀": "not in the admitted object-key alphabet"}),
+    );
+    assert!(matches!(
+        nested_unicode_key.seal(),
+        Err(ContractError::InvalidField("RFC8785 object key"))
+    ));
+}
+
+#[test]
+fn worker_brief_preserves_exact_packet_and_predecessor_receipt_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let packet = packet();
+    let packet_raw = serde_json::to_vec_pretty(&packet).unwrap();
+    let admission = admission(&packet);
+    let profile = profile(&packet, &admission);
+    let store = ForemanStore::open(directory.path().join("foreman.sqlite")).unwrap();
+    store
+        .admit(
+            &packet_raw,
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            instant(0),
+        )
+        .unwrap();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-RAW", "INDEPENDENT-RAW");
+    receipt.extensions.insert(
+        "raw_extension".into(),
+        serde_json::json!({"unknown": ["preserve", "exact", "bytes"]}),
+    );
+    receipt.seal().unwrap();
+    let receipt_raw = serde_json::to_vec_pretty(&receipt).unwrap();
+    store.accept_terminal_receipt(&receipt_raw).unwrap();
+    assert_eq!(
+        store
+            .projection("run-fixture")
+            .unwrap()
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "dependent")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::ReadyEntryEvaluation
+    );
+
+    let dependent_request = store
+        .prepare_attempt("run-fixture", "dependent", instant(3))
+        .unwrap();
+    let brief_raw = store.worker_brief("run-fixture", "dependent").unwrap();
+    assert!(brief_raw.len() <= MAXIMUM_WORKER_BRIEF_BYTES);
+    let brief: Value = serde_json::from_slice(&brief_raw).unwrap();
+    let mut bad_digest_receipt: Value = serde_json::from_slice(&receipt_raw).unwrap();
+    bad_digest_receipt["receipt_digest"] = Value::String(format!("sha256:{}", "0".repeat(64)));
+    let (bad_digest_brief, bad_digest_request) = bind_predecessor_fixture(
+        brief.clone(),
+        "root-a",
+        &serde_jcs::to_vec(&bad_digest_receipt).unwrap(),
+        &dependent_request,
+    );
+    assert!(WorkerBriefV2::from_slice_for_start(&bad_digest_brief, &bad_digest_request,).is_err());
+    let mut wrong_run_receipt = receipt.clone();
+    wrong_run_receipt.run_id = "run-substituted".into();
+    wrong_run_receipt.seal().unwrap();
+    let (wrong_run_brief, wrong_run_request) = bind_predecessor_fixture(
+        brief.clone(),
+        "root-a",
+        &serde_jcs::to_vec(&wrong_run_receipt).unwrap(),
+        &dependent_request,
+    );
+    assert!(WorkerBriefV2::from_slice_for_start(&wrong_run_brief, &wrong_run_request,).is_err());
+    WorkerBriefV2::from_slice_for_start(&brief_raw, &dependent_request).unwrap();
+    let mut substituted_brief = brief.clone();
+    let mut substituted_packet: Value = serde_json::from_slice(&packet_raw).unwrap();
+    substituted_packet["work_items"][1]["track"] = Value::String("substituted-track".into());
+    let substituted_packet_raw = serde_json::to_vec_pretty(&substituted_packet).unwrap();
+    let mut retained_digest = Sha256::new();
+    retained_digest.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+    retained_digest.update(&substituted_packet_raw);
+    substituted_brief["packet_source"]["retained_raw_digest"] =
+        Value::String(format!("sha256:{:x}", retained_digest.finalize()));
+    substituted_brief["packet_source"]["bytes_hex"] =
+        Value::String(hex::encode(&substituted_packet_raw));
+    let substituted_raw = serde_jcs::to_vec(&substituted_brief).unwrap();
+    let mut substituted_request = dependent_request.clone();
+    let mut brief_digest = Sha256::new();
+    brief_digest.update(b"nightshift.worker-brief.digest/v2\0");
+    brief_digest.update(&substituted_raw);
+    substituted_request.worker_brief_digest = format!("sha256:{:x}", brief_digest.finalize());
+    substituted_request.seal().unwrap();
+    assert!(WorkerBriefV2::from_slice_for_start(&substituted_raw, &substituted_request,).is_err());
+    assert_eq!(brief["schema"], WORKER_BRIEF_BASIS_SCHEMA_V2);
+    let recognized_item: Value =
+        serde_json::from_str(brief["work_item"]["canonical_json"].as_str().unwrap()).unwrap();
+    assert_eq!(recognized_item["id"], "dependent");
+    assert_eq!(
+        recognized_item["dependencies"],
+        serde_json::json!(["root-a"])
+    );
+    assert_eq!(
+        hex::decode(brief["packet_source"]["bytes_hex"].as_str().unwrap()).unwrap(),
+        packet_raw
+    );
+    let predecessor = &brief["predecessor_receipts"]["root-a"];
+    assert_eq!(predecessor["receipt_kind"], "terminal");
+    assert_eq!(
+        hex::decode(predecessor["bytes_hex"].as_str().unwrap()).unwrap(),
+        receipt_raw
+    );
+    assert!(String::from_utf8(receipt_raw)
+        .unwrap()
+        .contains("raw_extension"));
+}
+
+#[test]
+fn worker_brief_total_bound_refuses_oversized_exact_predecessor_custody() {
+    let directory = tempfile::tempdir().unwrap();
+    let packet = packet();
+    let admission = admission(&packet);
+    let mut profile = profile(&packet, &admission);
+    profile.maximum_receipt_bytes = 16 * 1024 * 1024;
+    profile.seal().unwrap();
+    let store = ForemanStore::open(directory.path().join("foreman.sqlite")).unwrap();
+    store
+        .admit(
+            &packet.canonical_bytes().unwrap(),
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            instant(0),
+        )
+        .unwrap();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-RAW", "INDEPENDENT-RAW");
+    receipt.extensions.insert(
+        "bounded_fixture".into(),
+        Value::String("x".repeat(MAXIMUM_WORKER_BRIEF_BYTES / 2 + 4096)),
+    );
+    receipt.seal().unwrap();
+    let raw = serde_jcs::to_vec(&receipt).unwrap();
+    assert!(raw.len() < profile.maximum_receipt_bytes as usize);
+    store.accept_terminal_receipt(&raw).unwrap();
+    assert!(matches!(
+        store.prepare_attempt("run-fixture", "dependent", instant(3)),
+        Err(ForemanError::InputTooLarge("worker brief"))
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .find(|item| item.work_item_id == "dependent")
+        .unwrap()
+        .active_attempt_id
+        .is_none());
+    assert!(matches!(
+        store.worker_brief("run-fixture", "dependent"),
+        Err(ForemanError::InputTooLarge("worker brief"))
     ));
 }
 
@@ -893,6 +1321,10 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
         reader.projection("run-fixture").unwrap().work_items.len(),
         4
     );
+    assert!(!reader
+        .worker_brief("run-fixture", "root-a")
+        .unwrap()
+        .is_empty());
     assert!(!reader.export_events("run-fixture").unwrap().is_empty());
     drop(reader);
     assert_eq!(schema_snapshot(&database), schema_before_live);
@@ -1082,12 +1514,103 @@ fn query_only_snapshot_refuses_individually_valid_cross_contract_substitution() 
 }
 
 #[test]
+fn receipt_and_event_text_bounds_count_unicode_codepoints() {
+    let (_directory, store, packet, _, _) = setup();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "é", "EXACT-CLASSIFICATION");
+    receipt.state = "é".repeat(65_536);
+    receipt.seal().unwrap();
+    receipt.state.push('é');
+    assert!(matches!(
+        receipt.seal(),
+        Err(ContractError::InvalidField("state"))
+    ));
+
+    let mut event = AdapterEventV1 {
+        schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.into(),
+        event_digest: format!("sha256:{}", "0".repeat(64)),
+        event_id: "event-unicode-bound".into(),
+        packet_digest: packet.packet_digest.clone(),
+        run_id: request.run_id.clone(),
+        work_item_id: request.work_item_id.clone(),
+        attempt_id: request.attempt_id.clone(),
+        adapter_id: request.adapter_id.clone(),
+        adapter_version: request.adapter_version.clone(),
+        occurred_at: instant(2),
+        kind: AdapterEventKindV1::Checkpoint,
+        provider_identity: None,
+        model_identity: None,
+        session_identity: None,
+        thread_identity: None,
+        turn_identity: None,
+        queue_identity: None,
+        message: Some("é".repeat(65_536)),
+        human_question: None,
+        extensions: BTreeMap::new(),
+    };
+    event.seal().unwrap();
+    event.message.as_mut().unwrap().push('é');
+    assert!(matches!(
+        event.seal(),
+        Err(ContractError::InvalidField("adapter event bounds"))
+    ));
+}
+
+#[test]
+fn receipt_timestamp_lexemes_are_canonical_utc_and_nanosecond_exact() {
+    let (_directory, store, packet, _, _) = setup();
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let mut receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    receipt.started_at = chrono::DateTime::parse_from_rfc3339("2026-08-29T16:00:01.000000100Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    receipt.ended_at = chrono::DateTime::parse_from_rfc3339("2026-08-29T16:00:05.123456Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    receipt.seal().unwrap();
+    let raw = serde_jcs::to_vec(&receipt).unwrap();
+    assert_eq!(TerminalReceiptV1::from_slice(&raw).unwrap(), receipt);
+
+    for substituted in [
+        "2026-08-29T12:00:01-04:00",
+        "2026-08-29T16:00:01.1000Z",
+        "2026-08-29T16:00:01.123000Z",
+        "2026-08-29T16:00:01.0000001Z",
+    ] {
+        let mut value = serde_json::to_value(&receipt).unwrap();
+        value["started_at"] = Value::String(substituted.into());
+        assert!(matches!(
+            TerminalReceiptV1::from_slice(&serde_json::to_vec(&value).unwrap()),
+            Err(ContractError::InvalidField("started_at"))
+        ));
+    }
+
+    let mut absent = not_started(&packet, "root-b");
+    absent.recorded_at = chrono::DateTime::parse_from_rfc3339("2026-08-29T16:00:06.123Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    absent.seal().unwrap();
+    let raw = serde_jcs::to_vec(&absent).unwrap();
+    assert_eq!(NotStartedReceiptV1::from_slice(&raw).unwrap(), absent);
+    let mut value = serde_json::to_value(&absent).unwrap();
+    value["recorded_at"] = Value::String("2026-08-29T16:00:06.123000Z".into());
+    assert!(matches!(
+        NotStartedReceiptV1::from_slice(&serde_json::to_vec(&value).unwrap()),
+        Err(ContractError::InvalidField("recorded_at"))
+    ));
+}
+
+#[test]
 fn checked_in_contract_schemas_are_closed_json_documents() {
     for bytes in [
         include_bytes!("../../../schemas/nightshift.foreman-admission.v1.schema.json").as_slice(),
         include_bytes!("../../../schemas/nightshift.foreman-execution-profile.v2.schema.json")
             .as_slice(),
-        include_bytes!("../../../schemas/nightshift.worker-adapter.v1.schema.json").as_slice(),
+        include_bytes!("../../../schemas/nightshift.worker-adapter.v2.schema.json").as_slice(),
     ] {
         let schema: Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
