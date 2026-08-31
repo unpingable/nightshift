@@ -23,9 +23,10 @@ The accepted owner subjects consumed by this contract are:
 
 These pins establish protocol and test custody, not an inherited executable,
 provider session, credential, or dispatch authority. Nightshift independently
-reopens canonical mapper snapshot bytes, verifies binding/evidence/snapshot
-digests and exact identity relations, then projects only the closed owner
-meanings.
+reopens canonical mapper snapshot bytes, verifies the exact vendored schema
+SHA, executes that schema against the retained snapshot, verifies
+binding/evidence/snapshot digests and exact identity relations, then projects
+only the closed owner meanings.
 
 The checked deterministic mapper vectors are retained byte-exactly with plain
 SHA-256 custody:
@@ -159,6 +160,11 @@ representation `RFC8785_SWITCHYARD_MAPPER_SNAPSHOT` and a 16 MiB ceiling.
 This contract checkpoint does not yet claim a cumulative journal-history bound;
 that metadata-first pre-acquisition invariant belongs to the held storage
 implementation and must qualify before journal mutation is accepted.
+The pure contract graph does require the exact ordered prior-deferral slice for
+the same work attempt. It binds dispatch/backoff ordinals and exact identities,
+checked-adds every retained deferral duration, and refuses a current deferral
+whose cumulative duration exceeds the immutable policy maximum. Storage must
+later prove that the supplied slice is the complete append-only history.
 
 The worker-adapter successor is V3. V2 remains readable and unchanged, but a
 run admitted with an execution-availability requirement refuses the V2 start

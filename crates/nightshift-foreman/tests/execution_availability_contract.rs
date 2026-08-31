@@ -29,6 +29,33 @@ fn canonical<T: Serialize>(value: &T) -> Vec<u8> {
     serde_jcs::to_vec(value).unwrap()
 }
 
+fn mapper_raw(value: Value) -> Value {
+    let mut bytes = serde_json::to_vec(&value).unwrap();
+    bytes.push(b'\n');
+    json!({
+        "representation": "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+        "byte_length": bytes.len(),
+        "sha256": format!("sha256:{:x}", Sha256::digest(&bytes)),
+        "encoding": "hex",
+        "bytes_hex": hex::encode(bytes),
+    })
+}
+
+fn reseal_mapper_snapshot(mut snapshot: Value) -> Value {
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        *record = seal_value(
+            record.clone(),
+            "evidence_digest",
+            b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+        );
+    }
+    seal_value(
+        snapshot,
+        "snapshot_digest",
+        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+    )
+}
+
 type SnapshotMutation = (&'static str, fn(&mut Value));
 
 fn policy() -> ExecutionAvailabilityPolicyV1 {
@@ -211,7 +238,7 @@ fn closed_contracts_bind_independent_quota_execution_and_dispatch_identities() {
         provider_id: "openai".to_owned(),
         model_id: "gpt-5.6-sol".to_owned(),
         model_class: "large".to_owned(),
-        observed_at: time("2026-08-31T12:01:01Z"),
+        observed_at: time("2026-08-31T08:00:00.100Z"),
         received_at: time("2026-08-31T12:01:02Z"),
         expires_at: time("2026-08-31T12:02:02Z"),
         state: ExecutionAvailabilityStateV1::ModelAtCapacity,
@@ -264,6 +291,7 @@ fn closed_contracts_bind_independent_quota_execution_and_dispatch_identities() {
         &dispatch,
         &observation,
         &disposition,
+        &[],
         Some(&deferred),
     )
     .unwrap();
@@ -478,6 +506,14 @@ fn observation_for_disposition(
                 Some(serde_json::from_value(record["raw"].clone()).unwrap())
             }
         });
+    let observed_at = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == source_kind)
+        .and_then(|record| record["normalized"]["observed_at_ms"].as_i64())
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or(disposition.received_at);
     let state = match disposition.disposition {
         ProviderAdmissionDispositionKindV1::NotAdmittedModelAtCapacity => {
             ExecutionAvailabilityStateV1::ModelAtCapacity
@@ -496,7 +532,7 @@ fn observation_for_disposition(
         provider_id: disposition.provider_id.clone(),
         model_id: disposition.model_id.clone(),
         model_class: "large".to_owned(),
-        observed_at: disposition.received_at,
+        observed_at,
         received_at: disposition.received_at,
         expires_at: disposition.received_at + Duration::seconds(60),
         state,
@@ -560,6 +596,7 @@ fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
         &dispatch,
         &observation,
         &disposition,
+        &[],
         Some(&deferred),
     )
     .unwrap();
@@ -573,9 +610,40 @@ fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
         &dispatch,
         &substituted_observation,
         &disposition,
+        &[],
         Some(&deferred),
     )
     .unwrap_err();
+
+    for mut substituted in [
+        {
+            let mut value = observation.clone();
+            value.source_identity = "switchyard:other-source".to_owned();
+            value
+        },
+        {
+            let mut value = observation.clone();
+            value.observed_at += Duration::milliseconds(1);
+            value
+        },
+        {
+            let mut value = observation.clone();
+            value.provider_retry_after = None;
+            value
+        },
+    ] {
+        substituted.seal().unwrap();
+        validate_execution_availability_graph(
+            &requirement,
+            &policy,
+            &dispatch,
+            &substituted,
+            &disposition,
+            &[],
+            Some(&deferred),
+        )
+        .unwrap_err();
+    }
 
     let mut stale = observation.clone();
     stale.expires_at = disposition.received_at;
@@ -585,6 +653,16 @@ fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
         {
             let mut value = deferred.clone();
             value.remaining_model_ordinals.clear();
+            value
+        },
+        {
+            let mut value = deferred.clone();
+            value.refusal_received_at += Duration::seconds(1);
+            value
+        },
+        {
+            let mut value = deferred.clone();
+            value.backoff_ordinal = 1;
             value
         },
         {
@@ -609,6 +687,7 @@ fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
             &dispatch,
             &observation,
             &disposition,
+            &[],
             Some(&substituted),
         )
         .unwrap_err();
@@ -627,7 +706,136 @@ fn graph_currentness_backoff_fallback_and_lock_substitutions_fail_closed() {
         &dispatch,
         &available,
         &completed,
+        &[],
         Some(&deferred),
+    )
+    .unwrap_err();
+}
+
+#[test]
+fn cumulative_multi_deferral_history_is_explicit_and_bounded() {
+    let mut policy = policy();
+    policy.maximum_total_deferral_seconds = 75;
+    policy.seal().unwrap();
+    let mut requirement = requirement(&policy);
+    requirement.policy_digest = policy.policy_digest.clone();
+    requirement.seal().unwrap();
+
+    let first_dispatch = dispatch(&requirement);
+    let first_disposition = disposition(&requirement, &first_dispatch);
+    let first_deferred = deferred_for(&requirement, &policy, &first_dispatch, &first_disposition);
+
+    let mut second_dispatch = first_dispatch.clone();
+    second_dispatch.dispatch_occurrence_id = "dispatch-holding-2".to_owned();
+    second_dispatch.dispatch_ordinal = 2;
+    second_dispatch.opened_at = first_deferred.wake_at;
+    second_dispatch.seal().unwrap();
+
+    let mut snapshot = parked_snapshot();
+    snapshot["binding"]["dispatch_occurrence_id"] = json!(second_dispatch.dispatch_occurrence_id);
+    snapshot["binding"] = seal_value(
+        snapshot["binding"].clone(),
+        "binding_digest",
+        b"switchyard.codex-provider-admission-binding.digest/v1\0",
+    );
+    let binding_digest = snapshot["binding"]["binding_digest"].clone();
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        record["dispatch_occurrence_id"] = json!(second_dispatch.dispatch_occurrence_id);
+        record["binding_digest"] = binding_digest.clone();
+        *record = seal_value(
+            record.clone(),
+            "evidence_digest",
+            b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+        );
+    }
+    snapshot = seal_value(
+        snapshot,
+        "snapshot_digest",
+        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+    );
+    let raw = canonical(&snapshot);
+    let second_disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &second_dispatch,
+        &raw,
+        time("2026-08-31T12:02:00Z"),
+    );
+    let second_observation = observation_for_disposition(&second_disposition);
+    let mut second_deferred =
+        deferred_for(&requirement, &policy, &second_dispatch, &second_disposition);
+    second_deferred.backoff_ordinal = 1;
+    second_deferred.seal().unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &second_observation,
+        &second_disposition,
+        std::slice::from_ref(&first_deferred),
+        Some(&second_deferred),
+    )
+    .unwrap();
+
+    let mut reversed_model = first_deferred.clone();
+    reversed_model.selected_model_ordinal = 1;
+    reversed_model.model_id = "gpt-5.6-terra".to_owned();
+    reversed_model.remaining_model_ordinals.clear();
+    reversed_model.seal().unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &second_observation,
+        &second_disposition,
+        &[reversed_model],
+        Some(&second_deferred),
+    )
+    .unwrap_err();
+
+    let mut over_budget_snapshot = snapshot;
+    let refusal = &mut over_budget_snapshot["records"][1];
+    refusal["normalized"]["retry_after_ms"] = json!(71_000);
+    let raw_hex = refusal["raw"]["bytes_hex"].as_str().unwrap();
+    let mut raw_value: Value = serde_json::from_slice(&hex::decode(raw_hex).unwrap()).unwrap();
+    raw_value["params"]["retryAfterMs"] = json!(71_000);
+    let mut wire = serde_json::to_vec(&raw_value).unwrap();
+    wire.push(b'\n');
+    refusal["raw"]["byte_length"] = json!(wire.len());
+    refusal["raw"]["bytes_hex"] = json!(hex::encode(&wire));
+    refusal["raw"]["sha256"] = json!(format!("sha256:{:x}", Sha256::digest(&wire)));
+    *refusal = seal_value(
+        refusal.clone(),
+        "evidence_digest",
+        b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+    );
+    over_budget_snapshot = seal_value(
+        over_budget_snapshot,
+        "snapshot_digest",
+        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+    );
+    let over_budget_disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &second_dispatch,
+        &canonical(&over_budget_snapshot),
+        time("2026-08-31T12:02:00Z"),
+    );
+    let over_budget_observation = observation_for_disposition(&over_budget_disposition);
+    let mut current_deferred = deferred_for(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &over_budget_disposition,
+    );
+    current_deferred.backoff_ordinal = 1;
+    current_deferred.seal().unwrap();
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &second_dispatch,
+        &over_budget_observation,
+        &over_budget_disposition,
+        &[first_deferred],
+        Some(&current_deferred),
     )
     .unwrap_err();
 }
@@ -653,6 +861,9 @@ fn mapper_cut_ordinal_representation_number_and_receipt_time_substitutions_fail_
         }),
         ("unsafe-number", |snapshot| {
             snapshot["records"][0]["normalized"]["started_at_ms"] = json!(9_007_199_254_740_992_i64)
+        }),
+        ("schema-string-bound", |snapshot| {
+            snapshot["records"][1]["normalized"]["diagnostic"] = json!("x".repeat(4097))
         }),
     ];
     for (name, mutate) in mutations {
@@ -682,6 +893,99 @@ fn mapper_cut_ordinal_representation_number_and_receipt_time_substitutions_fail_
     pre_receipt.received_at = time("2026-08-31T08:00:00Z");
     pre_receipt.provider_retry_after = Some(time("2026-08-31T08:00:05Z"));
     pre_receipt.seal().unwrap_err();
+}
+
+#[test]
+fn semantic_execution_identity_substitutions_fail_closed() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let completed_raw = include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json");
+    let completed = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        completed_raw,
+        time("2026-08-31T12:01:02Z"),
+    );
+    let substitutions: &[SnapshotMutation] = &[
+        ("top-execution", |snapshot| {
+            snapshot["provider_execution_identity"]["first_response_id"] = json!("substituted")
+        }),
+        ("step-request-order", |snapshot| {
+            snapshot["records"][1]["normalized"]["provider_execution_step_identity"]
+                ["request_order"] = json!(1)
+        }),
+    ];
+    for (name, mutate) in substitutions {
+        let mut snapshot: Value = serde_json::from_slice(completed_raw).unwrap();
+        mutate(&mut snapshot);
+        snapshot = reseal_mapper_snapshot(snapshot);
+        let mut substituted = completed.clone();
+        substituted.mapper_snapshot_digest =
+            snapshot["snapshot_digest"].as_str().unwrap().to_owned();
+        substituted.mapper_snapshot =
+            ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
+        assert!(substituted.seal().is_err(), "accepted {name} substitution");
+    }
+
+    let mut response_created = completed;
+    response_created.response_created = false;
+    response_created.seal().unwrap_err();
+}
+
+#[test]
+fn client_request_response_pairing_is_exact() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let completed_raw = include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json");
+    let mut snapshot: Value = serde_json::from_slice(completed_raw).unwrap();
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        record["sequence"] = json!(record["sequence"].as_u64().unwrap() + 2);
+        if let Some(ordinal) = record["acquisition_ordinal"].as_u64() {
+            record["acquisition_ordinal"] = json!(ordinal + 2);
+        }
+    }
+    snapshot["acquisition_cut"]["ordered_high_water"] = json!(6);
+    snapshot["acquisition_cut"]["consumed_ordinal_count"] = json!(6);
+    let last = snapshot["records"].as_array().unwrap().len() - 1;
+    snapshot["records"][last]["normalized"] = snapshot["acquisition_cut"].clone();
+    let mut request = snapshot["records"][0].clone();
+    request["sequence"] = json!(0);
+    request["acquisition_ordinal"] = json!(0);
+    request["acquisition_kind"] = json!("CLIENT_REQUEST");
+    request["kind"] = json!("CLIENT_REQUEST_ISSUED");
+    request["method"] = json!("client-request/thread/read");
+    request["normalized"] = json!({"request_id":7,"request_method":"thread/read","params_sha256":placeholder(),"proves_provider_admission":false});
+    request["raw"] = mapper_raw(json!({"id":7,"method":"thread/read","params":{}}));
+    let mut response = request.clone();
+    response["sequence"] = json!(1);
+    response["acquisition_ordinal"] = json!(1);
+    response["acquisition_kind"] = json!("CLIENT_RESPONSE");
+    response["kind"] = json!("CLIENT_RESPONSE_RETAINED");
+    response["method"] = json!("client-response/thread/read");
+    response["normalized"] = json!({"request_id":7,"request_method":"thread/read","params_sha256":placeholder(),"result_sha256":placeholder(),"proves_provider_admission":false});
+    response["raw"] = mapper_raw(json!({"id":7,"result":{"thread":"thread-holding-1"}}));
+    snapshot["records"]
+        .as_array_mut()
+        .unwrap()
+        .splice(0..0, [request, response]);
+    snapshot = reseal_mapper_snapshot(snapshot);
+    let disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &canonical(&snapshot),
+        time("2026-08-31T12:01:02Z"),
+    );
+    disposition.validate().unwrap();
+
+    snapshot["records"][1]["normalized"]["params_sha256"] =
+        json!(format!("sha256:{}", "1".repeat(64)));
+    snapshot = reseal_mapper_snapshot(snapshot);
+    let mut substituted = disposition;
+    substituted.mapper_snapshot_digest = snapshot["snapshot_digest"].as_str().unwrap().to_owned();
+    substituted.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
+    substituted.seal().unwrap_err();
 }
 
 #[test]
@@ -728,6 +1032,7 @@ fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
             &dispatch,
             &observation,
             &disposition,
+            &[],
             None,
         )
         .unwrap();

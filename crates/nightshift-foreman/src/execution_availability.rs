@@ -45,6 +45,8 @@ const REQUIREMENT_DOMAIN: &[u8] =
 const DISPATCH_DOMAIN: &[u8] = b"nightshift.provider-dispatch-occurrence.digest/v1\0";
 const DISPOSITION_DOMAIN: &[u8] = b"nightshift.provider-admission-disposition.digest/v1\0";
 const DEFERRED_DOMAIN: &[u8] = b"nightshift.deferred-provider-dispatch.digest/v1\0";
+const SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_BYTES: &[u8] =
+    include_bytes!("../../../schemas/vendor/switchyard.codex-provider-admission.v1.schema.json");
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -971,6 +973,7 @@ fn validate_switchyard_snapshot(
     raw: &[u8],
 ) -> Result<(), ContractError> {
     let snapshot: Value = serde_json::from_slice(raw).map_err(json_error)?;
+    validate_vendored_switchyard_schema(&snapshot)?;
     if serde_jcs::to_vec(&snapshot).map_err(json_error)? != raw {
         return Err(ContractError::InvalidField(
             "mapper snapshot canonical bytes",
@@ -1245,6 +1248,191 @@ fn validate_switchyard_snapshot(
     Ok(())
 }
 
+fn validate_vendored_switchyard_schema(instance: &Value) -> Result<(), ContractError> {
+    if plain_sha256(SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_BYTES)
+        != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256
+    {
+        return Err(ContractError::DigestMismatch(
+            "vendored Switchyard schema sha256",
+        ));
+    }
+    let root: Value =
+        serde_json::from_slice(SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_BYTES).map_err(json_error)?;
+    validate_schema_node(&root, &root, instance, 0)?;
+    Ok(())
+}
+
+fn validate_schema_node(
+    root: &Value,
+    node: &Value,
+    instance: &Value,
+    depth: usize,
+) -> Result<BTreeSet<String>, ContractError> {
+    if depth > 64 {
+        return Err(ContractError::InvalidField("Switchyard schema depth"));
+    }
+    let schema = node
+        .as_object()
+        .ok_or(ContractError::InvalidField("Switchyard schema node"))?;
+    let mut evaluated = BTreeSet::new();
+
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let name = reference
+            .strip_prefix("#/$defs/")
+            .ok_or(ContractError::InvalidField("Switchyard schema ref"))?;
+        let target = root
+            .get("$defs")
+            .and_then(|defs| defs.get(name))
+            .ok_or(ContractError::InvalidField("Switchyard schema ref"))?;
+        evaluated.extend(validate_schema_node(root, target, instance, depth + 1)?);
+    }
+    if let Some(all) = schema.get("allOf").and_then(Value::as_array) {
+        for branch in all {
+            evaluated.extend(validate_schema_node(root, branch, instance, depth + 1)?);
+        }
+    }
+    if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+        let matches: Vec<_> = branches
+            .iter()
+            .filter_map(|branch| validate_schema_node(root, branch, instance, depth + 1).ok())
+            .collect();
+        if matches.len() != 1 {
+            return Err(ContractError::InvalidField("Switchyard schema oneOf"));
+        }
+        evaluated.extend(matches.into_iter().next().expect("one exact match"));
+    }
+    if let Some(expected) = schema.get("const") {
+        if expected != instance {
+            return Err(ContractError::InvalidField("Switchyard schema const"));
+        }
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        if !values.contains(instance) {
+            return Err(ContractError::InvalidField("Switchyard schema enum"));
+        }
+    }
+    if let Some(expected_type) = schema.get("type").and_then(Value::as_str) {
+        let type_matches = match expected_type {
+            "null" => instance.is_null(),
+            "boolean" => instance.is_boolean(),
+            "string" => instance.is_string(),
+            "integer" => instance.as_i64().is_some() || instance.as_u64().is_some(),
+            "object" => instance.is_object(),
+            "array" => instance.is_array(),
+            _ => false,
+        };
+        if !type_matches {
+            return Err(ContractError::InvalidField("Switchyard schema type"));
+        }
+    }
+
+    if let Some(text) = instance.as_str() {
+        let length = text.chars().count() as u64;
+        if schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|minimum| length < minimum)
+            || schema
+                .get("maxLength")
+                .and_then(Value::as_u64)
+                .is_some_and(|maximum| length > maximum)
+        {
+            return Err(ContractError::InvalidField(
+                "Switchyard schema string bound",
+            ));
+        }
+        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+            let matches = match pattern {
+                "^[0-9a-f]+$" => {
+                    !text.is_empty()
+                        && text
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                }
+                "^sha256:[0-9a-f]{64}$" => {
+                    text.len() == 71
+                        && text.starts_with("sha256:")
+                        && text[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                }
+                _ => false,
+            };
+            if !matches {
+                return Err(ContractError::InvalidField("Switchyard schema pattern"));
+            }
+        }
+    }
+    if instance.as_i64().is_some() || instance.as_u64().is_some() {
+        let value = instance
+            .as_i64()
+            .map(|value| value as i128)
+            .or_else(|| instance.as_u64().map(|value| value as i128))
+            .ok_or(ContractError::InvalidField("Switchyard schema integer"))?;
+        if schema
+            .get("minimum")
+            .and_then(Value::as_i64)
+            .is_some_and(|minimum| value < minimum as i128)
+            || schema
+                .get("maximum")
+                .and_then(Value::as_i64)
+                .is_some_and(|maximum| value > maximum as i128)
+        {
+            return Err(ContractError::InvalidField(
+                "Switchyard schema numeric bound",
+            ));
+        }
+    }
+    if let Some(items) = instance.as_array() {
+        if schema
+            .get("maxItems")
+            .and_then(Value::as_u64)
+            .is_some_and(|maximum| items.len() as u64 > maximum)
+        {
+            return Err(ContractError::InvalidField("Switchyard schema array bound"));
+        }
+        if let Some(item_schema) = schema.get("items") {
+            for item in items {
+                validate_schema_node(root, item_schema, item, depth + 1)?;
+            }
+        }
+    }
+    if let Some(object) = instance.as_object() {
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            if required.iter().any(|field| {
+                field
+                    .as_str()
+                    .is_none_or(|field| !object.contains_key(field))
+            }) {
+                return Err(ContractError::InvalidField("Switchyard schema required"));
+            }
+        }
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            for (name, property_schema) in properties {
+                evaluated.insert(name.clone());
+                if let Some(value) = object.get(name) {
+                    validate_schema_node(root, property_schema, value, depth + 1)?;
+                }
+            }
+            if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false)
+                && object.keys().any(|name| !properties.contains_key(name))
+            {
+                return Err(ContractError::InvalidField(
+                    "Switchyard schema additional property",
+                ));
+            }
+        }
+        if schema.get("unevaluatedProperties").and_then(Value::as_bool) == Some(false)
+            && object.keys().any(|name| !evaluated.contains(name))
+        {
+            return Err(ContractError::InvalidField(
+                "Switchyard schema unevaluated property",
+            ));
+        }
+    }
+    Ok(evaluated)
+}
+
 fn validate_switchyard_raw(value: &Value) -> Result<(), ContractError> {
     exact_object_keys(
         value,
@@ -1339,7 +1527,8 @@ fn validate_switchyard_snapshot_complete(
     }
 
     let mut next_acquisition_ordinal = 0_i64;
-    let mut pending_request: Option<String> = None;
+    let mut pending_request: Option<(String, i64, i64)> = None;
+    let mut client_requests: BTreeMap<i64, (String, String)> = BTreeMap::new();
     let mut execution: Option<ProviderExecutionIdentityV1> = None;
     let mut open_response: Option<String> = None;
     let mut completed_responses = BTreeSet::new();
@@ -1464,7 +1653,11 @@ fn validate_switchyard_snapshot_complete(
                 {
                     return Err(ContractError::InvalidField("provider request transition"));
                 }
-                pending_request = Some(string(normalized, "request_occurrence_id")?.to_owned());
+                pending_request = Some((
+                    string(normalized, "request_occurrence_id")?.to_owned(),
+                    integer(normalized, "sampling_ordinal")?,
+                    integer(normalized, "request_order")?,
+                ));
             }
             "PROVIDER_EXECUTION_STEP" => {
                 exact_object_keys(
@@ -1480,16 +1673,23 @@ fn validate_switchyard_snapshot_complete(
                 let step = normalized
                     .get("provider_execution_step_identity")
                     .ok_or(ContractError::InvalidField("provider step identity"))?;
-                let pending = pending_request.take().ok_or(ContractError::InvalidField(
-                    "response without provider request",
-                ))?;
+                let (pending, sampling_ordinal, request_order) = pending_request.take().ok_or(
+                    ContractError::InvalidField("response without provider request"),
+                )?;
                 if string(step, "request_occurrence_id")? != pending
                     || string(step, "provider")? != disposition.provider_id
                     || string(step, "model")? != disposition.model_id
                     || string(step, "thread_id")? != disposition.thread_id
                     || string(step, "turn_id")? != disposition.turn_id
+                    || integer(step, "sampling_ordinal")? != sampling_ordinal
+                    || integer(step, "request_order")? != request_order
                 {
                     return Err(ContractError::InvalidField("provider step request binding"));
+                }
+                if execution.is_none() && pending != disposition.provider_request_occurrence_id {
+                    return Err(ContractError::InvalidField(
+                        "admitted provider request occurrence",
+                    ));
                 }
                 let identity = normalized
                     .get("provider_execution_identity")
@@ -1504,6 +1704,17 @@ fn validate_switchyard_snapshot_complete(
                     first_response_id: string(identity, "first_response_id")?.to_owned(),
                 };
                 observed.validate()?;
+                if provider_execution_from_switchyard(identity)? != observed
+                    || provider_execution_from_switchyard(
+                        normalized
+                            .get("provider_execution_identity")
+                            .ok_or(ContractError::InvalidField("provider execution identity"))?,
+                    )? != observed
+                {
+                    return Err(ContractError::InvalidField(
+                        "nested provider execution identity",
+                    ));
+                }
                 if execution.as_ref().is_some_and(|prior| prior != &observed)
                     || open_response.is_some()
                 {
@@ -1521,7 +1732,13 @@ fn validate_switchyard_snapshot_complete(
                     return Err(ContractError::InvalidField("refusal transition"));
                 }
                 let occurrence = string(normalized, "request_occurrence_id")?.to_owned();
-                if pending_request.take().as_deref() != Some(occurrence.as_str()) {
+                let pending = pending_request.take();
+                if pending.as_ref().map(|value| value.0.as_str()) != Some(occurrence.as_str())
+                    || pending.as_ref().map(|value| value.1)
+                        != Some(integer(normalized, "sampling_ordinal")?)
+                    || pending.as_ref().map(|value| value.2)
+                        != Some(integer(normalized, "request_order")?)
+                {
                     return Err(ContractError::InvalidField("refusal request binding"));
                 }
                 let retry_after = match normalized.get("retry_after_ms") {
@@ -1582,6 +1799,16 @@ fn validate_switchyard_snapshot_complete(
                 {
                     return Err(ContractError::InvalidField("approval transition"));
                 }
+                let approval_execution = provider_execution_from_switchyard(
+                    normalized
+                        .get("provider_execution_identity")
+                        .ok_or(ContractError::InvalidField("approval execution identity"))?,
+                )?;
+                if execution.as_ref() != Some(&approval_execution) {
+                    return Err(ContractError::InvalidField(
+                        "approval execution identity binding",
+                    ));
+                }
                 saw_approval = true;
             }
             "LOCAL_TURN_FACT" => {
@@ -1621,6 +1848,20 @@ fn validate_switchyard_snapshot_complete(
                 {
                     return Err(ContractError::InvalidField("discrepancy resume law"));
                 }
+                let discrepancy_execution = match normalized.get("provider_execution_identity") {
+                    Some(Value::Null) => None,
+                    Some(value) => Some(provider_execution_from_switchyard(value)?),
+                    None => {
+                        return Err(ContractError::InvalidField(
+                            "discrepancy execution identity",
+                        ));
+                    }
+                };
+                if discrepancy_execution.as_ref() != execution.as_ref() {
+                    return Err(ContractError::InvalidField(
+                        "discrepancy execution identity binding",
+                    ));
+                }
                 saw_discrepancy = true;
             }
             "CLIENT_REQUEST_ISSUED" => {
@@ -1635,6 +1876,19 @@ fn validate_switchyard_snapshot_complete(
                     "client request normalized closure",
                 )?;
                 digest("client params sha256", string(normalized, "params_sha256")?)?;
+                let request_id = integer(normalized, "request_id")?;
+                if client_requests
+                    .insert(
+                        request_id,
+                        (
+                            string(normalized, "request_method")?.to_owned(),
+                            string(normalized, "params_sha256")?.to_owned(),
+                        ),
+                    )
+                    .is_some()
+                {
+                    return Err(ContractError::InvalidField("duplicate client request"));
+                }
             }
             "CLIENT_RESPONSE_RETAINED" => {
                 exact_object_keys(
@@ -1650,6 +1904,17 @@ fn validate_switchyard_snapshot_complete(
                 )?;
                 digest("client params sha256", string(normalized, "params_sha256")?)?;
                 digest("client result sha256", string(normalized, "result_sha256")?)?;
+                let request_id = integer(normalized, "request_id")?;
+                let expected = client_requests
+                    .remove(&request_id)
+                    .ok_or(ContractError::InvalidField("unmatched client response"))?;
+                if expected.0 != string(normalized, "request_method")?
+                    || expected.1 != string(normalized, "params_sha256")?
+                {
+                    return Err(ContractError::InvalidField(
+                        "client request response binding",
+                    ));
+                }
             }
             "ACQUISITION_WATERMARK" => {
                 exact_object_keys(
@@ -1699,6 +1964,11 @@ fn validate_switchyard_snapshot_complete(
         .ok_or(ContractError::InvalidField("stream_quiesced"))?;
     let loss_generation = integer(cut, "loss_generation")?;
     let outstanding = integer(cut, "outstanding_client_request_count")?;
+    if outstanding != client_requests.len() as i64 {
+        return Err(ContractError::InvalidField(
+            "client request cut outstanding binding",
+        ));
+    }
     let semantic_closed = (refusal.is_some() && saw_turn_completed)
         || (execution.is_some()
             && open_response.is_none()
@@ -1728,6 +1998,19 @@ fn validate_switchyard_snapshot_complete(
     if snapshot_state != expected_state {
         return Err(ContractError::InvalidField(
             "mapper mechanism-state binding",
+        ));
+    }
+    let snapshot_execution = match snapshot.get("provider_execution_identity") {
+        Some(Value::Null) => None,
+        Some(value) => Some(provider_execution_from_switchyard(value)?),
+        None => return Err(ContractError::InvalidField("snapshot execution identity")),
+    };
+    if snapshot_execution != execution
+        || snapshot_execution != disposition.provider_execution
+        || disposition.response_created != snapshot_execution.is_some()
+    {
+        return Err(ContractError::InvalidField(
+            "snapshot disposition execution binding",
         ));
     }
     match disposition.mechanism_state {
@@ -1785,6 +2068,19 @@ fn validate_switchyard_snapshot_complete(
         ));
     }
     Ok(())
+}
+
+fn provider_execution_from_switchyard(
+    value: &Value,
+) -> Result<ProviderExecutionIdentityV1, ContractError> {
+    Ok(ProviderExecutionIdentityV1 {
+        provider_id: string(value, "provider")?.to_owned(),
+        model_id: string(value, "model")?.to_owned(),
+        app_server_session_identity: string(value, "app_server_session_identity")?.to_owned(),
+        thread_id: string(value, "thread_id")?.to_owned(),
+        turn_id: string(value, "turn_id")?.to_owned(),
+        first_response_id: string(value, "first_response_id")?.to_owned(),
+    })
 }
 
 fn validate_kind_lane(kind: &str, method: &str, lane: &str) -> Result<(), ContractError> {
@@ -1873,6 +2169,7 @@ pub fn validate_execution_availability_graph(
     dispatch: &ProviderDispatchOccurrenceV1,
     observation: &ExecutionAvailabilityObservationV1,
     disposition: &ProviderAdmissionDispositionV1,
+    prior_deferrals: &[DeferredProviderDispatchV1],
     deferred: Option<&DeferredProviderDispatchV1>,
 ) -> Result<(), ContractError> {
     requirement.validate()?;
@@ -1917,10 +2214,15 @@ pub fn validate_execution_availability_graph(
     {
         return Err(ContractError::InvalidField("dispatch disposition graph"));
     }
+    let (expected_source, expected_source_time) = switchyard_source_observation(disposition)?;
     if observation.provider_id != dispatch.selection.provider_id
         || observation.model_id != dispatch.selection.model_id
         || observation.model_class != dispatch.selection.model_class
         || observation.received_at != disposition.received_at
+        || observation.observed_at != expected_source_time
+        || observation.provider_retry_after != disposition.provider_retry_after
+        || observation.source_identity != "switchyard:provider-admission"
+        || observation.source_version != "v1"
         || !observation.is_current_at(disposition.received_at)
     {
         return Err(ContractError::InvalidField(
@@ -1963,10 +2265,66 @@ pub fn validate_execution_availability_graph(
     if observation.state != expected_observation_state {
         return Err(ContractError::InvalidField("disposition observation state"));
     }
-    let expected_source = switchyard_source_evidence(disposition)?;
     if observation.exact_evidence.as_ref() != expected_source.as_ref() {
         return Err(ContractError::InvalidField(
             "exact observation source binding",
+        ));
+    }
+
+    if usize::from(dispatch.dispatch_ordinal) != prior_deferrals.len() + 1
+        || prior_deferrals.len() >= usize::from(policy.maximum_dispatch_occurrences_per_attempt)
+    {
+        return Err(ContractError::InvalidField(
+            "dispatch ordinal prior deferral continuity",
+        ));
+    }
+    let mut cumulative_deferral_seconds = 0_u64;
+    let mut prior_dispatch_ids = BTreeSet::new();
+    let mut prior_refusal_time: Option<DateTime<Utc>> = None;
+    let mut prior_model_ordinal: Option<u16> = None;
+    for (index, prior) in prior_deferrals.iter().enumerate() {
+        prior.validate()?;
+        let prior_selection = selections
+            .get(usize::from(prior.selected_model_ordinal))
+            .ok_or(ContractError::InvalidField("prior deferred model ordinal"))?;
+        let expected_remaining: Vec<u16> = if policy.allow_ordered_model_fallback {
+            ((prior.selected_model_ordinal + 1)..(selections.len() as u16)).collect()
+        } else {
+            Vec::new()
+        };
+        if prior.requirement_digest != requirement.requirement_digest
+            || prior.policy_digest != policy.policy_digest
+            || prior.packet_digest != requirement.packet_digest
+            || prior.run_id != requirement.run_id
+            || prior.work_item_id != dispatch.work_item_id
+            || prior.work_attempt_id != dispatch.work_attempt_id
+            || prior.provider_id != prior_selection.provider_id
+            || prior.model_id != prior_selection.model_id
+            || prior.backoff_ordinal != index as u16
+            || prior.remaining_model_ordinals != expected_remaining
+            || prior.parked_resource_lock_policy != policy.parked_resource_lock_policy
+            || !prior_dispatch_ids.insert(prior.last_dispatch_occurrence_id.clone())
+            || prior_refusal_time.is_some_and(|time| prior.refusal_received_at < time)
+            || prior_model_ordinal.is_some_and(|ordinal| {
+                prior.selected_model_ordinal < ordinal
+                    || prior.selected_model_ordinal > ordinal.saturating_add(1)
+            })
+            || prior.wake_at > dispatch.opened_at
+        {
+            return Err(ContractError::InvalidField("prior deferral graph"));
+        }
+        prior_refusal_time = Some(prior.refusal_received_at);
+        prior_model_ordinal = Some(prior.selected_model_ordinal);
+        cumulative_deferral_seconds = cumulative_deferral_seconds
+            .checked_add(prior.backoff_seconds)
+            .ok_or(ContractError::InvalidField("cumulative deferral overflow"))?;
+    }
+    if prior_model_ordinal.is_some_and(|ordinal| {
+        dispatch.selected_model_ordinal < ordinal
+            || dispatch.selected_model_ordinal > ordinal.saturating_add(1)
+    }) {
+        return Err(ContractError::InvalidField(
+            "ordered model deferral continuity",
         ));
     }
 
@@ -1984,11 +2342,11 @@ pub fn validate_execution_availability_graph(
             || parked.provider_id != dispatch.selection.provider_id
             || parked.model_id != dispatch.selection.model_id
             || parked.selected_model_ordinal != dispatch.selected_model_ordinal
+            || parked.refusal_received_at != disposition.received_at
+            || parked.backoff_ordinal + 1 != dispatch.dispatch_ordinal
             || parked.parked_resource_lock_policy != policy.parked_resource_lock_policy
             || !parked.provider_capacity_released
             || parked.semantic_retry
-            || parked.wake_at - dispatch.opened_at
-                > Duration::seconds(policy.maximum_total_deferral_seconds as i64)
         {
             return Err(ContractError::InvalidField("deferred dispatch graph"));
         }
@@ -1999,6 +2357,12 @@ pub fn validate_execution_availability_graph(
         };
         if parked.remaining_model_ordinals != expected_remaining {
             return Err(ContractError::InvalidField("ordered fallback suffix"));
+        }
+        cumulative_deferral_seconds = cumulative_deferral_seconds
+            .checked_add(parked.backoff_seconds)
+            .ok_or(ContractError::InvalidField("cumulative deferral overflow"))?;
+        if cumulative_deferral_seconds > policy.maximum_total_deferral_seconds {
+            return Err(ContractError::InvalidField("maximum cumulative deferral"));
         }
         match parked.wake_basis {
             DeferredWakeBasisV1::ProviderRetryAfter => {
@@ -2041,9 +2405,9 @@ pub fn validate_execution_availability_graph(
     Ok(())
 }
 
-fn switchyard_source_evidence(
+fn switchyard_source_observation(
     disposition: &ProviderAdmissionDispositionV1,
-) -> Result<Option<ExactAvailabilityEvidenceV1>, ContractError> {
+) -> Result<(Option<ExactAvailabilityEvidenceV1>, DateTime<Utc>), ContractError> {
     let raw = disposition.mapper_snapshot.validate()?;
     let snapshot: Value = serde_json::from_slice(&raw).map_err(json_error)?;
     let kind = match disposition.disposition {
@@ -2052,7 +2416,7 @@ fn switchyard_source_evidence(
         }
         ProviderAdmissionDispositionKindV1::ExecutionAdmitted => "PROVIDER_EXECUTION_STEP",
         ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => "ADMISSION_DISCREPANCY",
-        _ => return Ok(None),
+        _ => return Ok((None, disposition.received_at)),
     };
     let record = snapshot["records"]
         .as_array()
@@ -2062,18 +2426,22 @@ fn switchyard_source_evidence(
                 .find(|record| record.get("kind").and_then(Value::as_str) == Some(kind))
         })
         .ok_or(ContractError::InvalidField("observation source evidence"))?;
-    match record.get("raw") {
+    let observed_at = record["normalized"]
+        .get("observed_at_ms")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or(disposition.received_at);
+    let evidence = match record.get("raw") {
         Some(Value::Null)
             if matches!(
                 disposition.disposition,
                 ProviderAdmissionDispositionKindV1::AdmissionIndeterminate
             ) =>
         {
-            Ok(None)
+            None
         }
-        Some(value) => serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(json_error),
-        None => Err(ContractError::InvalidField("observation source raw")),
-    }
+        Some(value) => Some(serde_json::from_value(value.clone()).map_err(json_error)?),
+        None => return Err(ContractError::InvalidField("observation source raw")),
+    };
+    Ok((evidence, observed_at))
 }
