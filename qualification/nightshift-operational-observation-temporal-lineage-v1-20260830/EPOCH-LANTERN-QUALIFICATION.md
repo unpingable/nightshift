@@ -73,6 +73,8 @@ Checkpoint d7c4d2c93e11421b0f2e4e62481a22be16d88783 remains immutable and is not
 
 Checkpoint f1641379689f8edfc80f63e23c0bf81b0050abcc remains immutable and is not an accepted predecessor. Its successor admits the exact locator `value` and `observed_at` field-type details, completes the pinned Chrono display vocabulary without an invented spelling, and keeps record/body parser coordinates within their one-MiB source ceiling while validating unbounded payload parser coordinates as canonical in-range `usize` values. Direct positives and substitutions cover all three corrections.
 
+Checkpoint 9afbc15c58a172830303d5b2046ad2e0888bd99a remains immutable and is not an accepted predecessor. Its successor gives record JSON line and column coordinates their exact distinct maxima, directly qualifies the all-newline final-line boundary and both beyond-bound refusals, and restricts timestamp details to errors reachable through the pinned relaxed RFC3339 `DateTime<Utc>::from_str` path. Owner-enum display strings unreachable through that static parser are direct invented-detail negatives.
+
 ## Custody and scope
 
 No FIELD artifact is changed. No listener, subprocess, service, browser, provider session, credential, secret, or external office is used. This campaign does not activate a runtime path or alter a default branch.
