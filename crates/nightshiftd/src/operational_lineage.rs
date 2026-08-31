@@ -1312,9 +1312,10 @@ fn validate_nq_unopened_refusal_detail(code: &str, detail: &str) -> Result<(), S
     };
     let valid = match code {
         "record_oversized" => exact(&["signed Monitor record exceeds one MiB"]),
-        "record_malformed" | "body_malformed" | "payload_malformed" => {
-            nq_serde_json_error_detail(detail)
+        "record_malformed" | "body_malformed" => {
+            nq_serde_json_error_detail(detail, Some(MAX_RAW_BYTES))
         }
+        "payload_malformed" => nq_serde_json_error_detail(detail, None),
         "field_missing" => ["body", "producer", "subject"]
             .iter()
             .any(|field| detail == format!("missing exact field {field}")),
@@ -1338,6 +1339,8 @@ fn validate_nq_unopened_refusal_detail(code: &str, detail: &str) -> Result<(), S
                 &[
                     "schema",
                     "kind",
+                    "value",
+                    "observed_at",
                     "namespace",
                     "basis_contract",
                     "basis_type",
@@ -1535,7 +1538,7 @@ fn validate_nq_unopened_refusal_detail(code: &str, detail: &str) -> Result<(), S
     }
 }
 
-fn nq_serde_json_error_detail(detail: &str) -> bool {
+fn nq_serde_json_error_detail(detail: &str, maximum_coordinate: Option<usize>) -> bool {
     let Some((message, position)) = detail.rsplit_once(" at line ") else {
         return false;
     };
@@ -1546,7 +1549,9 @@ fn nq_serde_json_error_detail(detail: &str) -> bool {
         let Ok(number) = value.parse::<usize>() else {
             return false;
         };
-        (allow_zero || number > 0) && number <= MAX_RAW_BYTES && value == number.to_string()
+        (allow_zero || number > 0)
+            && maximum_coordinate.is_none_or(|maximum| number <= maximum)
+            && value == number.to_string()
     };
     if !coordinate(line, false) || !coordinate(column, true) {
         return false;
@@ -1584,13 +1589,14 @@ fn nq_timestamp_error_detail(detail: &str) -> bool {
         "acquisition end",
         "producer observation time",
     ];
-    const ERRORS: [&str; 6] = [
+    const ERRORS: [&str; 7] = [
         "input contains invalid characters",
         "input is out of range",
         "premature end of input",
         "input is not enough for unique date and time",
         "no possible date and time matching input",
-        "bad or unsupported format",
+        "trailing input",
+        "bad or unsupported format string",
     ];
     FIELDS.iter().any(|field| {
         ERRORS
@@ -2727,6 +2733,35 @@ mod tests {
             }];
         }
         validate_nq(&unopened).unwrap();
+
+        for detail in ["value is not a string", "observed_at is not a string"] {
+            validate_nq_unopened_refusal_detail("field_type", detail).unwrap();
+        }
+        for detail in [
+            "acquisition start: trailing input",
+            "producer observation time: bad or unsupported format string",
+        ] {
+            validate_nq_unopened_refusal_detail("timestamp_invalid", detail).unwrap();
+        }
+        assert!(validate_nq_unopened_refusal_detail(
+            "timestamp_invalid",
+            "acquisition start: bad or unsupported format",
+        )
+        .is_err());
+        let unbounded_payload_coordinate =
+            format!("expected value at line {} column 0", MAX_RAW_BYTES + 1);
+        validate_nq_unopened_refusal_detail("payload_malformed", &unbounded_payload_coordinate)
+            .unwrap();
+        assert!(validate_nq_unopened_refusal_detail(
+            "record_malformed",
+            &unbounded_payload_coordinate,
+        )
+        .is_err());
+        assert!(validate_nq_unopened_refusal_detail(
+            "payload_malformed",
+            "expected value at line 01 column 0",
+        )
+        .is_err());
 
         let mut fixed_detail = unopened.clone();
         fixed_detail.inputs[0].refusals[0].code = "record_oversized".into();

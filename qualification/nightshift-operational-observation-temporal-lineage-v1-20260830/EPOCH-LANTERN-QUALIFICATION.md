@@ -22,7 +22,7 @@ The checkpoint directly exercises:
 - closed typed stable-basis identity and exact producer key binding;
 - produced testimony, no-response/failure, refusal, cannot-testify, and contradiction paths;
 - reopened versus unopened refusal-code and exact-basis correlation;
-- exact fixed and bounded parser-derived unopened refusal details with substitution refusal;
+- exact fixed and owner-bounded/canonical parser-derived unopened refusal details with substitution refusal;
 - cross-input complete claim-domain equality and exact outcome-derived failure reasons;
 - owner-possible contradiction inputs with separate signed Monitor and payload identities;
 - independent acquisition, producer, receiver, NQ, admission, and evaluation time ordering;
@@ -70,6 +70,8 @@ Checkpoint bf64f4d6ef4d9291f0c4ca6d471698364bbc45da also remains immutable and i
 Checkpoint 0af305c920d55c868dbd6fc5acefb3f0a2e05461 likewise remains immutable and is not an accepted predecessor. Its successor closes the pinned refusal vocabulary by reopened/unopened branch, retains exact basis correlation, requires one complete claim domain across non-refused inputs, binds failure reasons to the exact Monitor outcome, and replaces the content-mutated contradiction fixture with two separately signed payload-bound observations.
 
 Checkpoint d7c4d2c93e11421b0f2e4e62481a22be16d88783 remains immutable and is not an accepted predecessor. Its successor closes each unopened refusal code to the pinned fixed detail or a bounded exact parser-derived detail grammar, and directly refuses fixed/dynamic code-detail substitutions, invented parser messages, and noncanonical parser coordinates.
+
+Checkpoint f1641379689f8edfc80f63e23c0bf81b0050abcc remains immutable and is not an accepted predecessor. Its successor admits the exact locator `value` and `observed_at` field-type details, completes the pinned Chrono display vocabulary without an invented spelling, and keeps record/body parser coordinates within their one-MiB source ceiling while validating unbounded payload parser coordinates as canonical in-range `usize` values. Direct positives and substitutions cover all three corrections.
 
 ## Custody and scope
 
