@@ -2,7 +2,9 @@
 
 This deliberately minimal corpus has no proprietary PDK, tool, scheduler, or
 license dependency. The Monitor fixture generator hashes the exact bytes of the
-RTL and four manifests under their family-owned identity domains.
+RTL and expected/alternate tool, PDK, repository, input-artifact, and output
+manifests under their family-owned identity domains. Alternate bytes make each
+observed mismatch independently reproducible.
 
 The fake tool does not execute. Its process-exit field is retained only as
 mechanical testimony; NQ qualifies it as one independent value and neither
