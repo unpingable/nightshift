@@ -1,0 +1,94 @@
+{
+  "schema": "nightshift.restartable-autonomous-foreman-qualification/v1",
+  "campaign": {
+    "codename": "MIDNIGHT-RAIL",
+    "canonical_slug": "nightshift-restartable-autonomous-foreman-qualification-v1",
+    "track": "nightshift-integration-qualification",
+    "work_item_id": "integrated-dogfood"
+  },
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "qualified_subject_commit": "3cf3c1d774622c0d0185007487ef7eeff23933a8",
+  "exact_predecessor_results": {
+    "tunnel_nightshift": "8605fdaaed8580dabe4baef76baeccd82a108de6",
+    "tunnel_switchyard_sole_local": "f0fe2563a99148a86fa3a0061e3af2dafdd6f077",
+    "fuel": "dba4512b496fa72af370cfec143e674e0b8c288d",
+    "ledger_sole_local": "eea4472342581925d9bde71ed04937039aee78d4",
+    "gauge": "019de87a671aea110c82f3f7d2ef01dac528cccb",
+    "capacity": "a6a7ff547749422bfa51ac330c86b3883e4b1e1b",
+    "question_rivet": "35e5daafa23ef3847a1928421347bff382d1224a"
+  },
+  "independent_classifications": {
+    "deterministic_state_matrix": "MIDNIGHT-RAIL-DETERMINISTIC-STATE-MATRIX-QUALIFIED",
+    "deterministic_four_item_dogfood": "MIDNIGHT-RAIL-FOUR-ITEM-DETERMINISTIC-DOGFOOD-QUALIFIED",
+    "deterministic_protected_approval": "MIDNIGHT-RAIL-DETERMINISTIC-PROTECTED-APPROVAL-SPECIMEN-QUALIFIED",
+    "live_and_final_casework": "MIDNIGHT-RAIL-LIVE-AND-FINAL-CASEWORK-QUALIFIED",
+    "report_and_self_description": "MIDNIGHT-RAIL-REPORT-AND-SELF-DESCRIPTION-QUALIFIED",
+    "real_codex_provider_lifecycle": "MIDNIGHT-RAIL-REAL-CODEX-PROVIDER-LIFECYCLE-NOT-RUN-AUTHORITY-REQUIRED"
+  },
+  "aggregate_result_created": false,
+  "qualification": {
+    "locked_workspace_passed": 377,
+    "locked_workspace_ignored_documented": 14,
+    "failed": 0,
+    "foreman_integration_passed": 30,
+    "python_schema_report_passed": 26,
+    "frontend_passed": 26,
+    "production_frontend_build": "PASSED",
+    "all_feature_warnings_denied_clippy": "PASSED",
+    "formatting": "PASSED",
+    "structural_gates_and_negative_controls": "PASSED",
+    "exact_artifact_manifest": "35_OF_35_PASSED",
+    "independent_exact_commit_audit": "ACCEPTED_DETERMINISTIC_QUALIFICATION_ONLY"
+  },
+  "deterministic_journey": {
+    "work_item_count": 4,
+    "maximum_concurrent_workers": 2,
+    "disjoint_concurrency_observed": true,
+    "shared_lock_serialized": true,
+    "same_attempt_restart_resume": true,
+    "automatic_retry": false,
+    "exact_predecessor_receipt_bytes_in_brief": true,
+    "recorded_capacity_admissions": 4,
+    "capacity_refresh_during_run": true,
+    "lane_local_human_question": true,
+    "accepted_terminal_receipts": 4,
+    "exact_final_snapshot": true,
+    "live_casework": true,
+    "final_casework": true,
+    "reports_rendered": true
+  },
+  "approval_specimen": {
+    "waiting_approval": true,
+    "approval_response_sent": false,
+    "protected_effect_absent": true,
+    "independent_lane_continued": true,
+    "occurrence_closed": false
+  },
+  "real_provider": {
+    "lifecycle_started": false,
+    "lifecycle_count": 0,
+    "provider_egress_occurred": false,
+    "profile_copied": false,
+    "classification": "NOT_RUN_AUTHORITY_REQUIRED"
+  },
+  "repository_custody": {
+    "branch": "campaign/midnight-rail-nightshift-restartable-autonomous-foreman-qualification-v1-20260830",
+    "nightshift_publication_policy": "ESTABLISHED_ORIGIN_ONLY",
+    "switchyard": "SOLE_LOCAL_NO_ACCEPTED_REMOTE",
+    "ledger_predecessor": "SOLE_LOCAL_EXECUTION_REVIEWER_REFUSED_PUBLICATION"
+  },
+  "successor_base_policy": "EXACT_RESULT_ANCESTRY",
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "holding_pattern_started": false,
+  "listener_remaining": false,
+  "process_remaining": false,
+  "service_remaining": false,
+  "provider_session_remaining": false,
+  "temporary_profile_remaining": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false,
+  "human_questions": [
+    "tunnel-finch-real-provider-egress-v1"
+  ]
+}
