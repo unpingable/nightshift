@@ -15,6 +15,12 @@ transaction. The snapshot contains exact packet, admission, profile, ordered
 journal, accepted receipt, resource, scheduler, and optional final-snapshot
 bytes from one transaction history.
 
+The owner reopens every retained journal row and accepted receipt before it is
+projected. It recomputes retained-raw and record digests, binds the raw record
+identity to the SQLite row identity, and requires receipt kind, exact state,
+classification, and digest to agree with deterministic foreman replay. A
+required-table-compatible store with substituted row content is refused.
+
 The read path never initializes a store, changes journal mode, starts a write
 transaction, or creates a missing database. Symlinks, non-regular files,
 partial WAL sidecar custody, and pathname replacement are refused or remain
@@ -66,6 +72,8 @@ The accepted-receipt byte stream is:
 
 Receipt frames are ordered by the closed work-item identity map. A terminal
 receipt and a not-started receipt retain distinct kinds and exact source bytes.
+The Raw view exposes the optional final snapshot and a fixed exact-byte link for
+each event in addition to the aggregate journal framing.
 
 ## Live and sealed relationship
 
@@ -81,7 +89,9 @@ the server-qualified live index.
 The live routes are fixed descendants of `/api/v1/active-runs/{navigation_id}`:
 detail, events, exact event bytes, and the fixed raw sources. The navigation ID
 is a derived lowercase hexadecimal identifier; it is not the run ID or a
-filesystem name. Every non-GET method returns 405. There is no approval,
+filesystem name. Question routes use a second derived identity over the exact
+work-item ID plus lane-local question ID, so equal question IDs in different
+lanes remain distinct. Every non-GET method returns 405. There is no approval,
 answer, dispatch, retry, resume, cancel, execute, close, merge, or promotion
 control. The browser renders packet intent, live mechanism state, and accepted
 outcome or absence as three visibly separate regions.

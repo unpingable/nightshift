@@ -108,10 +108,10 @@ fn project(
     let journal_framing_bytes = journal_framing(&snapshot);
     let journal_sha = plain_sha256(&journal_framing_bytes);
     let final_snapshot_sha = snapshot.final_snapshot_bytes.as_deref().map(plain_sha256);
-    let receipt_kinds: BTreeMap<_, _> = snapshot
+    let receipts_by_item: BTreeMap<_, _> = snapshot
         .terminal_receipts
         .iter()
-        .map(|receipt| (receipt.work_item_id.as_str(), receipt.receipt_kind.as_str()))
+        .map(|receipt| (receipt.work_item_id.as_str(), receipt))
         .collect();
     let event_bytes = snapshot
         .events
@@ -145,18 +145,15 @@ fn project(
             })?
             .to_owned();
         *state_counts.entry(scheduler_state.clone()).or_insert(0) += 1;
-        let accepted_outcome =
-            mechanism
-                .accepted_terminal_outcome
-                .as_ref()
-                .map(|outcome| LiveAcceptedOutcomeV1 {
-                    state: outcome.state.clone(),
-                    result_classification: outcome.result_classification.clone(),
-                    receipt_digest: outcome.receipt_digest.clone(),
-                });
-        let accepted_receipt_kind = receipt_kinds
+        let accepted_receipt = receipts_by_item
             .get(mechanism.work_item_id.as_str())
-            .map(|kind| (*kind).to_owned());
+            .copied();
+        let accepted_outcome = accepted_receipt.map(|receipt| LiveAcceptedOutcomeV1 {
+            state: receipt.state.clone(),
+            result_classification: receipt.result_classification.clone(),
+            receipt_digest: receipt.receipt_digest.clone(),
+        });
+        let accepted_receipt_kind = accepted_receipt.map(|receipt| receipt.receipt_kind.clone());
         let accepted_outcome_absent_reason = if accepted_outcome.is_none() {
             Some("NO_ACCEPTED_TERMINAL_OR_NOT_STARTED_RECEIPT".to_owned())
         } else {
@@ -190,6 +187,10 @@ fn project(
                 .human_questions
                 .iter()
                 .map(|question| LiveQuestionV1 {
+                    navigation_id: question_navigation_id(
+                        &mechanism.work_item_id,
+                        &question.question_id,
+                    ),
                     question_id: question.question_id.clone(),
                     question: question.question.clone(),
                     exhausted_evidence: question.exhausted_evidence.clone(),
@@ -351,6 +352,16 @@ fn navigation_id(run_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(CASEWORK_LIVE_NAVIGATION_DOMAIN_V1);
     hasher.update(run_id.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn question_navigation_id(work_item_id: &str, question_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(CASEWORK_LIVE_QUESTION_NAVIGATION_DOMAIN_V1);
+    hasher.update((work_item_id.len() as u64).to_be_bytes());
+    hasher.update(work_item_id.as_bytes());
+    hasher.update((question_id.len() as u64).to_be_bytes());
+    hasher.update(question_id.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -596,5 +607,36 @@ pub(crate) mod test_support {
 
         let (_owned, path, _) = fixture();
         assert!(load_live_run_at(&path, "substituted-run", instant()).is_err());
+    }
+
+    #[test]
+    fn repeated_lane_local_question_ids_have_distinct_navigation_ids() {
+        let first = question_navigation_id("lane-a", "question:shared");
+        let second = question_navigation_id("lane-b", "question:shared");
+        assert_ne!(first, second);
+        assert_eq!(first, question_navigation_id("lane-a", "question:shared"));
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    #[ignore = "set NIGHTSHIFT_LEDGER_FIXTURE_DIR for the installed-browser qualification journey"]
+    fn emit_installed_browser_fixture() {
+        let output = std::env::var_os("NIGHTSHIFT_LEDGER_FIXTURE_DIR")
+            .map(std::path::PathBuf::from)
+            .expect("NIGHTSHIFT_LEDGER_FIXTURE_DIR must name an explicit temporary directory");
+        assert!(output.is_dir());
+        let (source, database, run_id, final_bytes) = closed_fixture();
+        for entry in fs::read_dir(source.path()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                fs::copy(entry.path(), output.join(entry.file_name())).unwrap();
+            }
+        }
+        let case = output.join("sealed-case");
+        fs::create_dir(&case).unwrap();
+        fs::write(case.join("packet.v1.json"), PACKET).unwrap();
+        fs::write(case.join("run-receipts.v1.json"), final_bytes).unwrap();
+        assert!(output.join(database.file_name().unwrap()).is_file());
+        assert_eq!(run_id, "ledger/live:fixture");
     }
 }

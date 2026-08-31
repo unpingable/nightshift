@@ -157,6 +157,16 @@ class LiveCaseworkSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.validator.validate(terminal)
 
+        contradictory = copy.deepcopy(self.document)
+        contradictory["work_items"][0]["accepted_receipt_kind"] = "terminal"
+        with self.assertRaises(ValidationError):
+            self.validator.validate(contradictory)
+
+        contradictory = copy.deepcopy(terminal)
+        contradictory["work_items"][0]["accepted_receipt_kind"] = None
+        with self.assertRaises(ValidationError):
+            self.validator.validate(contradictory)
+
 
 if __name__ == "__main__":
     unittest.main()

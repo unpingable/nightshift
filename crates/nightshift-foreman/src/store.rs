@@ -92,6 +92,8 @@ pub struct ReadOnlyTerminalReceiptRowV1 {
     pub receipt_digest: String,
     pub raw_bytes: Vec<u8>,
     pub receipt_kind: String,
+    pub state: String,
+    pub result_classification: String,
 }
 
 /// A transaction-consistent read snapshot for read-only operator projections.
@@ -916,6 +918,8 @@ impl ForemanStore {
                 .optional()?
                 .ok_or_else(|| ForemanError::UnknownRun(run_id.to_owned()))?;
         let projection = load_projection(&transaction, run_id)?;
+        let profile = ExecutionProfileV2::from_slice(&profile_bytes)?;
+        profile.validate()?;
         let events = {
             let mut statement = transaction.prepare(
                 "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
@@ -934,7 +938,11 @@ impl ForemanStore {
                     raw_digest: row.get(7)?,
                 })
             })?;
-            rows.collect::<Result<Vec<_>, _>>()?
+            let rows = rows.collect::<Result<Vec<_>, _>>()?;
+            for row in &rows {
+                validate_read_only_event_row(row, run_id, &projection.packet_digest, &profile)?;
+            }
+            rows
         };
         let terminal_receipts = {
             let mut statement = transaction.prepare(
@@ -948,10 +956,23 @@ impl ForemanStore {
                     receipt_digest: row.get(2)?,
                     raw_bytes: row.get(3)?,
                     receipt_kind: row.get(4)?,
+                    state: String::new(),
+                    result_classification: String::new(),
                 })
             })?;
-            rows.collect::<Result<Vec<_>, _>>()?
+            let rows = rows.collect::<Result<Vec<_>, _>>()?;
+            let mut validated = Vec::with_capacity(rows.len());
+            for row in rows {
+                validated.push(validate_read_only_receipt_row(
+                    run_id,
+                    row,
+                    &projection.packet_digest,
+                    &profile,
+                )?);
+            }
+            validated
         };
+        validate_read_only_projection_receipts(&projection, &terminal_receipts)?;
         let final_snapshot_bytes = transaction
             .query_row(
                 "SELECT raw_bytes FROM final_snapshots WHERE run_id = ?1",
@@ -1032,6 +1053,14 @@ impl ForemanStore {
                         | OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )
                 .map_err(ForemanError::Sql)?;
+                connection.pragma_update(None, "query_only", "ON")?;
+                let query_only: u8 =
+                    connection.query_row("PRAGMA query_only", [], |row| row.get(0))?;
+                if query_only != 1 {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "SQLite query_only was not enabled".to_owned(),
+                    ));
+                }
                 if let (Some(wal), Some(shm)) = (&wal, &shm) {
                     require_same_file(wal, &wal_path, "WAL")?;
                     require_same_file(shm, &shm_path, "SHM")?;
@@ -1044,6 +1073,187 @@ impl ForemanStore {
             }
         }
     }
+}
+
+fn validate_read_only_event_row(
+    row: &ReadOnlyEventRowV1,
+    expected_run_id: &str,
+    expected_packet_digest: &str,
+    profile: &ExecutionProfileV2,
+) -> Result<(), ForemanError> {
+    if row.sequence == 0 || row.raw_digest != raw_digest(&row.raw_bytes) {
+        return Err(ForemanError::ReadOnlyStore(
+            "journal sequence or retained-raw digest mismatch".to_owned(),
+        ));
+    }
+    if row.kind == "adapter_event" {
+        let event = AdapterEventV1::from_slice(&row.raw_bytes)?;
+        event.validate()?;
+        if event.event_id != row.event_id
+            || event.run_id != expected_run_id
+            || event.packet_digest != expected_packet_digest
+            || row.work_item_id.as_deref() != Some(event.work_item_id.as_str())
+            || row.attempt_id.as_deref() != Some(event.attempt_id.as_str())
+            || event.occurred_at.to_rfc3339() != row.recorded_at
+            || profile
+                .work_items
+                .get(&event.work_item_id)
+                .map(|work| work.adapter_id.as_str())
+                != Some(event.adapter_id.as_str())
+            || profile
+                .adapters
+                .get(&event.adapter_id)
+                .map(|adapter| adapter.adapter_version.as_str())
+                != Some(event.adapter_version.as_str())
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "adapter event row identity mismatch".to_owned(),
+            ));
+        }
+    } else if row.kind == "internal" {
+        let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        if event.schema != INTERNAL_EVENT_SCHEMA
+            || event.event_id != row.event_id
+            || event.run_id != expected_run_id
+            || event.work_item_id != row.work_item_id
+            || event.attempt_id != row.attempt_id
+            || event.recorded_at.to_rfc3339() != row.recorded_at
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "internal event row identity mismatch".to_owned(),
+            ));
+        }
+        if serde_jcs::to_vec(&event)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != row.raw_bytes
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "internal event exact bytes are not canonical".to_owned(),
+            ));
+        }
+        if let InternalPayload::AttemptCreated { start_request, .. } = &event.payload {
+            start_request.validate()?;
+            if start_request.run_id != expected_run_id
+                || start_request.packet_digest != expected_packet_digest
+                || event.work_item_id.as_deref() != Some(start_request.work_item_id.as_str())
+                || event.attempt_id.as_deref() != Some(start_request.attempt_id.as_str())
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "attempt-created start request mismatch".to_owned(),
+                ));
+            }
+        }
+    } else {
+        return Err(ForemanError::ReadOnlyStore(
+            "unknown journal row kind".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_read_only_receipt_row(
+    expected_run_id: &str,
+    mut row: ReadOnlyTerminalReceiptRowV1,
+    expected_packet_digest: &str,
+    profile: &ExecutionProfileV2,
+) -> Result<ReadOnlyTerminalReceiptRowV1, ForemanError> {
+    let (state, result_classification) = if row.receipt_kind == "terminal" {
+        let receipt = TerminalReceiptV1::from_slice(&row.raw_bytes)?;
+        receipt.validate()?;
+        if receipt.run_id != expected_run_id
+            || receipt.packet_digest != expected_packet_digest
+            || receipt.work_item_id != row.work_item_id
+            || row.attempt_id.as_deref() != Some(receipt.attempt_id.as_str())
+            || receipt.receipt_digest != row.receipt_digest
+            || profile
+                .work_items
+                .get(&receipt.work_item_id)
+                .map(|work| work.adapter_id.as_str())
+                != Some(receipt.adapter_id.as_str())
+            || profile
+                .adapters
+                .get(&receipt.adapter_id)
+                .map(|adapter| adapter.adapter_version.as_str())
+                != Some(receipt.adapter_version.as_str())
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "terminal receipt row identity mismatch".to_owned(),
+            ));
+        }
+        (receipt.state, receipt.result_classification)
+    } else if row.receipt_kind == "not_started" {
+        let receipt = NotStartedReceiptV1::from_slice(&row.raw_bytes)?;
+        receipt.validate()?;
+        if receipt.run_id != expected_run_id
+            || receipt.packet_digest != expected_packet_digest
+            || receipt.work_item_id != row.work_item_id
+            || row.attempt_id.is_some()
+            || receipt.receipt_digest != row.receipt_digest
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "not-started receipt row identity mismatch".to_owned(),
+            ));
+        }
+        (receipt.state, receipt.result_classification)
+    } else {
+        return Err(ForemanError::ReadOnlyStore(
+            "unknown accepted receipt kind".to_owned(),
+        ));
+    };
+    row.state = state;
+    row.result_classification = result_classification;
+    Ok(row)
+}
+
+fn validate_read_only_projection_receipts(
+    projection: &LiveRunProjectionV1,
+    receipts: &[ReadOnlyTerminalReceiptRowV1],
+) -> Result<(), ForemanError> {
+    let by_item: BTreeMap<_, _> = receipts
+        .iter()
+        .map(|receipt| (receipt.work_item_id.as_str(), receipt))
+        .collect();
+    if by_item.len() != receipts.len() {
+        return Err(ForemanError::ReadOnlyStore(
+            "duplicate accepted receipt work item".to_owned(),
+        ));
+    }
+    if by_item.keys().any(|work_item_id| {
+        !projection
+            .work_items
+            .iter()
+            .any(|item| item.work_item_id == *work_item_id)
+    }) {
+        return Err(ForemanError::ReadOnlyStore(
+            "accepted receipt references an unknown projected work item".to_owned(),
+        ));
+    }
+    for item in &projection.work_items {
+        match (
+            by_item.get(item.work_item_id.as_str()),
+            &item.accepted_terminal_outcome,
+        ) {
+            (None, None) if !item.scheduler_state.is_explicit_terminal() => {}
+            (Some(receipt), Some(outcome))
+                if receipt.receipt_digest == outcome.receipt_digest
+                    && receipt.state == outcome.state
+                    && receipt.result_classification == outcome.result_classification
+                    && ((receipt.receipt_kind == "terminal"
+                        && matches!(
+                            item.scheduler_state,
+                            SchedulerStateV1::TerminalReceiptAccepted
+                        ))
+                        || (receipt.receipt_kind == "not_started"
+                            && matches!(item.scheduler_state, SchedulerStateV1::NotStarted))) => {}
+            _ => {
+                return Err(ForemanError::ReadOnlyStore(
+                    "accepted receipt and replay projection disagree".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn open_read_only_sidecar(path: &Path) -> Result<Option<File>, ForemanError> {
@@ -1623,3 +1833,27 @@ fn domain_digest(domain: &[u8], bytes: &[u8]) -> String {
 
 #[allow(dead_code)]
 fn _teardown_contract_is_retained(_: TeardownDeclarationV1) {}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_connection_enforces_query_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("query-only.sqlite");
+        let writer = Connection::open(&database).unwrap();
+        initialize(&writer).unwrap();
+        drop(writer);
+
+        let store = ForemanStore::open_read_only(&database).unwrap();
+        let connection = store.connection().unwrap();
+        let enabled: u8 = connection
+            .query_row("PRAGMA query_only", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(enabled, 1);
+        assert!(connection
+            .execute("CREATE TABLE forbidden_read_side_effect (id INTEGER)", [])
+            .is_err());
+    }
+}

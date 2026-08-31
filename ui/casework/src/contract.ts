@@ -156,6 +156,7 @@ export interface LiveRunIndex {
 }
 
 export interface LiveQuestion {
+  navigation_id: string;
   question_id: string;
   question: string;
   exhausted_evidence: string;

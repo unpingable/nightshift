@@ -921,6 +921,56 @@ fn query_only_projection_events_and_final_export_preserve_database_and_sidecar_b
 }
 
 #[test]
+fn query_only_snapshot_refuses_substituted_journal_custody() {
+    let (directory, store, _, _, _) = setup();
+    let database = directory.path().join("foreman.sqlite");
+    drop(store);
+
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER events_no_update;
+             UPDATE events SET raw_digest = 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+             WHERE sequence = (SELECT MIN(sequence) FROM events);",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert!(matches!(
+        reader.read_only_run_snapshot("run-fixture"),
+        Err(ForemanError::ReadOnlyStore(_))
+    ));
+}
+
+#[test]
+fn query_only_snapshot_refuses_substituted_accepted_receipt_custody() {
+    let (directory, store, packet, _, _) = setup();
+    let database = directory.path().join("foreman.sqlite");
+    let request = store
+        .prepare_attempt("run-fixture", "root-a", instant(1))
+        .unwrap();
+    let receipt = terminal(&packet, &request, "EXACT-STATE", "EXACT-CLASSIFICATION");
+    store
+        .accept_terminal_receipt(&serde_jcs::to_vec(&receipt).unwrap())
+        .unwrap();
+    drop(store);
+
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "DROP TRIGGER terminal_receipts_no_update;
+             UPDATE terminal_receipts SET receipt_kind = 'not_started'
+             WHERE work_item_id = 'root-a';",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reader = ForemanStore::open_read_only(&database).unwrap();
+    assert!(reader.read_only_run_snapshot("run-fixture").is_err());
+}
+
+#[test]
 fn checked_in_contract_schemas_are_closed_json_documents() {
     for bytes in [
         include_bytes!("../../../schemas/nightshift.foreman-admission.v1.schema.json").as_slice(),

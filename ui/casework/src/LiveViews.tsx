@@ -108,7 +108,7 @@ export function LiveWorkItemView({ navigationId, id }: { navigationId: string; i
       <Section title="1 · Bounded packet intent"><DefinitionGrid><Field label="Track"><Exact>{item.track}</Exact></Field><Field label="Dependencies"><StringList values={item.dependencies} /></Field><Field label="Entry predicates"><StringList values={item.entry_predicates} /></Field><Field label="Stop conditions"><StringList values={item.stop_conditions} /></Field></DefinitionGrid></Section>
       <Section title="2 · Live mechanism and attempt"><DefinitionGrid><Field label="Scheduler state"><Exact>{item.scheduler_state}</Exact></Field><Field label="Active attempt"><Exact wrap>{item.active_attempt_id ?? "none"}</Exact></Field><Field label="Adapter"><Exact wrap>{item.adapter_id} · {item.adapter_version}</Exact></Field><Field label="Provider/model class"><Exact>{item.provider_model_class}</Exact></Field><Field label="Provider identity"><Exact wrap>{item.provider_identity ?? "not observed"}</Exact></Field><Field label="Session / thread / turn / queue"><Exact wrap>{[item.session_identity, item.thread_identity, item.turn_identity, item.queue_identity].map((value) => value ?? "null").join(" · ")}</Exact></Field><Field label="Last event"><Exact wrap>{item.last_event_sequence === null ? "none" : `${item.last_event_sequence} · ${item.last_event_digest}`}</Exact></Field></DefinitionGrid></Section>
       <Section title="3 · Accepted terminal / not-started receipt or explicit absence">{item.accepted_outcome ? <DefinitionGrid><Field label="Receipt kind"><Exact>{item.accepted_receipt_kind ?? "unknown"}</Exact></Field><Field label="Exact state"><Exact wrap>{item.accepted_outcome.state}</Exact></Field><Field label="Exact classification"><Exact wrap>{item.accepted_outcome.result_classification}</Exact></Field><Field label="Receipt digest"><Exact wrap>{item.accepted_outcome.receipt_digest}</Exact></Field></DefinitionGrid> : <p className="empty"><Exact>{item.accepted_outcome_absent_reason ?? "ABSENT"}</Exact></p>}</Section>
-      <Section title={"Lane-local questions · " + item.human_questions.length}>{item.human_questions.map((question) => <p key={question.question_id}><Link href={liveQuestionPath(run.navigation_id, question.question_id)}>{question.question}</Link></p>)}{item.human_questions.length === 0 && <p className="empty">None</p>}</Section>
+      <Section title={"Lane-local questions · " + item.human_questions.length}>{item.human_questions.map((question) => <p key={question.navigation_id}><Link href={liveQuestionPath(run.navigation_id, question.navigation_id)}>{question.question}</Link></p>)}{item.human_questions.length === 0 && <p className="empty">None</p>}</Section>
     </div>
   </main>;
 }
@@ -120,7 +120,7 @@ function QuestionRecord({ question }: { question: LiveQuestion }) {
 export function LiveQuestionView({ navigationId, id }: { navigationId: string; id: string }) {
   const state = useRemote(() => getLiveRun(navigationId), [navigationId]);
   const run = state.data;
-  const question = run?.work_items.flatMap((item) => item.human_questions).find((candidate) => candidate.question_id === id);
+  const question = run?.work_items.flatMap((item) => item.human_questions).find((candidate) => candidate.navigation_id === id);
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   if (!question) return <ScreenState loading={false} error="Question is absent from this exact lane." />;
   return <main id="main" tabIndex={-1} className="page"><LiveHeader run={run} /><Section title={"Lane-local question · " + question.question_id}><QuestionRecord question={question} /><p>This read-only surface records no answer or disposition.</p></Section></main>;
@@ -140,6 +140,12 @@ export function LiveRawView({ navigationId }: { navigationId: string }) {
   const profile = useRemote(() => getLiveRaw(navigationId, "profile"), [navigationId]);
   const journal = useRemote(() => getLiveRaw(navigationId, "foreman-journal"), [navigationId]);
   const receipts = useRemote(() => getLiveRaw(navigationId, "accepted-receipts"), [navigationId]);
+  const finalSnapshot = useRemote(
+    () => state.data?.raw_sources.final_snapshot_sha256
+      ? getLiveRaw(navigationId, "final")
+      : Promise.resolve("ABSENT — no exact final snapshot is retained."),
+    [navigationId, state.data?.raw_sources.final_snapshot_sha256],
+  );
   const run = state.data;
   if (!run) return <ScreenState loading={state.loading} error={state.error} />;
   const rows: Array<[string, string | undefined, boolean, string | undefined]> = [
@@ -148,6 +154,7 @@ export function LiveRawView({ navigationId }: { navigationId: string }) {
     ["Execution profile", profile.data, profile.loading, profile.error],
     ["Foreman journal framing (hex)", journal.data, journal.loading, journal.error],
     ["Accepted receipt framing (hex)", receipts.data, receipts.loading, receipts.error],
+    ["Exact final snapshot", finalSnapshot.data, finalSnapshot.loading, finalSnapshot.error],
   ];
-  return <main id="main" tabIndex={-1} className="page wide"><LiveHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source custody</p><h1>Live raw sources</h1><p>The journal and accepted-receipt framings use fixed magic, big-endian lengths, and exact retained bytes.</p></div></header><div className="raw-grid">{rows.map(([title, data, loading, error]) => <Section title={title} key={title}>{data === undefined ? <ScreenState loading={loading} error={error} /> : <pre tabIndex={0}>{data}</pre>}</Section>)}</div></main>;
+  return <main id="main" tabIndex={-1} className="page wide"><LiveHeader run={run} /><header className="record-heading"><div><p className="eyebrow">Exact source custody</p><h1>Live raw sources</h1><p>The journal and accepted-receipt framings use fixed magic, big-endian lengths, and exact retained bytes.</p></div></header><Section title="Exact event bytes">{run.events.length ? <ul>{run.events.map((event) => <li key={event.sequence}><a target="_blank" rel="noreferrer" href={`/api/v1/active-runs/${encodeURIComponent(run.navigation_id)}/events/${event.sequence}/raw`}>Event {event.sequence} · {event.event_id}</a></li>)}</ul> : <p className="empty">None</p>}</Section><div className="raw-grid">{rows.map(([title, data, loading, error]) => <Section title={title} key={title}>{data === undefined ? <ScreenState loading={loading} error={error} /> : <pre tabIndex={0}>{data}</pre>}</Section>)}</div></main>;
 }

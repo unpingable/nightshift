@@ -7,6 +7,8 @@ pub const CASEWORK_LIVE_RUN_INDEX_SCHEMA_V1: &str = "nightshift.casework-live-ru
 pub const CASEWORK_LIVE_RUN_DIGEST_DOMAIN_V1: &[u8] = b"nightshift.casework-live-run.digest/v1\0";
 pub const CASEWORK_LIVE_NAVIGATION_DOMAIN_V1: &[u8] =
     b"nightshift.casework-live-run.navigation/v1\0";
+pub const CASEWORK_LIVE_QUESTION_NAVIGATION_DOMAIN_V1: &[u8] =
+    b"nightshift.casework-live-question.navigation/v1\0";
 pub const FOREMAN_JOURNAL_FRAMING_V1: &[u8] = b"NIGHTSHIFT-FOREMAN-JOURNAL-FRAMING-V1\0";
 pub const FOREMAN_ACCEPTED_RECEIPTS_FRAMING_V1: &[u8] =
     b"NIGHTSHIFT-FOREMAN-ACCEPTED-RECEIPTS-FRAMING-V1\0";
@@ -110,6 +112,7 @@ pub struct LiveWorkItemV1 {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveQuestionV1 {
+    pub navigation_id: String,
     pub question_id: String,
     pub question: String,
     pub exhausted_evidence: String,

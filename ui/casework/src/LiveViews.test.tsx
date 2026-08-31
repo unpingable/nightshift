@@ -29,7 +29,7 @@ describe("live Casework projection", () => {
 
   it("renders lane-local questions and the exact event timeline without response controls", async () => {
     installApiMock();
-    at(`/active-runs/${liveRun.navigation_id}/questions/question%3Aone`);
+    at(`/active-runs/${liveRun.navigation_id}/questions/${liveRun.work_items[0].human_questions[0].navigation_id}`);
     const { unmount } = render(<App />);
     expect(await screen.findByText("Which explicit input is required?")).toBeVisible();
     expect(screen.getByText("This read-only surface records no answer or disposition.")).toBeVisible();
@@ -51,5 +51,17 @@ describe("live Casework projection", () => {
     render(<App />);
     expect(await screen.findByRole("link", { name: "Open byte-matched live foreman history" }))
       .toHaveAttribute("href", `/active-runs/${liveRun.navigation_id}`);
+  });
+
+  it("exposes final and per-event exact raw sources without adding controls", async () => {
+    installApiMock();
+    at(`/active-runs/${liveRun.navigation_id}/raw`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Exact final snapshot" })).toBeVisible();
+    expect(screen.getByRole("link", { name: /Event 1/ })).toHaveAttribute(
+      "href",
+      `/api/v1/active-runs/${liveRun.navigation_id}/events/1/raw`,
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

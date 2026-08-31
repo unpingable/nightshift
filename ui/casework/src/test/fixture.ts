@@ -82,6 +82,7 @@ export const liveRun: CaseworkLiveRun = {
     last_event_sequence: 2,
     last_event_digest: "sha256:" + "9".repeat(64),
     human_questions: [{
+      navigation_id: "e".repeat(64),
       question_id: "question:one",
       question: "Which explicit input is required?",
       exhausted_evidence: "Local evidence exhausted.",

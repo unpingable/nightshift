@@ -42,6 +42,11 @@ for required in "${required_markers[@]}"; do
     fi
 done
 
+if ! rg -q 'pragma_update\(None, "query_only", "ON"\)' crates/nightshift-foreman/src/store.rs ||
+   ! rg -q 'PRAGMA query_only' crates/nightshift-foreman/src/store.rs; then
+    fail "foreman owner does not enforce and verify SQLite query_only"
+fi
+
 if rg -n 'ForemanStore|TransactionBehavior::Immediate|initialize\(|pragma_update|journal_mode.*WAL' "$snapshot" >"$hits"; then
     fail "Casework imports a foreman writer or initialization surface:"
     cat "$hits" >&2
@@ -69,9 +74,10 @@ if [ "$#" -gt 0 ] && [ "$1" = "--self-test-inject" ]; then
     temporary=$(mktemp -d)
     self_hits=$(mktemp)
     trap 'rm -rf "$temporary"; rm -f "$hits" "$snapshot" "$self_hits"' EXIT
-    mkdir -p "$temporary/crates/nightshift-casework/src" "$temporary/ui/casework/src" "$temporary/schemas" "$temporary/scripts"
+    mkdir -p "$temporary/crates/nightshift-casework/src" "$temporary/crates/nightshift-foreman/src" "$temporary/ui/casework/src" "$temporary/schemas" "$temporary/scripts"
     cp scripts/check_casework_live_read_only_surface.sh "$temporary/scripts/"
     cp crates/nightshift-casework/src/live_loader.rs crates/nightshift-casework/src/live_model.rs crates/nightshift-casework/src/server.rs "$temporary/crates/nightshift-casework/src/"
+    cp crates/nightshift-foreman/src/store.rs "$temporary/crates/nightshift-foreman/src/"
     cp ui/casework/src/LiveViews.tsx ui/casework/src/api.ts "$temporary/ui/casework/src/"
     cp schemas/nightshift.casework-live-run.v1.schema.json "$temporary/schemas/"
     printf '%s\n' 'fn injected_transition() {' '  let _ = ForemanStore::open("writer.sqlite");' '  let _ = std::process::Command::new("worker");' '  let _ = std::fs::write("state", b"x");' '}' >>"$temporary/crates/nightshift-casework/src/live_model.rs"

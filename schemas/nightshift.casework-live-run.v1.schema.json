@@ -142,10 +142,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "question_id", "question", "exhausted_evidence", "safe_default",
+        "navigation_id", "question_id", "question", "exhausted_evidence", "safe_default",
         "consequences", "resume_point"
       ],
       "properties": {
+        "navigation_id": { "$ref": "#/$defs/navigation_id" },
         "question_id": { "$ref": "#/$defs/short_text" },
         "question": { "$ref": "#/$defs/text" },
         "exhausted_evidence": { "$ref": "#/$defs/text" },
@@ -167,6 +168,28 @@
     "work_item": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "accepted_receipt_kind": { "type": "null" } },
+            "required": ["accepted_receipt_kind"]
+          },
+          "then": {
+            "properties": {
+              "accepted_outcome": { "type": "null" },
+              "accepted_outcome_absent_reason": {
+                "const": "NO_ACCEPTED_TERMINAL_OR_NOT_STARTED_RECEIPT"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "accepted_outcome": { "$ref": "#/$defs/accepted_outcome" },
+              "accepted_outcome_absent_reason": { "type": "null" }
+            }
+          }
+        }
+      ],
       "required": [
         "work_item_id", "track", "campaign_codename", "campaign_slug",
         "dependencies", "entry_predicates", "stop_conditions", "scheduler_state",
