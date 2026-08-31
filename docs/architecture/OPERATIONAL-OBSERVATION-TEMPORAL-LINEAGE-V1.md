@@ -15,7 +15,7 @@ The immutable lineage contract accepts only the exact FIELD contracts:
 - Monitor schema monitor.operational-acquisition/v1;
 - NQ schema nq.operational-observation-qualification/v1.
 
-The Rust module uses fixture-compatible closed types. It has no path or runtime dependency on a mutable Monitor or NQ checkout.
+The Rust module uses fixture-compatible closed types. It verifies signatures over the exact supplied raw body slice, then requires typed subject and producer identity objects to reproduce their exact FIELD digests. It has no path or runtime dependency on a mutable Monitor or NQ checkout.
 
 ## Two contracts, two time scales
 
@@ -29,7 +29,7 @@ nightshift.operational-observation-lineage/v1 is immutable. It retains:
 - acquisition start/end, optional producer observation, receiver custody, NQ qualification, and Nightshift admission times;
 - the selected NQ claim support, cannot-testify findings, refusals, and subject contradictions without reclassification.
 
-nightshift.operational-reobservation-evaluation/v1 changes with evaluation time. A closed Nightshift profile owns max_age_seconds; current_until is derived from the producer observation time. Currentness uses the half-open interval evaluated_at < current_until. Equality is stale.
+nightshift.operational-reobservation-evaluation/v1 changes with evaluation time. A closed Nightshift profile owns max_age_seconds; current_until is derived from the producer observation time. Currentness uses the half-open interval evaluated_at < current_until. Equality is stale. Accepted fractional RFC3339 precision is retained through receiver custody, NQ qualification, Nightshift admission, evaluation, and current_until.
 
 The evaluation projects only claim IDs already supported by NQ. It cannot add a claim, convert cannot-testify or refusal into support, select a producer class as preferred, or erase a contradiction.
 
@@ -51,5 +51,7 @@ A new producer epoch begins again at sequence zero. Its existence does not rewri
 no_response, command_failed, producer_unavailable, receiver_unavailable, malformed_input, and refused acquisitions carry no producer observation time, payload schema, claim support, or current horizon. They evaluate as acquisition failure and request only re-observation.
 
 Re-observation is a request to acquire new testimony. It is not retry of an effect, remediation, dispatch, approval, execution, standing, or authorization. The module opens no listener, starts no subprocess, calls no office, and adds no binary. Canonical nightshiftd remains exactly two production binaries.
+
+The compatibility parser mirrors FIELD Monitor v1 limits: closed locator kinds, at most 32 locators and attachments, and at most 512 bytes for Monitor-owned text. Nightshift and NQ projection text remains bounded at 1024 bytes. Executable schemas encode exact subject-family alternatives.
 
 No aggregate result exists.

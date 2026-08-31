@@ -42,7 +42,24 @@ The exact checkpoint qualification ran:
     bash scripts/check_no_actuation_surface.sh
     bash scripts/check_no_actuation_surface.sh --self-test-inject
 
-Focused Nightshift owner qualification: 8 passed, 0 failed. Both operational-lineage gate modes, both canonical no-actuation gate modes, warnings-denied focused Clippy, formatting, schema parsing, exact two-binary census, and diff hygiene passed.
+The non-rewriting correction additionally ran:
+
+    cargo test --locked -p nightshiftd operational_lineage --lib
+    python3 -B -m unittest tests.test_operational_lineage_schema
+    cargo clippy --locked -p nightshiftd --lib --all-features -- -D warnings
+    cargo fmt --all -- --check
+    jq -e . schemas/nightshift.operational-observation-lineage.v1.schema.json
+    jq -e . schemas/nightshift.operational-reobservation-evaluation.v1.schema.json
+    bash scripts/check_operational_lineage_boundary.sh
+    bash scripts/check_operational_lineage_boundary.sh --self-test-inject
+    bash scripts/check_no_actuation_surface.sh
+    bash scripts/check_no_actuation_surface.sh --self-test-inject
+
+Corrected focused Nightshift owner qualification: 12 passed, 0 failed. Executable Draft 2020-12 schema qualification: 4 passed, 0 failed. Both operational-lineage gate modes, both canonical no-actuation gate modes, warnings-denied focused Clippy, formatting, schema parsing, exact two-binary census, and diff hygiene passed.
+
+## Rejected checkpoint correction
+
+Checkpoint 17d0743909eff79d2b95cfdd40477712e23a8a37 remains immutable but is not an accepted predecessor. Its successor verifies the Ed25519 transcript over the exact supplied raw Monitor body slice, preserves fractional RFC3339 precision, mirrors FIELD Monitor 512-byte and 32-item limits plus the closed locator enum, recomputes embedded identities, cross-binds NQ finding references and values, and executes exact family-specific JSON Schema parity tests. Independently fixed accepted FIELD Monitor and NQ bytes plus four refused Monitor vectors are retained under crates/nightshiftd/tests/fixtures/operational_lineage.
 
 ## Custody and scope
 

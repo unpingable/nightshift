@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -25,6 +26,8 @@ pub const FIELD_CLOCK_NQ_RESULT_HEAD: &str = "39b9f84f2f70955dd12e5cbfe798c740f9
 const MONITOR_SIGNATURE_DOMAIN_V1: &str = "monitor.operational-observation.v1";
 const MONITOR_CONTENT_DIGEST_DOMAIN_V1: &str = "operational.content.v1";
 const MAX_COLLECTION: usize = 64;
+const MONITOR_MAX_COLLECTION: usize = 32;
+const MONITOR_MAX_TEXT_BYTES: usize = 512;
 const MAX_RAW_BYTES: usize = 1024 * 1024;
 const MAX_AGE_SECONDS: u64 = 31 * 24 * 60 * 60;
 const NONCLAIMS: [&str; 4] = [
@@ -185,7 +188,7 @@ pub struct OperationalSubjectV1 {
 
 impl OperationalSubjectV1 {
     fn validate(&self) -> Result<(), String> {
-        token("subject.namespace", &self.namespace)?;
+        monitor_token("subject.namespace", &self.namespace)?;
         let expected = match self.kind {
             SubjectKindV1::Host => "monitor.subject-basis.host-machine/v1",
             SubjectKindV1::ServiceInstance => "monitor.subject-basis.service-instance-registry/v1",
@@ -271,10 +274,23 @@ struct MonitorLineageV1 {
     predecessor_observation_digest: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocatorKindV1 {
+    LocalPath,
+    HostLabel,
+    DnsName,
+    IpAddress,
+    Url,
+    Socket,
+    SchedulerDisplayName,
+    RepositoryCheckout,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LocatorV1 {
-    kind: String,
+    kind: LocatorKindV1,
     value: String,
     observed_at: String,
 }
@@ -448,6 +464,11 @@ impl OperationalObservationLineageV1 {
         producer(&self.producer)?;
         digest("subject_identity_digest", &self.subject_identity_digest)?;
         digest("producer_identity_digest", &self.producer_identity_digest)?;
+        if self.subject_identity_digest != monitor_subject_digest(&self.subject)?
+            || self.producer_identity_digest != monitor_producer_digest(&self.producer)?
+        {
+            return Err("embedded operational subject or producer identity mismatch".into());
+        }
         token("nq_profile_id", &self.nq_profile_id)?;
         token("nq_input_id", &self.nq_input_id)?;
         token("epoch", &self.epoch)?;
@@ -523,7 +544,8 @@ pub fn admit_operational_lineage(
     }
     let monitor: SignedMonitorV1 =
         serde_json::from_slice(monitor_bytes).map_err(|error| format!("Monitor bytes: {error}"))?;
-    validate_monitor(&monitor)?;
+    let body_bytes = extract_object_field(monitor_bytes, "body")?;
+    validate_monitor(&monitor, body_bytes)?;
     let nq: NqArtifactV1 =
         serde_json::from_slice(nq_bytes).map_err(|error| format!("NQ bytes: {error}"))?;
     validate_nq(&nq)?;
@@ -532,8 +554,8 @@ pub fn admit_operational_lineage(
         .iter()
         .find(|value| value.input_id == nq_input_id)
         .ok_or_else(|| "selected NQ input is absent".to_owned())?;
-    bind_input(input, monitor_bytes, &monitor)?;
-    let observation_digest = monitor_observation_digest(&monitor.body)?;
+    bind_input(input, monitor_bytes, body_bytes, &monitor)?;
+    let observation_digest = monitor_observation_digest(body_bytes);
     let subject_digest = monitor_subject_digest(&monitor.body.subject)?;
     let producer_digest = monitor_producer_digest(&monitor.body.producer)?;
     let contradictions = nq
@@ -856,7 +878,7 @@ fn evaluation_state(
     }
 }
 
-fn validate_monitor(value: &SignedMonitorV1) -> Result<(), String> {
+fn validate_monitor(value: &SignedMonitorV1, body_bytes: &[u8]) -> Result<(), String> {
     let body = &value.body;
     if body.schema != MONITOR_OPERATIONAL_SCHEMA_V1
         || value.signature_domain != MONITOR_SIGNATURE_DOMAIN_V1
@@ -869,8 +891,8 @@ fn validate_monitor(value: &SignedMonitorV1) -> Result<(), String> {
     if value.signer_key_identity_digest != monitor_producer_digest(&body.producer)? {
         return Err("Monitor signer identity mismatch".into());
     }
-    token("attempt_id", &body.acquisition.attempt_id)?;
-    token("diagnostic_code", &body.acquisition.diagnostic_code)?;
+    monitor_token("attempt_id", &body.acquisition.attempt_id)?;
+    monitor_token("diagnostic_code", &body.acquisition.diagnostic_code)?;
     if let Some(value) = &body.acquisition.raw_basis_digest {
         digest("raw_basis_digest", value)?;
     }
@@ -879,7 +901,7 @@ fn validate_monitor(value: &SignedMonitorV1) -> Result<(), String> {
     if start > end {
         return Err("Monitor acquisition time inversion".into());
     }
-    token("epoch", &body.lineage.epoch)?;
+    monitor_token("epoch", &body.lineage.epoch)?;
     match (
         body.lineage.sequence,
         &body.lineage.predecessor_observation_digest,
@@ -900,7 +922,7 @@ fn validate_monitor(value: &SignedMonitorV1) -> Result<(), String> {
             if observed < start || observed > end {
                 return Err("producer time outside acquisition".into());
             }
-            token(
+            monitor_token(
                 "payload_schema",
                 body.payload_schema
                     .as_deref()
@@ -921,12 +943,16 @@ fn validate_monitor(value: &SignedMonitorV1) -> Result<(), String> {
         }
         _ => {}
     }
+    if body.attachments.len() > MONITOR_MAX_COLLECTION
+        || body.locators.len() > MONITOR_MAX_COLLECTION
+    {
+        return Err("Monitor locators or attachments exceed 32".into());
+    }
     for item in &body.attachments {
         content(item)?;
     }
     for item in &body.locators {
-        token("locator.kind", &item.kind)?;
-        text("locator.value", &item.value)?;
+        monitor_text("locator.value", &item.value)?;
         time("locator.observed_at", &item.observed_at)?;
     }
     let key: [u8; 32] = lower_hex(&body.producer.public_key_hex, 32, "public key")?
@@ -936,10 +962,9 @@ fn validate_monitor(value: &SignedMonitorV1) -> Result<(), String> {
         .try_into()
         .map_err(|_| "signature length".to_owned())?;
     let verifying = VerifyingKey::from_bytes(&key).map_err(|_| "public key encoding".to_owned())?;
-    let body_bytes = serde_json::to_vec(body).map_err(|error| error.to_string())?;
     verifying
         .verify_strict(
-            &signature_transcript(&body_bytes),
+            &signature_transcript(body_bytes),
             &Signature::from_bytes(&signature),
         )
         .map_err(|_| "strict Monitor Ed25519 verification failed".to_owned())
@@ -956,21 +981,48 @@ fn validate_nq(value: &NqArtifactV1) -> Result<(), String> {
         return Err("NQ input count invalid".into());
     }
     let mut ids = BTreeSet::new();
-    for item in &value.inputs {
-        token("input_id", &item.input_id)?;
-        digest("raw_record_digest", &item.raw_record_digest)?;
-        if !ids.insert(item.input_id.as_str()) {
+    for input in &value.inputs {
+        token("input_id", &input.input_id)?;
+        digest("raw_record_digest", &input.raw_record_digest)?;
+        if !ids.insert(input.input_id.as_str()) {
             return Err("duplicate NQ input".into());
         }
+        validate_nq_findings(input)?;
     }
+    let mut contradiction_ids = BTreeSet::new();
     for item in &value.contradictions {
+        token("contradiction.claim_id", &item.claim_id)?;
         digest("contradiction.subject", &item.subject_identity_digest)?;
         digest("contradiction.first_value", &item.first_value_digest)?;
         digest("contradiction.second_value", &item.second_value_digest)?;
-        if !ids.contains(item.first_input_id.as_str())
-            || !ids.contains(item.second_input_id.as_str())
+        if item.first_input_id == item.second_input_id
+            || item.first_value_digest == item.second_value_digest
+            || !contradiction_ids.insert((
+                item.subject_identity_digest.as_str(),
+                item.claim_id.as_str(),
+                item.first_input_id.as_str(),
+                item.second_input_id.as_str(),
+            ))
         {
-            return Err("contradiction references unknown input".into());
+            return Err("NQ contradiction identity or values are invalid".into());
+        }
+        let first = value
+            .inputs
+            .iter()
+            .find(|input| input.input_id == item.first_input_id)
+            .ok_or_else(|| "contradiction first input is unknown".to_owned())?;
+        let second = value
+            .inputs
+            .iter()
+            .find(|input| input.input_id == item.second_input_id)
+            .ok_or_else(|| "contradiction second input is unknown".to_owned())?;
+        if first.subject_identity_digest.as_deref() != Some(item.subject_identity_digest.as_str())
+            || second.subject_identity_digest.as_deref()
+                != Some(item.subject_identity_digest.as_str())
+            || !claim_value_is(first, &item.claim_id, &item.first_value_digest)
+            || !claim_value_is(second, &item.claim_id, &item.second_value_digest)
+        {
+            return Err("NQ contradiction does not bind exact input claim values".into());
         }
     }
     if value.nonclaims
@@ -984,9 +1036,73 @@ fn validate_nq(value: &NqArtifactV1) -> Result<(), String> {
     Ok(())
 }
 
-fn bind_input(input: &NqInputV1, raw: &[u8], monitor: &SignedMonitorV1) -> Result<(), String> {
+fn validate_nq_findings(input: &NqInputV1) -> Result<(), String> {
+    if input.claim_support.len() > MAX_COLLECTION
+        || input.cannot_testify.len() > MAX_COLLECTION
+        || input.refusals.len() > MAX_COLLECTION
+    {
+        return Err("NQ input finding collection exceeds its bound".into());
+    }
+    let mut support_ids = BTreeSet::new();
+    for claim in &input.claim_support {
+        token("claim_id", &claim.claim_id)?;
+        text("proposition", &claim.proposition)?;
+        digest("value_digest", &claim.value_digest)?;
+        let expected_monitor = input
+            .monitor_record_digest
+            .as_deref()
+            .ok_or_else(|| "claim support lacks a Monitor record identity".to_owned())?;
+        if claim.monitor_record_digest != expected_monitor
+            || !support_ids.insert(claim.claim_id.as_str())
+        {
+            return Err("NQ claim support binding or identity is invalid".into());
+        }
+    }
+    let mut cannot_ids = BTreeSet::new();
+    for finding in &input.cannot_testify {
+        token("cannot_testify.claim_id", &finding.claim_id)?;
+        text("cannot_testify.reason", &finding.reason)?;
+        if support_ids.contains(finding.claim_id.as_str())
+            || !cannot_ids.insert(finding.claim_id.as_str())
+        {
+            return Err("NQ cannot-testify overlaps or duplicates claim support".into());
+        }
+    }
+    let mut refusal_codes = BTreeSet::new();
+    for refusal in &input.refusals {
+        token("refusal.code", &refusal.code)?;
+        text("refusal.detail", &refusal.detail)?;
+        digest("refusal.exact_basis_digest", &refusal.exact_basis_digest)?;
+        if refusal.exact_basis_digest != input.raw_record_digest
+            || !refusal_codes.insert(refusal.code.as_str())
+        {
+            return Err("NQ refusal does not bind exact input bytes or is duplicated".into());
+        }
+    }
+    if (!input.refusals.is_empty()
+        || input.acquisition_outcome.as_deref() != Some("observation_produced"))
+        && !input.claim_support.is_empty()
+    {
+        return Err("NQ failure or refusal was promoted into claim support".into());
+    }
+    Ok(())
+}
+
+fn claim_value_is(input: &NqInputV1, claim_id: &str, value_digest: &str) -> bool {
+    input
+        .claim_support
+        .iter()
+        .any(|claim| claim.claim_id == claim_id && claim.value_digest == value_digest)
+}
+
+fn bind_input(
+    input: &NqInputV1,
+    raw: &[u8],
+    body_bytes: &[u8],
+    monitor: &SignedMonitorV1,
+) -> Result<(), String> {
     let body = &monitor.body;
-    let observation = monitor_observation_digest(body)?;
+    let observation = monitor_observation_digest(body_bytes);
     let subject = monitor_subject_digest(&body.subject)?;
     let producer_id = monitor_producer_digest(&body.producer)?;
     if input.raw_record_digest != sha256(raw)
@@ -1027,9 +1143,9 @@ fn bind_input(input: &NqInputV1, raw: &[u8], monitor: &SignedMonitorV1) -> Resul
 }
 
 fn producer(value: &ProducerPrincipalV1) -> Result<(), String> {
-    token("principal_id", &value.principal_id)?;
-    token("collector_id", &value.collector_id)?;
-    token("producer_class", &value.producer_class)?;
+    monitor_token("principal_id", &value.principal_id)?;
+    monitor_token("collector_id", &value.collector_id)?;
+    monitor_token("producer_class", &value.producer_class)?;
     if value.key_algorithm != "ed25519" {
         return Err("unsupported producer key algorithm".into());
     }
@@ -1041,9 +1157,9 @@ fn producer(value: &ProducerPrincipalV1) -> Result<(), String> {
 }
 
 fn coverage(value: &CoverageV1) -> Result<(), String> {
-    ordered("expected", &value.expected_dimensions, false)?;
-    ordered("observed", &value.observed_dimensions, true)?;
-    ordered("omitted", &value.omitted_dimensions, true)?;
+    monitor_ordered("expected", &value.expected_dimensions, false)?;
+    monitor_ordered("observed", &value.observed_dimensions, true)?;
+    monitor_ordered("omitted", &value.omitted_dimensions, true)?;
     let observed = value.observed_dimensions.iter().collect::<BTreeSet<_>>();
     let omitted = value.omitted_dimensions.iter().collect::<BTreeSet<_>>();
     let expected = value.expected_dimensions.iter().collect::<BTreeSet<_>>();
@@ -1054,7 +1170,7 @@ fn coverage(value: &CoverageV1) -> Result<(), String> {
 }
 
 fn content(value: &ContentV1) -> Result<(), String> {
-    token("media_type", &value.media_type)?;
+    monitor_token("media_type", &value.media_type)?;
     if value.digest_domain != MONITOR_CONTENT_DIGEST_DOMAIN_V1 || value.byte_length == 0 {
         return Err("content domain or length invalid".into());
     }
@@ -1121,11 +1237,8 @@ fn monitor_producer_digest(value: &ProducerPrincipalV1) -> Result<String, String
     ))
 }
 
-fn monitor_observation_digest(value: &MonitorBodyV1) -> Result<String, String> {
-    Ok(monitor_digest(
-        "operational.acquisition-record.v1",
-        &[&serde_json::to_vec(value).map_err(|error| error.to_string())?],
-    ))
+fn monitor_observation_digest(body_bytes: &[u8]) -> String {
+    monitor_digest("operational.acquisition-record.v1", &[body_bytes])
 }
 
 fn monitor_digest(domain: &str, parts: &[&[u8]]) -> String {
@@ -1169,7 +1282,7 @@ fn sha256(value: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(value))
 }
 fn canonical_time(value: DateTime<Utc>) -> String {
-    value.to_rfc3339_opts(SecondsFormat::Secs, true)
+    value.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
 fn time(name: &str, value: &str) -> Result<DateTime<Utc>, String> {
@@ -1221,6 +1334,124 @@ fn ordered(name: &str, values: &[String], allow_empty: bool) -> Result<(), Strin
         ));
     }
     values.iter().try_for_each(|value| token(name, value))
+}
+
+fn monitor_text(name: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MONITOR_MAX_TEXT_BYTES
+        || value.chars().any(char::is_control)
+    {
+        Err(format!(
+            "{name} is empty, exceeds 512 bytes, or contains controls"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn monitor_token(name: &str, value: &str) -> Result<(), String> {
+    monitor_text(name, value)?;
+    if value.chars().any(char::is_whitespace) {
+        Err(format!("{name} contains whitespace"))
+    } else {
+        Ok(())
+    }
+}
+
+fn monitor_ordered(name: &str, values: &[String], allow_empty: bool) -> Result<(), String> {
+    if (!allow_empty && values.is_empty())
+        || values.len() > MONITOR_MAX_COLLECTION
+        || values.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(format!(
+            "{name} is empty, exceeds 32 items, unsorted, or duplicated"
+        ));
+    }
+    values
+        .iter()
+        .try_for_each(|value| monitor_token(name, value))
+}
+
+fn extract_object_field<'a>(bytes: &'a [u8], key: &str) -> Result<&'a [u8], String> {
+    fn skip_ws(bytes: &[u8], mut cursor: usize) -> usize {
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+        {
+            cursor += 1;
+        }
+        cursor
+    }
+    fn string_end(bytes: &[u8], start: usize) -> Result<usize, String> {
+        if bytes.get(start) != Some(&b'"') {
+            return Err("JSON object member name is not a string".into());
+        }
+        let mut cursor = start + 1;
+        let mut escaped = false;
+        while let Some(byte) = bytes.get(cursor).copied() {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                return Ok(cursor + 1);
+            }
+            cursor += 1;
+        }
+        Err("unterminated JSON object member name".into())
+    }
+
+    let mut cursor = skip_ws(bytes, 0);
+    if bytes.get(cursor) != Some(&b'{') {
+        return Err("exact artifact root is not an object".into());
+    }
+    cursor += 1;
+    let mut found = None;
+    loop {
+        cursor = skip_ws(bytes, cursor);
+        if bytes.get(cursor) == Some(&b'}') {
+            cursor += 1;
+            break;
+        }
+        let name_start = cursor;
+        let name_end = string_end(bytes, name_start)?;
+        let name: String = serde_json::from_slice(&bytes[name_start..name_end])
+            .map_err(|error| format!("JSON object member name: {error}"))?;
+        cursor = skip_ws(bytes, name_end);
+        if bytes.get(cursor) != Some(&b':') {
+            return Err("JSON object member lacks colon".into());
+        }
+        let value_start = skip_ws(bytes, cursor + 1);
+        let mut values =
+            serde_json::Deserializer::from_slice(&bytes[value_start..]).into_iter::<IgnoredAny>();
+        values
+            .next()
+            .ok_or_else(|| "JSON object member lacks value".to_owned())?
+            .map_err(|error| format!("JSON object member value: {error}"))?;
+        let value_end = value_start + values.byte_offset();
+        if name == key {
+            if found.is_some() {
+                return Err(format!("duplicate exact object field {key}"));
+            }
+            if bytes.get(value_start) != Some(&b'{') {
+                return Err(format!("exact field {key} is not an object"));
+            }
+            found = Some(&bytes[value_start..value_end]);
+        }
+        cursor = skip_ws(bytes, value_end);
+        match bytes.get(cursor) {
+            Some(b',') => cursor += 1,
+            Some(b'}') => {
+                cursor += 1;
+                break;
+            }
+            _ => return Err("JSON object member lacks comma or closing brace".into()),
+        }
+    }
+    if skip_ws(bytes, cursor) != bytes.len() {
+        return Err("trailing bytes after exact artifact object".into());
+    }
+    found.ok_or_else(|| format!("missing exact object field {key}"))
 }
 
 fn lower_hex(value: &str, bytes: usize, name: &str) -> Result<Vec<u8>, String> {
@@ -1320,9 +1551,88 @@ mod tests {
         .unwrap()
     }
 
+    fn sign_exact_body(body_bytes: &[u8], producer: &ProducerPrincipalV1) -> Vec<u8> {
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let signature = signing.sign(&signature_transcript(body_bytes));
+        format!(
+            "{{ \"body\" : {}, \"signature_domain\":{},\"signer_key_identity_digest\":{},\"signature_hex\":{} }}",
+            std::str::from_utf8(body_bytes).unwrap(),
+            serde_json::to_string(MONITOR_SIGNATURE_DOMAIN_V1).unwrap(),
+            serde_json::to_string(&monitor_producer_digest(producer).unwrap()).unwrap(),
+            serde_json::to_string(&hex::encode(signature.to_bytes())).unwrap(),
+        )
+        .into_bytes()
+    }
+
+    fn reordered_whitespace_monitor() -> Vec<u8> {
+        let canonical = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
+        let signed: SignedMonitorV1 = serde_json::from_slice(&canonical).unwrap();
+        let body = &signed.body;
+        let fields = [
+            (
+                "subject",
+                serde_json::to_string_pretty(&body.subject).unwrap(),
+            ),
+            ("schema", serde_json::to_string(&body.schema).unwrap()),
+            (
+                "producer",
+                serde_json::to_string_pretty(&body.producer).unwrap(),
+            ),
+            ("lineage", serde_json::to_string(&body.lineage).unwrap()),
+            ("locators", serde_json::to_string(&body.locators).unwrap()),
+            (
+                "producer_observed_at",
+                serde_json::to_string(&body.producer_observed_at).unwrap(),
+            ),
+            (
+                "acquisition",
+                serde_json::to_string(&body.acquisition).unwrap(),
+            ),
+            (
+                "payload_schema",
+                serde_json::to_string(&body.payload_schema).unwrap(),
+            ),
+            ("payload", serde_json::to_string(&body.payload).unwrap()),
+            (
+                "attachments",
+                serde_json::to_string(&body.attachments).unwrap(),
+            ),
+            ("coverage", serde_json::to_string(&body.coverage).unwrap()),
+            (
+                "grants_authority",
+                serde_json::to_string(&body.grants_authority).unwrap(),
+            ),
+        ];
+        let body_text = format!(
+            "{{\n  {}\n}}",
+            fields
+                .into_iter()
+                .map(|(name, value)| format!("\"{name}\":{value}"))
+                .collect::<Vec<_>>()
+                .join(",\n  ")
+        );
+        sign_exact_body(body_text.as_bytes(), &body.producer)
+    }
+
+    fn subsecond_monitor() -> Vec<u8> {
+        let canonical = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
+        let mut signed: SignedMonitorV1 = serde_json::from_slice(&canonical).unwrap();
+        signed.body.acquisition.started_at = "2026-08-30T01:00:00.123456789Z".into();
+        signed.body.acquisition.ended_at = "2026-08-30T01:00:00.223456789Z".into();
+        signed.body.producer_observed_at = Some("2026-08-30T01:00:00.123456789Z".into());
+        let body_bytes = serde_json::to_vec(&signed.body).unwrap();
+        sign_exact_body(&body_bytes, &signed.body.producer)
+    }
+
+    fn validate_monitor_fixture(signed: &SignedMonitorV1) -> Result<(), String> {
+        let bytes = serde_json::to_vec(signed).unwrap();
+        let body = extract_object_field(&bytes, "body").unwrap();
+        validate_monitor(signed, body)
+    }
+
     fn nq(raw: &[u8], refused: bool) -> Vec<u8> {
         let signed: SignedMonitorV1 = serde_json::from_slice(raw).unwrap();
-        let observation = monitor_observation_digest(&signed.body).unwrap();
+        let observation = monitor_observation_digest(extract_object_field(raw, "body").unwrap());
         let produced = signed.body.acquisition.outcome == AcquisitionOutcomeV1::ObservationProduced;
         let input = NqInputV1 {
             input_id: "input:fixture".into(),
@@ -1518,12 +1828,18 @@ mod tests {
         let raw = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
         let mut signed: SignedMonitorV1 = serde_json::from_slice(&raw).unwrap();
         signed.body.subject.basis_contract = "monitor.subject-basis.hostname-hash/v1".into();
-        assert!(validate_monitor(&signed)
+        assert!(validate_monitor_fixture(&signed)
             .unwrap_err()
             .contains("basis contract"));
+        let mut wrong_family: SignedMonitorV1 = serde_json::from_slice(&raw).unwrap();
+        wrong_family.body.subject.kind = SubjectKindV1::Host;
+        wrong_family.body.subject.basis_contract = "monitor.subject-basis.host-machine/v1".into();
+        assert!(validate_monitor_fixture(&wrong_family)
+            .unwrap_err()
+            .contains("stable-basis family"));
         let mut signed: SignedMonitorV1 = serde_json::from_slice(&raw).unwrap();
         signed.body.acquisition.started_at = "2026-08-30T02:00:00Z".into();
-        assert!(validate_monitor(&signed)
+        assert!(validate_monitor_fixture(&signed)
             .unwrap_err()
             .contains("time inversion"));
         let mut bytes = raw;
@@ -1538,6 +1854,7 @@ mod tests {
         let mut qualified: NqArtifactV1 = serde_json::from_slice(&nq(&raw, false)).unwrap();
         let mut other = qualified.inputs[0].clone();
         other.input_id = "input:other".into();
+        other.claim_support[0].value_digest = d("other");
         qualified.inputs.push(other);
         qualified.contradictions.push(ContradictionV1 {
             subject_identity_digest: qualified.inputs[0].subject_identity_digest.clone().unwrap(),
@@ -1613,21 +1930,260 @@ mod tests {
         .unwrap();
         assert_eq!(
             lineage["$id"],
-            serde_json::json!("nightshift.operational-observation-lineage/v1")
+            serde_json::json!("urn:nightshift:operational-observation-lineage:v1")
         );
         assert_eq!(
             evaluation["$id"],
-            serde_json::json!("nightshift.operational-reobservation-evaluation/v1")
+            serde_json::json!("urn:nightshift:operational-reobservation-evaluation:v1")
         );
         assert_eq!(lineage["additionalProperties"], serde_json::json!(false));
         assert_eq!(evaluation["additionalProperties"], serde_json::json!(false));
         assert_eq!(
-            lineage["$defs"]["subject"]["properties"]["stable_basis"]["additionalProperties"],
+            lineage["properties"]["subject"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            lineage["properties"]["subject"]["oneOf"][0]["properties"]["stable_basis"]
+                ["additionalProperties"],
             serde_json::json!(false)
         );
         assert_eq!(
             evaluation["properties"]["grants_authority"]["const"],
             serde_json::json!(false)
         );
+    }
+    #[test]
+    fn exact_reordered_whitespace_body_is_verified_without_reserialization() {
+        let raw = reordered_whitespace_monitor();
+        let body_bytes = extract_object_field(&raw, "body").unwrap();
+        let signed: SignedMonitorV1 = serde_json::from_slice(&raw).unwrap();
+        assert_ne!(
+            body_bytes,
+            serde_json::to_vec(&signed.body).unwrap().as_slice(),
+            "fixture must differ from typed reserialization"
+        );
+        let qualified = nq(&raw, false);
+        let lineage = admit(&raw, &qualified, &[]).unwrap();
+        assert_eq!(
+            lineage.monitor_custody.semantic_digest,
+            monitor_observation_digest(body_bytes)
+        );
+
+        let mut substituted = raw.clone();
+        let offset = substituted
+            .windows(b"\"schema\":".len())
+            .position(|window| window == b"\"schema\":")
+            .unwrap()
+            + b"\"schema\":".len();
+        substituted.insert(offset, b' ');
+        let substituted_nq = nq(&substituted, false);
+        assert!(admit(&substituted, &substituted_nq, &[])
+            .unwrap_err()
+            .contains("Ed25519"));
+    }
+
+    #[test]
+    fn subsecond_axes_and_currentness_horizon_are_preserved() {
+        let raw = subsecond_monitor();
+        let mut qualified: NqArtifactV1 = serde_json::from_slice(&nq(&raw, false)).unwrap();
+        qualified.inputs[0].receiver_custody_at = "2026-08-30T01:00:00.323456789Z".parse().unwrap();
+        qualified.evaluated_at = "2026-08-30T01:00:00.423456789Z".parse().unwrap();
+        let qualified = serde_json::to_vec(&qualified).unwrap();
+        let lineage = admit_operational_lineage(
+            &raw,
+            &qualified,
+            "input:fixture",
+            "2026-08-30T01:00:00.523456789Z".parse().unwrap(),
+            &[],
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            lineage.receiver_custody_at,
+            "2026-08-30T01:00:00.323456789Z"
+        );
+        assert_eq!(lineage.nq_qualified_at, "2026-08-30T01:00:00.423456789Z");
+        assert_eq!(
+            lineage.nightshift_admitted_at,
+            "2026-08-30T01:00:00.523456789Z"
+        );
+        let profile = ReobservationProfileV1 {
+            profile_id: "profile:subsecond".into(),
+            max_age_seconds: 1,
+        };
+        let current = evaluate_reobservation(
+            &lineage,
+            &profile,
+            "2026-08-30T01:00:00.923456789Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            current.current_until.as_deref(),
+            Some("2026-08-30T01:00:01.123456789Z")
+        );
+        let stale = evaluate_reobservation(
+            &lineage,
+            &profile,
+            "2026-08-30T01:00:01.123456789Z".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stale.disposition, ReobservationDispositionV1::Stale);
+    }
+    #[test]
+    fn runtime_profile_bounds_embedded_identities_and_nq_findings_are_cross_bound() {
+        for profile_id in ["p".repeat(1025), "profile:\u{1}fixture".into()] {
+            assert!(ReobservationProfileV1 {
+                profile_id,
+                max_age_seconds: 60,
+            }
+            .semantic_digest()
+            .is_err());
+        }
+
+        let raw = monitor(AcquisitionOutcomeV1::ObservationProduced, 0, None);
+        let qualified = nq(&raw, false);
+        let lineage = admit(&raw, &qualified, &[]).unwrap();
+        let mut subject_substitution = lineage.clone();
+        subject_substitution.subject_identity_digest = d("other-subject");
+        subject_substitution.lineage_id = subject_substitution.computed_lineage_id().unwrap();
+        assert!(subject_substitution
+            .validate()
+            .unwrap_err()
+            .contains("embedded operational subject"));
+        let mut producer_substitution = lineage;
+        producer_substitution.producer_identity_digest = d("other-producer");
+        producer_substitution.lineage_id = producer_substitution.computed_lineage_id().unwrap();
+        assert!(producer_substitution
+            .validate()
+            .unwrap_err()
+            .contains("embedded operational subject"));
+
+        let mut bad_refusal: NqArtifactV1 = serde_json::from_slice(&qualified).unwrap();
+        bad_refusal.inputs[0].refusals.push(RefusalV1 {
+            code: "fixture_refusal".into(),
+            exact_basis_digest: d("other-raw"),
+            detail: "wrong exact basis".into(),
+        });
+        assert!(admit(&raw, &serde_json::to_vec(&bad_refusal).unwrap(), &[])
+            .unwrap_err()
+            .contains("refusal"));
+
+        let mut overlap: NqArtifactV1 = serde_json::from_slice(&qualified).unwrap();
+        overlap.inputs[0].cannot_testify.push(CannotTestifyV1 {
+            claim_id: "claim:stage".into(),
+            reason: "overlap fixture".into(),
+        });
+        assert!(admit(&raw, &serde_json::to_vec(&overlap).unwrap(), &[])
+            .unwrap_err()
+            .contains("cannot-testify"));
+
+        let mut contradiction: NqArtifactV1 = serde_json::from_slice(&qualified).unwrap();
+        let mut other = contradiction.inputs[0].clone();
+        other.input_id = "input:other".into();
+        other.claim_support[0].value_digest = d("other");
+        contradiction.inputs.push(other);
+        contradiction.contradictions.push(ContradictionV1 {
+            subject_identity_digest: contradiction.inputs[0]
+                .subject_identity_digest
+                .clone()
+                .unwrap(),
+            claim_id: "claim:stage".into(),
+            first_input_id: "input:fixture".into(),
+            first_value_digest: d("wrong-first"),
+            second_input_id: "input:other".into(),
+            second_value_digest: d("other"),
+        });
+        assert!(
+            admit(&raw, &serde_json::to_vec(&contradiction).unwrap(), &[])
+                .unwrap_err()
+                .contains("exact input claim values")
+        );
+    }
+    #[test]
+    fn independently_fixed_field_owner_vectors_reopen_and_negatives_refuse() {
+        const MONITOR: &[u8] =
+            include_bytes!("../tests/fixtures/operational_lineage/field-monitor.accepted.json");
+        const NQ: &[u8] =
+            include_bytes!("../tests/fixtures/operational_lineage/field-nq.accepted.json");
+        assert_eq!(
+            sha256(MONITOR),
+            "sha256:9908a346475a228c75c48a30d947e3a15ad86f7c11079295e4e03e4e6df70345"
+        );
+        assert_eq!(
+            sha256(NQ),
+            "sha256:4e5958ccce4013e3d28531b32940630f7c7962c2690bd7a7493ca7f1981dc378"
+        );
+        let lineage = admit_operational_lineage(
+            MONITOR,
+            NQ,
+            "input:field-vector",
+            "2026-08-30T03:00:00.523456789Z".parse().unwrap(),
+            &[],
+        )
+        .unwrap()
+        .0;
+        assert_eq!(lineage.claim_support[0].claim_id, "claim:availability");
+        assert_eq!(
+            lineage.producer_observed_at.as_deref(),
+            Some("2026-08-30T03:00:00.123456789Z")
+        );
+        assert_eq!(
+            lineage.receiver_custody_at,
+            "2026-08-30T03:00:00.323456789Z"
+        );
+
+        let unknown_locator = include_bytes!(
+            "../tests/fixtures/operational_lineage/field-monitor.unknown-locator.refused.json"
+        );
+        assert!(admit_operational_lineage(
+            unknown_locator,
+            NQ,
+            "input:field-vector",
+            "2026-08-30T03:00:00.523456789Z".parse().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .contains("unknown variant"));
+
+        let oversized_locators = include_bytes!(
+            "../tests/fixtures/operational_lineage/field-monitor.oversized-locators.refused.json"
+        );
+        assert!(admit_operational_lineage(
+            oversized_locators,
+            NQ,
+            "input:field-vector",
+            "2026-08-30T03:00:00.523456789Z".parse().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .contains("exceed 32"));
+        let oversized_attachments = include_bytes!(
+            "../tests/fixtures/operational_lineage/field-monitor.oversized-attachments.refused.json"
+        );
+        assert!(admit_operational_lineage(
+            oversized_attachments,
+            NQ,
+            "input:field-vector",
+            "2026-08-30T03:00:00.523456789Z".parse().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .contains("exceed 32"));
+
+        let oversized_text = include_bytes!(
+            "../tests/fixtures/operational_lineage/field-monitor.oversized-subject-text.refused.json"
+        );
+        assert!(admit_operational_lineage(
+            oversized_text,
+            NQ,
+            "input:field-vector",
+            "2026-08-30T03:00:00.523456789Z".parse().unwrap(),
+            &[],
+        )
+        .unwrap_err()
+        .contains("exceeds 512 bytes"));
     }
 }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "nightshift.operational-reobservation-evaluation/v1",
+  "$id": "urn:nightshift:operational-reobservation-evaluation:v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -33,7 +33,8 @@
     "profile_id": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^\\S+$"
+      "maxLength": 1024,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
     },
     "profile_digest": {
       "type": "string",
@@ -68,7 +69,8 @@
       "items": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^\\S+$"
+        "maxLength": 1024,
+        "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
       }
     },
     "disposition": {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "nightshift.operational-observation-lineage/v1",
+  "$id": "urn:nightshift:operational-observation-lineage:v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -56,15 +56,540 @@
     "nq_profile_id": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^\\S+$"
+      "maxLength": 1024,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
     },
     "nq_input_id": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^\\S+$"
+      "maxLength": 1024,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
     },
     "subject": {
-      "$ref": "#/$defs/subject"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "host"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.host-machine/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "machine_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "host"
+                },
+                "machine_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "service_instance"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.service-instance-registry/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "service_identity",
+                "instance_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "service_instance"
+                },
+                "service_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "instance_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "deployment_release"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.deployment-release-content/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "deployment_identity",
+                "release_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "deployment_release"
+                },
+                "deployment_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "release_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "repository_revision"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.repository-revision-content/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "repository_identity",
+                "revision_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "repository_revision"
+                },
+                "repository_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "revision_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "scheduler_job"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.scheduler-job-occurrence/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "scheduler_identity",
+                "job_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "scheduler_job"
+                },
+                "scheduler_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "job_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ecad_design_revision"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.ecad-design-revision-content/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "design_identity",
+                "revision_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "ecad_design_revision"
+                },
+                "design_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "revision_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "toolchain"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.toolchain-content/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "toolchain_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "toolchain"
+                },
+                "toolchain_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pdk"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.pdk-content/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "pdk_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "pdk"
+                },
+                "pdk_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "license_entitlement"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.license-entitlement-registry/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "entitlement_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "license_entitlement"
+                },
+                "entitlement_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "worker"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.worker-registry/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "worker_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "worker"
+                },
+                "worker_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "artifact_set"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.artifact-set-content/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "artifact_set_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "artifact_set"
+                },
+                "artifact_set_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "namespace",
+            "basis_contract",
+            "stable_basis"
+          ],
+          "properties": {
+            "kind": {
+              "const": "stage_occurrence"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
+            },
+            "basis_contract": {
+              "const": "monitor.subject-basis.stage-occurrence/v1"
+            },
+            "stable_basis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "basis_type",
+                "run_identity",
+                "stage_occurrence_identity"
+              ],
+              "properties": {
+                "basis_type": {
+                  "const": "stage_occurrence"
+                },
+                "run_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "stage_occurrence_identity": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "subject_identity_digest": {
       "type": "string",
@@ -128,7 +653,8 @@
     "epoch": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^\\S+$"
+      "maxLength": 512,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
     },
     "sequence": {
       "type": "integer",
@@ -150,7 +676,8 @@
         {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 512,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         {
           "type": "null"
@@ -219,139 +746,6 @@
         }
       }
     },
-    "subject": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "namespace",
-        "basis_contract",
-        "stable_basis"
-      ],
-      "properties": {
-        "kind": {
-          "enum": [
-            "host",
-            "service_instance",
-            "deployment_release",
-            "repository_revision",
-            "scheduler_job",
-            "ecad_design_revision",
-            "toolchain",
-            "pdk",
-            "license_entitlement",
-            "worker",
-            "artifact_set",
-            "stage_occurrence"
-          ]
-        },
-        "namespace": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^\\S+$"
-        },
-        "basis_contract": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^\\S+$"
-        },
-        "stable_basis": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "basis_type"
-          ],
-          "properties": {
-            "basis_type": {
-              "enum": [
-                "host",
-                "service_instance",
-                "deployment_release",
-                "repository_revision",
-                "scheduler_job",
-                "ecad_design_revision",
-                "toolchain",
-                "pdk",
-                "license_entitlement",
-                "worker",
-                "artifact_set",
-                "stage_occurrence"
-              ]
-            },
-            "machine_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "service_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "instance_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "deployment_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "release_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "repository_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "revision_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "scheduler_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "job_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "design_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "toolchain_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "pdk_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "entitlement_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "worker_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "artifact_set_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "run_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            },
-            "stage_occurrence_identity": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            }
-          },
-          "minProperties": 2,
-          "maxProperties": 3
-        }
-      }
-    },
     "producer": {
       "type": "object",
       "additionalProperties": false,
@@ -367,12 +761,14 @@
         "principal_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 512,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "collector_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 512,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "key_algorithm": {
           "const": "ed25519"
@@ -388,7 +784,8 @@
         "producer_class": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 512,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         }
       }
     },
@@ -405,11 +802,14 @@
         "claim_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 1024,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "proposition": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
         },
         "value_digest": {
           "type": "string",
@@ -432,11 +832,14 @@
         "claim_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 1024,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "reason": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
         }
       }
     },
@@ -452,7 +855,8 @@
         "code": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 1024,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "exact_basis_digest": {
           "type": "string",
@@ -460,7 +864,9 @@
         },
         "detail": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
         }
       }
     },
@@ -483,12 +889,14 @@
         "claim_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 1024,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "first_input_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 1024,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "first_value_digest": {
           "type": "string",
@@ -497,7 +905,8 @@
         "second_input_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^\\S+$"
+          "maxLength": 1024,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$"
         },
         "second_value_digest": {
           "type": "string",
