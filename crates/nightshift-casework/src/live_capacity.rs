@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use nightshift_foreman::{
-    ExecutionProfileV2, ForemanAdmissionV1, ForemanCapacityAdmissionV1,
-    ForemanCapacityRequirementV1, ReadOnlyRunSnapshotV1,
+    reopen_capacity_journal_event, ExecutionProfileV2, ForemanAdmissionV1,
+    ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1, ReadOnlyCapacityJournalEventV1,
+    ReadOnlyRunSnapshotV1,
 };
 use nightshift_provider_capacity::{
     decide_capacity, AdmissionDisposition, CapacityDecisionV1, CapacityObservationV1,
@@ -70,14 +71,21 @@ pub(crate) fn project_provider_capacity(
         .iter()
         .filter(|event| event.kind == "capacity_requirement")
         .collect();
-    if requirement_events.len() != 1
-        || requirement_events[0].work_item_id.is_some()
-        || requirement_events[0].attempt_id.is_some()
-        || requirement_events[0].recorded_at != retained_requirement.recorded_at
-    {
+    if requirement_events.len() != 1 {
         return Err(LiveCaseworkError::Identity(
             "capacity requirement journal placement",
         ));
+    }
+    match reopen_capacity_journal_event(requirement_events[0], &snapshot.run_id)
+        .map_err(|error| contract(error.to_string()))?
+    {
+        ReadOnlyCapacityJournalEventV1::Requirement { record, .. }
+            if *record == *retained_requirement => {}
+        _ => {
+            return Err(LiveCaseworkError::Identity(
+                "capacity requirement journal typed/raw equality",
+            ));
+        }
     }
 
     let packet_classes: BTreeMap<_, _> = packet
@@ -161,10 +169,15 @@ pub(crate) fn project_provider_capacity(
         let retained = retained_by_attempt
             .remove(attempt_id)
             .ok_or_else(|| contract("capacity event has no exact retained admission"))?;
-        if event.work_item_id.as_deref() != Some(retained.work_item_id.as_str())
-            || event.recorded_at != retained.recorded_at
+        match reopen_capacity_journal_event(event, &snapshot.run_id)
+            .map_err(|error| contract(error.to_string()))?
         {
-            return Err(LiveCaseworkError::Identity("capacity journal placement"));
+            ReadOnlyCapacityJournalEventV1::Admission { record, .. } if *record == *retained => {}
+            _ => {
+                return Err(LiveCaseworkError::Identity(
+                    "capacity admission journal typed/raw equality",
+                ));
+            }
         }
         let binding = ForemanCapacityAdmissionV1::from_slice(&retained.admission_bytes)
             .map_err(|error| contract(error.to_string()))?;

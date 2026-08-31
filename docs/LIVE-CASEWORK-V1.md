@@ -16,7 +16,9 @@ journal, accepted receipt, resource, scheduler, and optional final-snapshot
 bytes from one transaction history.
 
 The owner reopens every retained journal row and accepted receipt before it is
-projected. It recomputes retained-raw and record digests, binds the raw record
+projected. Capacity rows additionally pass a foreman-owned accessor that requires
+the enclosing canonical internal-event bytes, nested typed capacity record, and
+every nested exact source-byte sequence to agree before Casework can project them. It recomputes retained-raw and record digests, binds the raw record
 identity to the SQLite row identity, and requires receipt kind, exact state,
 classification, and digest to agree with deterministic foreman replay. A
 required-table-compatible store with substituted row content is refused.

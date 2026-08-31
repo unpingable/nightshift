@@ -796,6 +796,13 @@ pub(crate) mod test_support {
         (directory, path, admission.run_id)
     }
 
+    fn retained_event_digest(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+        hasher.update(bytes);
+        format!("sha256:{:x}", hasher.finalize())
+    }
+
     #[test]
     fn recorded_capacity_is_exact_ordered_restartable_and_substitution_closed() {
         let (_directory, path, run_id) = recorded_capacity_fixture();
@@ -836,6 +843,45 @@ pub(crate) mod test_support {
             historical.projection.provider_capacity.attempts[0].currentness,
             "EXPIRED"
         );
+        let mut split_requirement = snapshot.clone();
+        let requirement_event = split_requirement
+            .events
+            .iter_mut()
+            .find(|event| event.kind == "capacity_requirement")
+            .unwrap();
+        let mut event_value: Value = serde_json::from_slice(&requirement_event.raw_bytes).unwrap();
+        let mut nested_requirement: ForemanCapacityRequirementV1 =
+            serde_json::from_value(event_value["payload"]["requirement"].clone()).unwrap();
+        nested_requirement.provider_id = "provider:split-journal".to_owned();
+        nested_requirement.seal().unwrap();
+        let nested_requirement_bytes = serde_jcs::to_vec(&nested_requirement).unwrap();
+        event_value["payload"]["requirement"] = serde_json::to_value(&nested_requirement).unwrap();
+        event_value["payload"]["requirement_bytes"] =
+            serde_json::to_value(&nested_requirement_bytes).unwrap();
+        requirement_event.raw_bytes = serde_jcs::to_vec(&event_value).unwrap();
+        requirement_event.raw_digest = retained_event_digest(&requirement_event.raw_bytes);
+        assert!(project(split_requirement, instant()).is_err());
+
+        let mut split_admission = snapshot.clone();
+        let admission_event = split_admission
+            .events
+            .iter_mut()
+            .find(|event| event.kind == "capacity_admission")
+            .unwrap();
+        let mut event_value: Value = serde_json::from_slice(&admission_event.raw_bytes).unwrap();
+        let mut nested_admission: ForemanCapacityAdmissionV1 =
+            serde_json::from_value(event_value["payload"]["capacity_admission"].clone()).unwrap();
+        nested_admission.provider_id = "provider:split-journal".to_owned();
+        nested_admission.seal().unwrap();
+        let nested_admission_bytes = serde_jcs::to_vec(&nested_admission).unwrap();
+        event_value["payload"]["capacity_admission"] =
+            serde_json::to_value(&nested_admission).unwrap();
+        event_value["payload"]["admission_bytes"] =
+            serde_json::to_value(&nested_admission_bytes).unwrap();
+        admission_event.raw_bytes = serde_jcs::to_vec(&event_value).unwrap();
+        admission_event.raw_digest = retained_event_digest(&admission_event.raw_bytes);
+        assert!(project(split_admission, instant()).is_err());
+
         let mut substituted = snapshot.clone();
         substituted.capacity_admissions[0]
             .capacity_admission

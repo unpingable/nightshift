@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 import App from "./App";
 import { at, installApiMock, liveIndex, liveRun, run } from "./test/fixture";
@@ -128,6 +128,13 @@ describe("live Casework projection", () => {
     expect(screen.getByText("EXACT_RECORDED_BY_FOREMAN")).toBeVisible();
     expect(screen.getByText(/CONSERVE · CHEAP_BOUNDED_ONLY/)).toBeVisible();
     expect(screen.getByText(/OBSERVED · HIGH · USABLE/)).toBeVisible();
+    const capacityRow = screen.getByText(/attempt:one · journal 3/).closest("tr");
+    expect(capacityRow).not.toBeNull();
+    expect(within(capacityRow!).getByText(/packet bounded · profile bounded · CHEAP/)).toBeVisible();
+    expect(capacityRow).toHaveTextContent("recorded 2026-08-31T00:00:00Z · evaluated 2026-08-31T00:00:00Z");
+    for (const digit of ["3", "4", "5", "6"]) {
+      expect(capacityRow).toHaveTextContent("sha256:" + digit.repeat(64));
+    }
     expect(screen.queryByText("NOT_RECORDED_BY_FOREMAN")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });

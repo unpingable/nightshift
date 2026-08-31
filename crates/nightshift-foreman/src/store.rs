@@ -216,6 +216,134 @@ struct InternalEvent {
     payload: InternalPayload,
 }
 
+/// One exact capacity event reopened from its retained canonical journal bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReadOnlyCapacityJournalEventV1 {
+    Requirement {
+        sequence: u64,
+        record: Box<ReadOnlyCapacityRequirementV1>,
+    },
+    Admission {
+        sequence: u64,
+        record: Box<ReadOnlyCapacityAdmissionV1>,
+    },
+}
+
+/// Reopen a capacity journal row without interpreting non-capacity events.
+///
+/// The returned nested typed record and exact nested bytes have been proved
+/// equal to one another and to the enclosing canonical event bytes. This is a
+/// query-only parsing operation and performs no store access or mutation.
+pub fn reopen_capacity_journal_event(
+    row: &ReadOnlyEventRowV1,
+    expected_run_id: &str,
+) -> Result<ReadOnlyCapacityJournalEventV1, ForemanError> {
+    if row.sequence == 0 || row.raw_digest != raw_digest(&row.raw_bytes) {
+        return Err(ForemanError::ReadOnlyStore(
+            "capacity journal sequence or retained-raw digest mismatch".to_owned(),
+        ));
+    }
+    let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    if event.schema != INTERNAL_EVENT_SCHEMA
+        || event.run_id != expected_run_id
+        || event.event_id != row.event_id
+        || event.work_item_id != row.work_item_id
+        || event.attempt_id != row.attempt_id
+        || event.recorded_at.to_rfc3339() != row.recorded_at
+        || serde_jcs::to_vec(&event)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != row.raw_bytes
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "capacity internal event row identity or canonical bytes mismatch".to_owned(),
+        ));
+    }
+    match (row.kind.as_str(), event.payload) {
+        (
+            "capacity_requirement",
+            InternalPayload::CapacityRequirementAdmitted {
+                requirement,
+                requirement_bytes,
+            },
+        ) => {
+            if event.work_item_id.is_some() || event.attempt_id.is_some() {
+                return Err(ForemanError::ReadOnlyStore(
+                    "capacity requirement event carries lane identity".to_owned(),
+                ));
+            }
+            requirement.validate()?;
+            let reopened = ForemanCapacityRequirementV1::from_slice(&requirement_bytes)?;
+            reopened.validate()?;
+            if reopened != *requirement
+                || serde_jcs::to_vec(&reopened)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != requirement_bytes
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "capacity requirement nested typed/raw split".to_owned(),
+                ));
+            }
+            Ok(ReadOnlyCapacityJournalEventV1::Requirement {
+                sequence: row.sequence,
+                record: Box::new(ReadOnlyCapacityRequirementV1 {
+                    recorded_at: row.recorded_at.clone(),
+                    requirement: reopened,
+                    requirement_bytes,
+                }),
+            })
+        }
+        (
+            "capacity_admission",
+            InternalPayload::CapacityAdmissionAccepted {
+                capacity_admission,
+                admission_bytes,
+                observation_bytes,
+                policy_bytes,
+                decision_bytes,
+            },
+        ) => {
+            let work_item_id = event.work_item_id.ok_or_else(|| {
+                ForemanError::ReadOnlyStore(
+                    "capacity admission event lacks work-item identity".to_owned(),
+                )
+            })?;
+            let attempt_id = event.attempt_id.ok_or_else(|| {
+                ForemanError::ReadOnlyStore(
+                    "capacity admission event lacks attempt identity".to_owned(),
+                )
+            })?;
+            capacity_admission.validate()?;
+            let reopened = ForemanCapacityAdmissionV1::from_slice(&admission_bytes)?;
+            reopened.validate()?;
+            if reopened != *capacity_admission
+                || serde_jcs::to_vec(&reopened)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != admission_bytes
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "capacity admission nested typed/raw split".to_owned(),
+                ));
+            }
+            Ok(ReadOnlyCapacityJournalEventV1::Admission {
+                sequence: row.sequence,
+                record: Box::new(ReadOnlyCapacityAdmissionV1 {
+                    work_item_id,
+                    attempt_id,
+                    recorded_at: row.recorded_at.clone(),
+                    capacity_admission: reopened,
+                    admission_bytes,
+                    observation_bytes,
+                    policy_bytes,
+                    decision_bytes,
+                }),
+            })
+        }
+        _ => Err(ForemanError::ReadOnlyStore(
+            "row is not an exact recognized capacity journal event".to_owned(),
+        )),
+    }
+}
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct FinalReceiptDocument {
