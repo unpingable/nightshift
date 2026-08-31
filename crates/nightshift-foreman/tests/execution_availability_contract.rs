@@ -1403,6 +1403,13 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
         .map(|digest| digest.as_str().unwrap())
         .collect();
     assert_eq!(generic_replayable.len(), 118);
+    let generic_helper_exceptions: BTreeSet<&str> = corpus["owner_generic_helper_exceptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|exception| exception["snapshot_digest"].as_str().unwrap())
+        .collect();
+    assert_eq!(generic_helper_exceptions.len(), 8);
     let mut kind_shapes = BTreeMap::<String, Value>::new();
     for snapshot in snapshots {
         let records = snapshot["records"].as_array().unwrap();
@@ -1447,6 +1454,9 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
     let mut saw_strict_server_request_approval = false;
     let mut strict_ordered_count = 0;
     let mut unordered_compatibility_count = 0;
+    let mut unordered_generic_helper_exception_count = 0;
+    let mut strict_generic_helper_exception_count = 0;
+    let mut proved_semantic_replay_not_entered = false;
     for snapshot in snapshots {
         let records = snapshot["records"].as_array().unwrap();
         let strict_ordered = records
@@ -1476,10 +1486,51 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
                 &raw,
                 time("2026-08-31T12:01:02Z"),
             );
-            candidate.seal().unwrap_err();
+            assert_eq!(
+                candidate.seal().unwrap_err(),
+                ContractError::InvalidField(
+                    "decision-bearing mapper evidence requires strict ordered acquisition"
+                )
+            );
+            if generic_helper_exceptions.contains(snapshot["snapshot_digest"].as_str().unwrap()) {
+                unordered_generic_helper_exception_count += 1;
+            }
+            if !proved_semantic_replay_not_entered {
+                let mut poisoned = snapshot.clone();
+                let first = poisoned["records"]
+                    .as_array_mut()
+                    .unwrap()
+                    .first_mut()
+                    .unwrap();
+                first["evidence_digest"] = json!(placeholder());
+                poisoned = seal_value(
+                    poisoned,
+                    "snapshot_digest",
+                    b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+                );
+                let poisoned_raw = canonical(&poisoned);
+                let mut poisoned_candidate = disposition_candidate_from_exact_snapshot(
+                    &requirement,
+                    &dispatch,
+                    &poisoned_raw,
+                    time("2026-08-31T12:01:02Z"),
+                );
+                assert_eq!(
+                    poisoned_candidate.seal().unwrap_err(),
+                    ContractError::InvalidField(
+                        "decision-bearing mapper evidence requires strict ordered acquisition"
+                    )
+                );
+                proved_semantic_replay_not_entered = true;
+            }
             continue;
         }
         strict_ordered_count += 1;
+        if generic_helper_exceptions.contains(snapshot["snapshot_digest"].as_str().unwrap()) {
+            strict_generic_helper_exception_count += 1;
+            assert_eq!(snapshot["admission_disposition"], "ADMISSION_INDETERMINATE");
+            assert_eq!(snapshot["mechanism_state"], "ADMISSION_INDETERMINATE");
+        }
         saw_strict_notification_approval_watermark |= records.iter().any(|record| {
             record["kind"] == "ACQUISITION_WATERMARK"
                 && record["acquisition_kind"] == "NOTIFICATION"
@@ -1691,6 +1742,9 @@ fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
     assert!(saw_refusal_then_discrepancy);
     assert_eq!(strict_ordered_count, 65);
     assert_eq!(unordered_compatibility_count, 61);
+    assert_eq!(unordered_generic_helper_exception_count, 7);
+    assert_eq!(strict_generic_helper_exception_count, 1);
+    assert!(proved_semantic_replay_not_entered);
     assert!(saw_unordered_approval_watermark && saw_unordered_approval_discrepancy);
     assert!(saw_strict_notification_approval_watermark);
     assert!(saw_strict_server_request_approval);

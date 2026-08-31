@@ -1034,6 +1034,28 @@ fn validate_switchyard_snapshot(
         return Err(ContractError::DigestMismatch("mapper snapshot digest"));
     }
 
+    // HOLDING decisions admit only the accepted ordered-acquisition surface.
+    // This deliberately precedes binding inspection, evidence digest replay,
+    // raw-frame decoding, and all mechanism/disposition derivation.  Legacy
+    // unordered owner output remains exact raw compatibility evidence, but it
+    // cannot enter the scheduling decision graph.
+    let records = snapshot
+        .get("records")
+        .and_then(Value::as_array)
+        .ok_or(ContractError::InvalidField("mapper records"))?;
+    if records.len() > 4096 {
+        return Err(ContractError::InvalidField("mapper record count"));
+    }
+    if records.iter().any(|record| {
+        record.get("kind").and_then(Value::as_str) != Some("ACQUISITION_CUT")
+            && (record.get("acquisition_ordinal").is_none_or(Value::is_null)
+                || record.get("acquisition_kind").is_none_or(Value::is_null))
+    }) {
+        return Err(ContractError::InvalidField(
+            "decision-bearing mapper evidence requires strict ordered acquisition",
+        ));
+    }
+
     let binding = snapshot
         .get("binding")
         .ok_or(ContractError::InvalidField("mapper binding"))?;
@@ -1097,13 +1119,6 @@ fn validate_switchyard_snapshot(
         string(binding, "app_server_executable_sha256")?,
     )?;
 
-    let records = snapshot
-        .get("records")
-        .and_then(Value::as_array)
-        .ok_or(ContractError::InvalidField("mapper records"))?;
-    if records.len() > 4096 {
-        return Err(ContractError::InvalidField("mapper record count"));
-    }
     let mut response_identity: Option<ProviderExecutionIdentityV1> = None;
     let mut refusal_occurrence: Option<String> = None;
     let mut saw_waiting_approval = false;
@@ -1716,11 +1731,6 @@ fn validate_switchyard_snapshot_complete(
         }
         if cut_value.is_some() {
             return Err(ContractError::InvalidField("evidence after terminal cut"));
-        }
-        if acquisition_ordinal.is_null() || acquisition_kind.is_null() {
-            return Err(ContractError::InvalidField(
-                "decision-bearing mapper evidence requires strict ordered acquisition",
-            ));
         }
         let client_lane = matches!(
             acquisition_kind.as_str(),

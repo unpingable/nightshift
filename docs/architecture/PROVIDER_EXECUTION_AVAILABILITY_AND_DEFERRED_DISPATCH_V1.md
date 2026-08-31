@@ -167,9 +167,14 @@ defined receipt-time fallback.
 LOSS evidence is exact arbitrary frame custody and is never JSON-decoded;
 rawless UNKNOWN acquisition discrepancies retain their distinct exact meaning.
 Decision-bearing admission is deliberately narrower than the complete accepted
-Switchyard compatibility domain: every non-cut record must carry a contiguous
-`acquisition_ordinal` and an exact retained `acquisition_kind`. This is the
-strict ordered acquisition surface used by the campaign binding. Legacy
+Switchyard compatibility domain: every non-cut record must carry a non-null
+`acquisition_ordinal` and an exact retained `acquisition_kind`. This early
+presence/lane gate is the strict ordered acquisition surface used by the
+campaign binding and runs before semantic replay. It does not assert literal
+ordinal continuity: the subsequent exact owner replay admits contiguous
+positive history or exact gap/duplicate/reorder discrepancy testimony. The
+three retained ordering-discrepancy histories (`[1,0]`, `[1]`, and `[0,0]`)
+remain decision-bearing only as `ADMISSION_INDETERMINATE`. Legacy
 qualification-only unordered records have neither retained lane nor sufficient
 evidence to distinguish `server_request=true` from `server_request=false` for
 the same raw approval message. Nightshift retains all 126 exact owner-generated
@@ -186,10 +191,15 @@ unique, and request/response/refusal boundary times are monotonic. The
 qualification-only `verify_switchyard_owner_parity.py` predicate pins exact
 Switchyard head `2ba25db...`, preserves all 126 captured owner outputs,
 classifies eight generic-helper exceptions, and proves owner replay equality
-for the 118 generic-replayable compatibility snapshots. The independent Rust
+for the 118 generic-replayable compatibility snapshots. Seven helper exceptions
+are unordered and receive the same early raw-only refusal as the other 54;
+the remaining helper exception is strict ordered owner testimony for a retained
+wire/parsed-message discrepancy and reopens only as `ADMISSION_INDETERMINATE`.
+The independent Rust
 decision-bearing matrix covers only the 65 strict ordered snapshots and
 requires every unordered snapshot—including the same-raw approval watermark
-and server-request discrepancy pair—to refuse before any scheduling meaning.
+and server-request discrepancy pair—to return the exact raw-only refusal before
+binding inspection, semantic raw-frame replay, or any scheduling meaning.
 This contract checkpoint does not yet claim a cumulative journal-history bound;
 that metadata-first pre-acquisition invariant belongs to the held storage
 implementation and must qualify before journal mutation is accepted.
