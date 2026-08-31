@@ -1,0 +1,75 @@
+{
+  "schema": "nightshift.worker-adapter-qualification/v1",
+  "campaign": {
+    "codename": "TUNNEL-FINCH",
+    "canonical_slug": "nightshift-worker-adapter-and-switchyard-codex-bootstrap-v1",
+    "track": "agent-operations",
+    "work_item_id": "worker-adapter"
+  },
+  "sealed_packet_digest": "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc",
+  "qualified_subjects": {
+    "nightshift_owner_commit": "09bc0bc86d99d54480612ab01e61a37c6b564637",
+    "switchyard_consumer_commit": "13d41aa76f205be6a736709b98c52fb771487ab3"
+  },
+  "repository_custody": {
+    "nightshift": {
+      "branch": "campaign/tunnel-finch-nightshift-worker-adapter-and-switchyard-codex-bootstrap-v1-20260830",
+      "publication_policy": "established_origin_only"
+    },
+    "switchyard": {
+      "branch": "campaign/tunnel-finch-switchyard-codex-app-server-adapter-v1-20260830",
+      "result_head": "f0fe2563a99148a86fa3a0061e3af2dafdd6f077",
+      "publication": "SOLE_LOCAL_NO_ACCEPTED_REMOTE"
+    }
+  },
+  "independent_classifications": {
+    "nightshift_owner": "TUNNEL-FINCH-NIGHTSHIFT-OWNER-DETERMINISTIC-QUALIFIED",
+    "switchyard_consumer": "TUNNEL-FINCH-SWITCHYARD-CONSUMER-DETERMINISTIC-QUALIFIED",
+    "real_codex_lifecycle": "TUNNEL-FINCH-REAL-CODEX-LIFECYCLE-NOT-RUN-AUTHORITY-REQUIRED"
+  },
+  "aggregate_result_created": false,
+  "successor_dependency_disposition": "NOT_ADMITTED_WHERE_REAL_PROVIDER_QUALIFICATION_IS_REQUIRED",
+  "qualification": {
+    "nightshift_foreman_cases_passed": 16,
+    "nightshift_executable_schema_cases_passed": 6,
+    "nightshift_locked_workspace": "PASSED",
+    "nightshift_all_feature_warnings_denied_clippy": "PASSED",
+    "nightshift_format": "PASSED",
+    "nightshift_structural_gate_and_negative_control": "PASSED",
+    "switchyard_repository_cases_passed": 96,
+    "switchyard_real_provider_cases_not_run": 1,
+    "switchyard_failed": 0,
+    "real_provider_lifecycle_started": false,
+    "real_provider_lifecycle_count": 0,
+    "provider_fixture_egress_occurred": false,
+    "approval_response_sent": false,
+    "protected_effect_occurred": false
+  },
+  "provider_lifecycle_block": {
+    "disposition": "EXPLICIT_SENSITIVE_EGRESS_AUTHORITY_ABSENT",
+    "execution_boundary_refused_before_process_creation": true,
+    "retry_or_workaround_attempted": false,
+    "qualified_executable_version": "codex-cli 0.150.1",
+    "qualified_executable_sha256": "abf1bb1643a79f73aa78ee627e111e02d4f8c98f25813a0cf6ce277709664386"
+  },
+  "human_questions": [
+    {
+      "question_id": "tunnel-finch-real-provider-egress-v1",
+      "question": "May TUNNEL-FINCH perform exactly one provider-connected qualification lifecycle by making an opaque mode-700 temporary copy of the existing isolated authentication-bearing Codex qualification profile without inspecting its contents, sending the exact repository fixture worker brief and prompt to the configured OpenAI Codex service, executing one App Server start/restart/resume/collect sequence with no approval response or target effect, and deleting the temporary profile and store immediately afterward?",
+      "exhausted_evidence": "Exact executable version and digest, isolated profile existence and directory mode, deterministic owner and consumer qualification, and empty post-refusal censuses were established without reading credential or configuration contents. The execution boundary refused the command before process creation.",
+      "safe_default": "Do not copy the profile, do not contact the provider, retain the real lifecycle as not run, and do not admit this occurrence where real-provider qualification is required.",
+      "consequences": "Deterministic owner and consumer evidence remains qualified independently. Full worker-adapter qualification is not established, and MIDNIGHT-RAIL cannot inherit a real provider lifecycle from this occurrence.",
+      "resume_point": "Create a fresh bounded provider-qualification occurrence from the exact Nightshift result head containing this receipt and Switchyard sole-local result f0fe2563a99148a86fa3a0061e3af2dafdd6f077 after direct operator authority answers this question.",
+      "linked_work_item": "worker-adapter"
+    }
+  ],
+  "default_branch_mutated": false,
+  "production_activated": false,
+  "service_installed": false,
+  "listener_remaining": false,
+  "process_remaining": false,
+  "provider_session_created": false,
+  "temporary_profile_created": false,
+  "secret_added": false,
+  "teardown_obligation_remaining": false
+}
