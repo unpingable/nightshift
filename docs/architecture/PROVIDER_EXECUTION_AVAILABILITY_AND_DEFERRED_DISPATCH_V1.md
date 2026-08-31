@@ -307,6 +307,17 @@ boundaries, duplicate wake, concurrent writers, identity substitution,
 cumulative bounds, same-attempt continuity, policy-bounded fallback,
 independent lane progress, and no semantic retry.
 
+Exact mapper parity is qualified from the accepted Switchyard owner itself,
+not inferred from five terminal examples. The qualification harness runs the
+complete checked owner transition suite, terminalizes each completed public
+mapper-operation prefix through the owner's own acquisition-cut law, and pins
+the resulting exact-dispatch/executable-bound corpus. Nightshift must reopen
+every retained prefix and reproduce its mechanism state, execution identity,
+client-lane custody, ordinal high-water behavior, and normalized discrepancy
+vocabulary. The corpus includes distinct gap, duplicate, and reorder histories.
+Alternate binding and executable substitutions remain graph-level negative
+cases and are not admitted into the positive transition corpus.
+
 No provider profile, credential, provider process, network contact, live
 session, timer activation, service installation, or production route is
 authorized. No aggregate provider-health or campaign result is created.

@@ -1717,8 +1717,13 @@ fn validate_switchyard_snapshot_complete(
         if cut_value.is_some() {
             return Err(ContractError::InvalidField("evidence after terminal cut"));
         }
+        let client_lane = matches!(
+            acquisition_kind.as_str(),
+            Some("CLIENT_REQUEST" | "CLIENT_RESPONSE")
+        );
         if (saw_discrepancy || (saw_turn_completed && execution.is_some()))
             && kind != "ADMISSION_DISCREPANCY"
+            && !client_lane
         {
             return Err(ContractError::InvalidField(
                 "owner mechanism transition bypass",
@@ -1746,11 +1751,23 @@ fn validate_switchyard_snapshot_complete(
 
         if let Some(ordinal) = acquisition_ordinal.as_i64() {
             if ordinal != next_acquisition_ordinal {
-                return Err(ContractError::InvalidField(
-                    "acquisition ordinal continuity",
-                ));
+                if kind != "ADMISSION_DISCREPANCY"
+                    || method != "adapter/acquisition"
+                    || normalized.get("detail").and_then(Value::as_str)
+                        != Some("ordered acquisition ordinal gap, duplicate, or reorder")
+                {
+                    return Err(ContractError::InvalidField(
+                        "acquisition ordinal continuity",
+                    ));
+                }
+                next_acquisition_ordinal = next_acquisition_ordinal.max(
+                    ordinal
+                        .checked_add(1)
+                        .ok_or(ContractError::InvalidField("acquisition ordinal overflow"))?,
+                );
+            } else {
+                next_acquisition_ordinal += 1;
             }
-            next_acquisition_ordinal += 1;
             let lane = acquisition_kind
                 .as_str()
                 .ok_or(ContractError::InvalidField("acquisition kind"))?;
@@ -1780,9 +1797,7 @@ fn validate_switchyard_snapshot_complete(
                         "mapper raw lane representation",
                     ));
                 }
-            } else if !matches!(lane, "LOSS" | "UNKNOWN")
-                && !(kind == "ADMISSION_DISCREPANCY" && method == "adapter/acquisition")
-            {
+            } else if !matches!(lane, "LOSS" | "UNKNOWN") && kind != "ADMISSION_DISCREPANCY" {
                 return Err(ContractError::InvalidField("mapper raw evidence absence"));
             }
             validate_kind_lane(kind, method, lane)?;
@@ -1810,6 +1825,7 @@ fn validate_switchyard_snapshot_complete(
                     || pending_request.is_some()
                     || open_response.is_some()
                     || saw_approval
+                    || refusal.is_some()
                 {
                     return Err(ContractError::InvalidField("provider request transition"));
                 }
@@ -2149,7 +2165,6 @@ fn validate_switchyard_snapshot_complete(
     ) || string(cut, "adapter_process_occurrence_id")?
         != disposition.adapter_process_occurrence_id
         || string(cut, "app_server_session_identity")? != disposition.app_server_session_identity
-        || integer(cut, "ordered_high_water")? != next_acquisition_ordinal
         || integer(cut, "consumed_ordinal_count")? != next_acquisition_ordinal
     {
         return Err(ContractError::InvalidField("acquisition-cut identity"));
@@ -2159,13 +2174,14 @@ fn validate_switchyard_snapshot_complete(
         .and_then(Value::as_bool)
         .ok_or(ContractError::InvalidField("stream_quiesced"))?;
     let loss_generation = integer(cut, "loss_generation")?;
+    let ordered_high_water = integer(cut, "ordered_high_water")?;
     let outstanding = integer(cut, "outstanding_client_request_count")?;
     if outstanding != client_requests.len() as i64 {
         return Err(ContractError::InvalidField(
             "client request cut outstanding binding",
         ));
     }
-    let semantic_closed = (refusal.is_some() && saw_turn_completed)
+    let semantic_closed = refusal.is_some()
         || (execution.is_some()
             && open_response.is_none()
             && saw_turn_completed
@@ -2174,6 +2190,7 @@ fn validate_switchyard_snapshot_complete(
     let expected_clean = stream_quiesced
         && process_closed
         && loss_generation == 0
+        && ordered_high_water == next_acquisition_ordinal
         && outstanding == 0
         && semantic_closed;
     if cut.get("clean").and_then(Value::as_bool) != Some(expected_clean)
@@ -2434,18 +2451,29 @@ fn validate_switchyard_raw_replay(
         {
             return Ok(());
         }
-        if kind == "ADMISSION_DISCREPANCY" && method == "adapter/acquisition" {
+        if kind == "ADMISSION_DISCREPANCY" {
             match lane {
                 None => {}
                 Some("NOTIFICATION" | "SERVER_REQUEST" | "CLIENT_REQUEST" | "CLIENT_RESPONSE") => {
-                    if !matches!(
-                        string(normalized, "detail")?,
-                        "ordered acquisition ordinal gap, duplicate, or reorder"
-                            | "ordered message envelope shape mismatch"
-                            | "ordered provider message unexpectedly carries a request method"
-                            | "client request lacks exact bounded request method"
-                            | "client response lacks exact bounded request method"
-                    ) {
+                    let detail = string(normalized, "detail")?;
+                    let ordered = method == "adapter/acquisition"
+                        && matches!(
+                            detail,
+                            "ordered acquisition ordinal gap, duplicate, or reorder"
+                                | "ordered message envelope shape mismatch"
+                                | "ordered provider message unexpectedly carries a request method"
+                                | "client request lacks exact bounded request method"
+                                | "client response lacks exact bounded request method"
+                        );
+                    let raw_custody = method != "adapter/acquisition"
+                        && (matches!(
+                            detail,
+                            "exact App Server wire bytes are required"
+                                | "App Server evidence exceeds exact byte bound"
+                                | "exact App Server wire bytes lack line terminator"
+                                | "retained App Server wire bytes differ from parsed message"
+                        ) || detail.starts_with("invalid retained App Server wire JSON:"));
+                    if !ordered && !raw_custody {
                         return Err(ContractError::InvalidField(
                             "rawless ordered discrepancy detail",
                         ));
@@ -2502,6 +2530,16 @@ fn validate_switchyard_raw_replay(
                     .is_some_and(|value| !value.is_null() && !value.is_object())
                 {
                     "client request params are not an object"
+                } else if matches!(
+                    request_method,
+                    "fixture/provider-admission-positive"
+                        | "fixture/provider-order-approval-before-created"
+                        | "fixture/provider-order-loss-before-created"
+                        | "fixture/provider-order-duplicate-key"
+                        | "fixture/provider-order-nested-duplicate-key"
+                ) && string(binding, "executable_kind")? != "DETERMINISTIC_FIXTURE"
+                {
+                    "fixture client request is not permitted for a campaign Codex build"
                 } else if !matches!(
                     request_method,
                     "initialize"
@@ -2919,6 +2957,20 @@ fn validate_switchyard_raw_replay(
                 .and_then(|value| value.get("turnId"))
                 .and_then(Value::as_str)
                 == Some(string(binding, "turn_id")?);
+            let bounded_identity = |field: &str| {
+                params
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| (1..=512).contains(&value.chars().count()))
+            };
+            let bounded_integer = |field: &str, minimum: i64, maximum: i64| {
+                params
+                    .get(field)
+                    .and_then(Value::as_i64)
+                    .is_some_and(|value| (minimum..=maximum).contains(&value))
+            };
+            let safe_integer =
+                |field: &str| bounded_integer(field, -9_007_199_254_740_991, 9_007_199_254_740_991);
             let detail = if wire_method.is_none() {
                 if method != "unknown" {
                     return Err(ContractError::InvalidField(
@@ -2947,6 +2999,10 @@ fn validate_switchyard_raw_replay(
                 "App Server activity followed completed turn"
             } else if saw_approval
                 && (lane == Some("SERVER_REQUEST")
+                    || matches!(
+                        method,
+                        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                    )
                     || method.starts_with("providerAdmission/")
                     || method.starts_with("providerRequest/")
                     || method.starts_with("rawResponse/"))
@@ -2954,7 +3010,15 @@ fn validate_switchyard_raw_replay(
                 "provider activity followed unanswered approval"
             } else if method == "error" {
                 "coarse or unclassified App Server error cannot establish admission"
-            } else if lane == Some("SERVER_REQUEST") {
+            } else if lane == Some("SERVER_REQUEST")
+                || matches!(
+                    method,
+                    "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+                )
+                || (lane.is_none()
+                    && normalized.get("detail").and_then(Value::as_str)
+                        == Some("unknown App Server server request"))
+            {
                 if !matches!(
                     method,
                     "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
@@ -3039,8 +3103,19 @@ fn validate_switchyard_raw_replay(
                 && string(params, "model").ok() != Some(string(binding, "model")?)
             {
                 "provider notification model substitution"
-            } else if method == "providerRequest/started" && integer(params, "startedAtMs").is_err()
+            } else if method == "providerRequest/started"
+                && !bounded_identity("requestOccurrenceId")
             {
+                "invalid requestOccurrenceId"
+            } else if method == "providerRequest/started"
+                && !bounded_integer("samplingOrdinal", 0, u32::MAX.into())
+            {
+                "invalid samplingOrdinal"
+            } else if method == "providerRequest/started"
+                && !bounded_integer("requestOrder", 0, u32::MAX.into())
+            {
+                "invalid requestOrder"
+            } else if method == "providerRequest/started" && !safe_integer("startedAtMs") {
                 "invalid startedAtMs"
             } else if method == "providerRequest/started"
                 && last_boundary_ms.is_some_and(|boundary| {
@@ -3095,6 +3170,16 @@ fn validate_switchyard_raw_replay(
                 && string(params, "model").ok() != Some(string(binding, "model")?)
             {
                 "provider notification model substitution"
+            } else if method == "rawResponse/started" && !bounded_identity("requestOccurrenceId") {
+                "invalid requestOccurrenceId"
+            } else if method == "rawResponse/started"
+                && !bounded_integer("samplingOrdinal", 0, u32::MAX.into())
+            {
+                "invalid samplingOrdinal"
+            } else if method == "rawResponse/started"
+                && !bounded_integer("requestOrder", 0, u32::MAX.into())
+            {
+                "invalid requestOrder"
             } else if method == "rawResponse/started"
                 && pending_request.is_none_or(|pending| {
                     string(params, "requestOccurrenceId").ok() != Some(pending.0.as_str())
@@ -3103,6 +3188,10 @@ fn validate_switchyard_raw_replay(
                 })
             {
                 "provider boundary has no exact pending request"
+            } else if method == "rawResponse/started" && !bounded_identity("responseId") {
+                "invalid responseId"
+            } else if method == "rawResponse/started" && !safe_integer("observedAtMs") {
+                "invalid observedAtMs"
             } else if method == "rawResponse/started"
                 && pending_request.is_some_and(|pending| {
                     integer(params, "observedAtMs").is_err()
@@ -3152,6 +3241,26 @@ fn validate_switchyard_raw_replay(
                 && string(params, "model").ok() != Some(string(binding, "model")?)
             {
                 "provider notification model substitution"
+            } else if method == "providerAdmission/refused"
+                && !bounded_identity("requestOccurrenceId")
+            {
+                "invalid requestOccurrenceId"
+            } else if method == "providerAdmission/refused"
+                && !bounded_integer("samplingOrdinal", 0, u32::MAX.into())
+            {
+                "invalid samplingOrdinal"
+            } else if method == "providerAdmission/refused"
+                && !bounded_integer("requestOrder", 0, u32::MAX.into())
+            {
+                "invalid requestOrder"
+            } else if method == "providerAdmission/refused"
+                && pending_request.is_none_or(|pending| {
+                    string(params, "requestOccurrenceId").ok() != Some(pending.0.as_str())
+                        || integer(params, "samplingOrdinal").ok() != Some(pending.1)
+                        || integer(params, "requestOrder").ok() != Some(pending.2)
+                })
+            {
+                "provider boundary has no exact pending request"
             } else if method == "providerAdmission/refused" && current_execution.is_some() {
                 "provider refusal follows admitted execution"
             } else if method == "providerAdmission/refused"
@@ -3169,13 +3278,19 @@ fn validate_switchyard_raw_replay(
             {
                 "provider refusal typed error mismatch"
             } else if method == "providerAdmission/refused"
-                && pending_request.is_none_or(|pending| {
-                    string(params, "requestOccurrenceId").ok() != Some(pending.0.as_str())
-                        || integer(params, "samplingOrdinal").ok() != Some(pending.1)
-                        || integer(params, "requestOrder").ok() != Some(pending.2)
-                })
+                && !matches!(params.get("retryAfterMs"), Some(Value::Null))
+                && !bounded_integer("retryAfterMs", 0, 9_007_199_254_740_991)
             {
-                "provider boundary has no exact pending request"
+                "invalid retryAfterMs"
+            } else if method == "providerAdmission/refused"
+                && params
+                    .get("diagnostic")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| value.chars().count() > 4096)
+            {
+                "provider refusal diagnostic exceeds bound"
+            } else if method == "providerAdmission/refused" && !safe_integer("observedAtMs") {
+                "invalid observedAtMs"
             } else if method == "providerAdmission/refused"
                 && pending_request.is_some_and(|pending| {
                     integer(params, "observedAtMs").is_err()

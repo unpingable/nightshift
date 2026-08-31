@@ -1350,6 +1350,59 @@ fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
 }
 
 #[test]
+fn exact_switchyard_owner_terminal_transition_corpus_reopens() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let corpus: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-owner-terminal-corpus.v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        corpus["owner_head"],
+        json!("2ba25db66d8b29dd215bd87e05f4ea794024b3b7")
+    );
+    let snapshots = corpus["snapshots"].as_array().unwrap();
+    assert!(snapshots.len() >= 100);
+    let mut saw_gap = false;
+    let mut saw_duplicate = false;
+    let mut saw_reorder = false;
+    for snapshot in snapshots {
+        let ordered_discrepancies: Vec<i64> = snapshot["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| {
+                record["normalized"]["detail"]
+                    == "ordered acquisition ordinal gap, duplicate, or reorder"
+            })
+            .filter_map(|record| record["acquisition_ordinal"].as_i64())
+            .collect();
+        let consumed = snapshot["acquisition_cut"]["consumed_ordinal_count"]
+            .as_i64()
+            .unwrap();
+        saw_gap |= ordered_discrepancies.contains(&1) && consumed == 2;
+        saw_duplicate |= ordered_discrepancies.contains(&0) && consumed == 1;
+        saw_reorder |= ordered_discrepancies == [1, 0] && consumed == 2;
+        let raw = canonical(snapshot);
+        disposition_from_exact_snapshot(
+            &requirement,
+            &dispatch,
+            &raw,
+            time("2026-08-31T12:01:02Z"),
+        )
+        .validate()
+        .unwrap_or_else(|error| {
+            panic!(
+                "owner terminal transition {} failed Nightshift replay: {error}",
+                snapshot["snapshot_digest"].as_str().unwrap()
+            )
+        });
+    }
+    assert!(saw_gap && saw_duplicate && saw_reorder);
+}
+
+#[test]
 fn exact_loss_unknown_and_legacy_rawless_owner_variants_reopen() {
     let policy = policy();
     let requirement = requirement(&policy);
