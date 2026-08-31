@@ -453,6 +453,7 @@ impl ForemanStore {
                 &transaction,
                 &requirement_event,
                 profile.maximum_event_bytes,
+                packet.work_items.len().saturating_add(1),
             )?;
         }
         transaction.commit()?;
@@ -629,7 +630,12 @@ impl ForemanStore {
                     decision_bytes: capacity.decision_bytes,
                 },
             };
-            append_internal_bounded(&transaction, &capacity_event, profile.maximum_event_bytes)?;
+            append_internal_bounded(
+                &transaction,
+                &capacity_event,
+                profile.maximum_event_bytes,
+                packet.work_items.len().saturating_add(1),
+            )?;
         }
         for lock in &execution.resource_lock_keys {
             transaction.execute(
@@ -1138,6 +1144,12 @@ impl ForemanStore {
         admission.validate()?;
         let profile = ExecutionProfileV2::from_slice(&profile_bytes)?;
         profile.validate()?;
+        validate_capacity_history_size(
+            &transaction,
+            run_id,
+            profile.maximum_event_bytes,
+            packet.work_items.len().saturating_add(1),
+        )?;
         let events = {
             let mut statement = transaction.prepare(
                 "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
@@ -1590,7 +1602,12 @@ fn validate_capacity_history(
     admission: &ForemanAdmissionV1,
     profile: &ExecutionProfileV2,
 ) -> Result<ValidatedCapacityHistory, ForemanError> {
-    validate_capacity_history_size(connection, &admission.run_id, profile.maximum_event_bytes)?;
+    validate_capacity_history_size(
+        connection,
+        &admission.run_id,
+        profile.maximum_event_bytes,
+        packet.work_items.len().saturating_add(1),
+    )?;
     for row in events {
         validate_read_only_event_row(row, &admission.run_id, &packet.packet_digest, profile)?;
     }
@@ -2295,6 +2312,7 @@ fn append_internal_bounded(
     transaction: &Transaction<'_>,
     event: &InternalEvent,
     maximum_event_bytes: u64,
+    maximum_capacity_rows: usize,
 ) -> Result<(), ForemanError> {
     let raw =
         serde_jcs::to_vec(event).map_err(|error| ForemanError::Serialization(error.to_string()))?;
@@ -2310,10 +2328,18 @@ fn append_internal_bounded(
             ))
         }
     };
-    let retained = validate_capacity_history_size(transaction, &event.run_id, maximum_event_bytes)?;
-    if retained
-        .checked_add(raw.len() as u64)
-        .is_none_or(|total| total > MAXIMUM_CAPACITY_HISTORY_BYTES)
+    let (retained, retained_count) = validate_capacity_history_size(
+        transaction,
+        &event.run_id,
+        maximum_event_bytes,
+        maximum_capacity_rows,
+    )?;
+    if retained_count
+        .checked_add(1)
+        .is_none_or(|count| count > maximum_capacity_rows)
+        || retained
+            .checked_add(raw.len() as u64)
+            .is_none_or(|total| total > MAXIMUM_CAPACITY_HISTORY_BYTES)
     {
         return Err(ForemanError::InputTooLarge("capacity journal history"));
     }
@@ -2430,7 +2456,8 @@ fn validate_capacity_history_size(
     connection: &Connection,
     run_id: &str,
     maximum_event_bytes: u64,
-) -> Result<u64, ForemanError> {
+    maximum_capacity_rows: usize,
+) -> Result<(u64, usize), ForemanError> {
     let mut statement = connection.prepare(
         "SELECT sequence, length(raw_bytes) FROM events
          WHERE run_id = ?1 AND kind IN ('capacity_requirement', 'capacity_admission')
@@ -2440,7 +2467,14 @@ fn validate_capacity_history_size(
         Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
     })?;
     let mut total = 0_u64;
+    let mut count = 0_usize;
     for row in rows {
+        count = count
+            .checked_add(1)
+            .ok_or(ForemanError::InputTooLarge("capacity journal history"))?;
+        if count > maximum_capacity_rows {
+            return Err(ForemanError::InputTooLarge("capacity journal history"));
+        }
         let (_sequence, length) = row?;
         if length == 0 || length > maximum_event_bytes {
             return Err(ForemanError::InputTooLarge("capacity journal event"));
@@ -2452,7 +2486,7 @@ fn validate_capacity_history_size(
             return Err(ForemanError::InputTooLarge("capacity journal history"));
         }
     }
-    Ok(total)
+    Ok((total, count))
 }
 
 fn load_projection(
@@ -2460,6 +2494,12 @@ fn load_projection(
     run_id: &str,
 ) -> Result<LiveRunProjectionV1, ForemanError> {
     let (packet, admission, profile, maximum) = load_contracts(connection, run_id)?;
+    validate_capacity_history_size(
+        connection,
+        run_id,
+        profile.maximum_event_bytes,
+        packet.work_items.len().saturating_add(1),
+    )?;
     let mut statement = connection.prepare(
         "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
                 raw_bytes, raw_digest

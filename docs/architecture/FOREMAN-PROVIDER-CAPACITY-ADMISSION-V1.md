@@ -69,7 +69,10 @@ or admission journal event must fit the execution profile's `maximum_event_bytes
 The checked sum of all `capacity_requirement` and `capacity_admission` raw event
 bytes for one run must also remain at or below the fixed 16 MiB
 `MAXIMUM_CAPACITY_HISTORY_BYTES` ceiling. Both laws run inside the immediate
-append transaction and the shared replay/query-only validator. They do not apply
+append transaction and the shared replay/query-only validator. Before projection
+or query-only snapshot materializes any event BLOB, a transaction-local metadata
+query checks every capacity-row length, the checked cumulative sum, and the closed
+one-requirement-plus-one-per-work-item row-count ceiling. They do not apply
 retroactively to predecessor `internal` rows that carry no capacity payload.
 
 ## Projection and schemas

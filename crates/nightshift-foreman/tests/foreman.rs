@@ -7,16 +7,17 @@ use std::{
 
 use chrono::{Duration, TimeZone as _, Utc};
 use nightshift_foreman::{
-    verify_adapter_contract, AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2,
-    CapacityAdmissionEvidenceV1, CapacityCostClassV1, ContractError, ExecutionProfileV2,
-    ForemanAdmissionV1, ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1, ForemanError,
-    ForemanStore, HumanQuestionV1, NotStartedReceiptV1, ReceiptRepositoryV1, SchedulerStateV1,
-    TeardownDeclarationV1, TerminalReceiptV1, WorkItemExecutionV1, WorkerAdapterCapabilitiesV1,
-    WorkerBriefV2, WorkerStartRequestV2, FOREMAN_ADMISSION_SCHEMA_V1,
-    FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1,
-    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_CAPACITY_HISTORY_BYTES,
-    MAXIMUM_WORKER_BRIEF_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
-    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
+    read_only_run_snapshot, verify_adapter_contract, AdapterEventKindV1, AdapterEventV1,
+    AdapterRegistrationV2, CapacityAdmissionEvidenceV1, CapacityCostClassV1, ContractError,
+    ExecutionProfileV2, ForemanAdmissionV1, ForemanCapacityAdmissionV1,
+    ForemanCapacityRequirementV1, ForemanError, ForemanStore, HumanQuestionV1, NotStartedReceiptV1,
+    ReceiptRepositoryV1, SchedulerStateV1, TeardownDeclarationV1, TerminalReceiptV1,
+    WorkItemExecutionV1, WorkerAdapterCapabilitiesV1, WorkerBriefV2, WorkerStartRequestV2,
+    FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1,
+    FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+    MAXIMUM_CAPACITY_HISTORY_BYTES, MAXIMUM_WORKER_BRIEF_BYTES,
+    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
+    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshift_provider_capacity::{
@@ -2015,6 +2016,11 @@ fn capacity_policy_disposition_matrix_is_enforced_at_attempt_admission() {
     assert_eq!(admission, CapacityAdmissionDisposition::OrdinaryBounded);
     assert!(result.is_ok());
 
+    let (state, admission, result) = capacity_matrix_case("bounded", 0.30, false, false);
+    assert_eq!(state, CapacityState::Normal);
+    assert_eq!(admission, CapacityAdmissionDisposition::OrdinaryBounded);
+    assert!(result.is_ok());
+
     let (state, admission, result) = capacity_matrix_case("bounded", 0.15, false, false);
     assert_eq!(state, CapacityState::Conserve);
     assert_eq!(admission, CapacityAdmissionDisposition::CheapBoundedOnly);
@@ -2044,6 +2050,14 @@ fn capacity_policy_disposition_matrix_is_enforced_at_attempt_admission() {
     ));
 
     let (state, admission, result) = capacity_matrix_case("bounded", 0.60, true, false);
+    assert_eq!(state, CapacityState::Unknown);
+    assert_eq!(admission, CapacityAdmissionDisposition::NoNewWork);
+    assert!(matches!(
+        result,
+        Err(ForemanError::Transition(message)) if message.contains("admits no new work")
+    ));
+
+    let (state, admission, result) = capacity_matrix_case("medium", 0.60, true, false);
     assert_eq!(state, CapacityState::Unknown);
     assert_eq!(admission, CapacityAdmissionDisposition::NoNewWork);
     assert!(matches!(
@@ -2382,6 +2396,74 @@ fn cumulative_capacity_history_is_checked_atomically_before_append() {
         )
         .unwrap();
     assert_eq!(attempts_after, attempts_before);
+}
+
+#[test]
+fn capacity_metadata_preflight_counts_rows_before_raw_materialization() {
+    let fixture = capacity_run_fixture();
+    let path = fixture.path.clone();
+    let maximum_capacity_rows = fixture.packet.work_items.len().saturating_add(1);
+    drop(fixture.store);
+
+    let connection = Connection::open(&path).unwrap();
+    for ordinal in 0..maximum_capacity_rows {
+        connection
+            .execute(
+                "INSERT INTO events
+                 (event_id, run_id, work_item_id, attempt_id, kind, recorded_at, raw_bytes, raw_digest)
+                 VALUES (?1, 'run-fixture', NULL, NULL, 'capacity_admission', ?2,
+                         zeroblob(1), ?3)",
+                rusqlite::params![
+                    format!("extra-capacity-{ordinal}"),
+                    instant(1).to_rfc3339(),
+                    format!("sha256:{}", "0".repeat(64)),
+                ],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(matches!(
+        store.projection("run-fixture"),
+        Err(ForemanError::InputTooLarge("capacity journal history"))
+    ));
+    drop(store);
+    assert!(matches!(
+        read_only_run_snapshot(&path, "run-fixture"),
+        Err(ForemanError::InputTooLarge("capacity journal history"))
+    ));
+}
+
+#[test]
+fn capacity_metadata_preflight_refuses_huge_blob_before_raw_materialization() {
+    let fixture = capacity_run_fixture_with_event_maximum(MAXIMUM_CAPACITY_HISTORY_BYTES);
+    prepare_capacity_fixture(&fixture, "root-a", instant(1));
+    let path = fixture.path.clone();
+    drop(fixture.store);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER events_no_update;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE events SET raw_bytes = zeroblob(?1) WHERE kind = 'capacity_admission'",
+            [MAXIMUM_CAPACITY_HISTORY_BYTES + 1],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(matches!(
+        store.projection("run-fixture"),
+        Err(ForemanError::InputTooLarge("capacity journal event"))
+    ));
+    drop(store);
+    assert!(matches!(
+        read_only_run_snapshot(&path, "run-fixture"),
+        Err(ForemanError::InputTooLarge("capacity journal event"))
+    ));
 }
 
 #[test]

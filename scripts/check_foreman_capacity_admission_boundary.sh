@@ -21,6 +21,8 @@ check_owner_law() {
     'capacity decision is not the exact deterministic FUEL outcome' \
     'validate_capacity_history' \
     'MAXIMUM_CAPACITY_HISTORY_BYTES' \
+    'maximum_capacity_rows' \
+    'length[(]raw_bytes[)]' \
     'capacity journal history' \
     'capacity observation model family' \
     '"capacity_requirement"' \
