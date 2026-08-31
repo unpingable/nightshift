@@ -71,6 +71,53 @@ pub struct ForemanStore {
     access: StoreAccess,
 }
 
+/// One exact event row retained by the append-only foreman journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyEventRowV1 {
+    pub sequence: u64,
+    pub event_id: String,
+    pub work_item_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub kind: String,
+    pub recorded_at: String,
+    pub raw_bytes: Vec<u8>,
+    pub raw_digest: String,
+}
+
+/// One exact accepted terminal or not-started receipt row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyTerminalReceiptRowV1 {
+    pub work_item_id: String,
+    pub attempt_id: Option<String>,
+    pub receipt_digest: String,
+    pub raw_bytes: Vec<u8>,
+    pub receipt_kind: String,
+}
+
+/// A transaction-consistent read snapshot for read-only operator projections.
+///
+/// Every byte vector is copied exactly from the existing SQLite BLOB. Creating
+/// this value performs no schema initialization, journal-mode assignment, or
+/// write transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadOnlyRunSnapshotV1 {
+    pub run_id: String,
+    pub packet_bytes: Vec<u8>,
+    pub admission_bytes: Vec<u8>,
+    pub profile_bytes: Vec<u8>,
+    pub projection: LiveRunProjectionV1,
+    pub events: Vec<ReadOnlyEventRowV1>,
+    pub terminal_receipts: Vec<ReadOnlyTerminalReceiptRowV1>,
+    pub final_snapshot_bytes: Option<Vec<u8>>,
+}
+
+pub fn read_only_run_snapshot(
+    path: impl AsRef<Path>,
+    run_id: &str,
+) -> Result<ReadOnlyRunSnapshotV1, ForemanError> {
+    ForemanStore::open_read_only(path)?.read_only_run_snapshot(run_id)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InternalPayload {
@@ -845,6 +892,84 @@ impl ForemanStore {
         };
         transaction.commit()?;
         Ok(events)
+    }
+
+    pub fn read_only_run_snapshot(
+        &self,
+        run_id: &str,
+    ) -> Result<ReadOnlyRunSnapshotV1, ForemanError> {
+        if !matches!(self.access, StoreAccess::ReadOnly { .. }) {
+            return Err(ForemanError::ReadOnlyStore(
+                "operator snapshot requires an explicitly read-only store".to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let (packet_bytes, admission_bytes, profile_bytes): (Vec<u8>, Vec<u8>, Vec<u8>) =
+            transaction
+                .query_row(
+                    "SELECT packet_bytes, admission_bytes, profile_bytes
+                     FROM runs WHERE run_id = ?1",
+                    [run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+                .ok_or_else(|| ForemanError::UnknownRun(run_id.to_owned()))?;
+        let projection = load_projection(&transaction, run_id)?;
+        let events = {
+            let mut statement = transaction.prepare(
+                "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
+                        raw_bytes, raw_digest
+                 FROM events WHERE run_id = ?1 ORDER BY sequence ASC",
+            )?;
+            let rows = statement.query_map([run_id], |row| {
+                Ok(ReadOnlyEventRowV1 {
+                    sequence: row.get(0)?,
+                    event_id: row.get(1)?,
+                    work_item_id: row.get(2)?,
+                    attempt_id: row.get(3)?,
+                    kind: row.get(4)?,
+                    recorded_at: row.get(5)?,
+                    raw_bytes: row.get(6)?,
+                    raw_digest: row.get(7)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let terminal_receipts = {
+            let mut statement = transaction.prepare(
+                "SELECT work_item_id, attempt_id, receipt_digest, raw_bytes, receipt_kind
+                 FROM terminal_receipts WHERE run_id = ?1 ORDER BY work_item_id ASC",
+            )?;
+            let rows = statement.query_map([run_id], |row| {
+                Ok(ReadOnlyTerminalReceiptRowV1 {
+                    work_item_id: row.get(0)?,
+                    attempt_id: row.get(1)?,
+                    receipt_digest: row.get(2)?,
+                    raw_bytes: row.get(3)?,
+                    receipt_kind: row.get(4)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let final_snapshot_bytes = transaction
+            .query_row(
+                "SELECT raw_bytes FROM final_snapshots WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        transaction.commit()?;
+        Ok(ReadOnlyRunSnapshotV1 {
+            run_id: run_id.to_owned(),
+            packet_bytes,
+            admission_bytes,
+            profile_bytes,
+            projection,
+            events,
+            terminal_receipts,
+            final_snapshot_bytes,
+        })
     }
 
     pub fn journal_mode(&self) -> Result<String, ForemanError> {

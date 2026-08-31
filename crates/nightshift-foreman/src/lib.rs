@@ -9,7 +9,10 @@ pub mod store;
 
 pub use contract::*;
 pub use scheduler::{LiveRunProjectionV1, LiveWorkItemV1, Scheduler};
-pub use store::{ForemanError, ForemanStore};
+pub use store::{
+    read_only_run_snapshot, ForemanError, ForemanStore, ReadOnlyEventRowV1, ReadOnlyRunSnapshotV1,
+    ReadOnlyTerminalReceiptRowV1,
+};
 
 pub const FOREMAN_ADMISSION_SCHEMA_V1: &str = "nightshift.foreman-admission/v1";
 pub const FOREMAN_EXECUTION_PROFILE_SCHEMA_V2: &str = "nightshift.foreman-execution-profile/v2";

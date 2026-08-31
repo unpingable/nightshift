@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { getRaw, getRun, getRunIndex } from "./api";
+import { getLiveRunIndex, getRaw, getRun, getRunIndex } from "./api";
 import { DefinitionGrid, Exact, Field, Section, StringList } from "./components";
 import { CompatibleExact, CompatibleList, recognized, timestampText, UnrecognizedValue, UNRECOGNIZED_RECEIPT_VALUE } from "./compatible";
 import { parseRoute, questionPath, runPath, workItemPath, type Route } from "./router";
 import type { CaseworkRun, HumanQuestion, RunIndex, WorkItem } from "./contract";
+import {
+  ActiveRunIndex,
+  LiveEventsView,
+  LiveQuestionView,
+  LiveRawView,
+  LiveRunView,
+  LiveWorkItemView,
+} from "./LiveViews";
 
 function Link({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) {
   return <a href={href} className={className}>{children}</a>;
@@ -101,6 +109,9 @@ function RunIndexView() {
         <h1>Run case index</h1>
         <p>Sealed packet intent paired with one exact receipt snapshot. Classifications remain independent and verbatim.</p>
       </header>
+      <ActiveRunIndex />
+      <Section title="Sealed receipt cases">
+        <p>Immutable packet intent paired with exact closeout receipt snapshots.</p>
       <div className="run-ledger">
         {state.data.runs.map((run) => (
           <article className="run-card" key={run.run_id}>
@@ -124,6 +135,7 @@ function RunIndexView() {
         ))}
         {state.data.runs.length === 0 && <p className="empty">No explicit run directories are loaded.</p>}
       </div>
+      </Section>
     </main>
   );
 }
@@ -141,6 +153,8 @@ function RunNav({ run }: { run: CaseworkRun }) {
 }
 
 function RunHeader({ run }: { run: CaseworkRun }) {
+  const liveState = useRemote(getLiveRunIndex, []);
+  const live = liveState.data?.runs.find((entry) => entry.sealed_case_run_id === run.run_id);
   return (
     <>
       <div className="breadcrumbs"><Link href="/">Run index</Link><span aria-hidden="true">/</span><Exact>{run.packet.packet_id}</Exact></div>
@@ -149,6 +163,7 @@ function RunHeader({ run }: { run: CaseworkRun }) {
         <h1>{run.packet.packet_id}</h1>
         <p className="digest"><Exact wrap>{run.packet.packet_digest}</Exact></p>
       </header>
+      {live && <p><Link href={`/active-runs/${encodeURIComponent(live.navigation_id)}`}>Open byte-matched live foreman history</Link></p>}
       <RunNav run={run} />
     </>
   );
@@ -284,11 +299,16 @@ function RoutedView({ route }: { route: Route }) {
     case "question": return <QuestionView digest={route.digest} id={route.id} />;
     case "custody": return <CustodyView digest={route.digest} />;
     case "raw": return <RawView digest={route.digest} />;
+    case "live-run": return <LiveRunView navigationId={route.navigationId} />;
+    case "live-work-item": return <LiveWorkItemView navigationId={route.navigationId} id={route.id} />;
+    case "live-question": return <LiveQuestionView navigationId={route.navigationId} id={route.id} />;
+    case "live-events": return <LiveEventsView navigationId={route.navigationId} />;
+    case "live-raw": return <LiveRawView navigationId={route.navigationId} />;
     default: return <main id="main" tabIndex={-1} className="page"><h1>Case route not found</h1><p><Link href="/">Return to run index</Link></p></main>;
   }
 }
 
 export default function App() {
   const route = useRoute();
-  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection schema: nightshift.casework-run/v1</span><span>Exact source: sealed packet + receipt snapshot</span></footer></div>;
+  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection families: nightshift.casework-run/v1 · nightshift.casework-live-run/v1</span><span>Exact sources remain separate: sealed snapshots and query-only foreman journals</span></footer></div>;
 }

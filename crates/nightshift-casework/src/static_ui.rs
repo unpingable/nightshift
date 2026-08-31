@@ -192,7 +192,28 @@ fn content_type(name: &str) -> Option<&'static str> {
 
 fn is_declared_client_route(path: &str) -> bool {
     let parts: Vec<_> = path.split('/').collect();
-    if parts.first() != Some(&"") || parts.get(1) != Some(&"runs") {
+    if parts.first() != Some(&"") {
+        return false;
+    }
+    if parts.get(1) == Some(&"active-runs") {
+        let Some(navigation_id) = parts.get(2) else {
+            return false;
+        };
+        if navigation_id.len() != 64
+            || !navigation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return false;
+        }
+        return match parts.as_slice() {
+            ["", "active-runs", _] => true,
+            ["", "active-runs", _, "events" | "raw"] => true,
+            ["", "active-runs", _, "work-items" | "questions", id] => valid_route_id(id),
+            _ => false,
+        };
+    }
+    if parts.get(1) != Some(&"runs") {
         return false;
     }
     let Some(run_id) = parts.get(2) else {

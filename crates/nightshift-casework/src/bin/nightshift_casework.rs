@@ -16,8 +16,16 @@ use nightshift_casework::{
 )]
 struct Args {
     /// Explicit run directory containing packet.v1.json and run-receipts.v1.json.
-    #[arg(long = "run-dir", required = true)]
+    #[arg(long = "run-dir")]
     run_dirs: Vec<PathBuf>,
+
+    /// Explicit existing foreman SQLite store. Pair by ordinal with --foreman-run-id.
+    #[arg(long = "foreman-store")]
+    foreman_stores: Vec<PathBuf>,
+
+    /// Exact foreman run identity. It is never interpreted as a filesystem path.
+    #[arg(long = "foreman-run-id")]
+    foreman_run_ids: Vec<String>,
 
     /// Explicit compiled UI directory containing index.html, .vite/manifest.json, and assets.
     #[arg(long)]
@@ -34,12 +42,26 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.foreman_stores.len() != args.foreman_run_ids.len() {
+        anyhow::bail!("each --foreman-store requires one ordinal --foreman-run-id");
+    }
+    if args.run_dirs.is_empty() && args.foreman_stores.is_empty() {
+        anyhow::bail!("at least one sealed --run-dir or live --foreman-store is required");
+    }
     let evaluated_now = args.evaluated_at.unwrap_or_else(Utc::now);
     let runs = load_runs_at(&args.run_dirs, evaluated_now).context("load casework runs")?;
+    let sources = args
+        .foreman_stores
+        .into_iter()
+        .zip(args.foreman_run_ids)
+        .collect();
+    let api = Api::new(runs)
+        .with_live_sources(sources, args.evaluated_at)
+        .map_err(anyhow::Error::msg)?;
     let api = match args.ui_dir {
-        Some(directory) => Api::new(runs)
+        Some(directory) => api
             .with_static_ui(StaticUi::load(&directory).context("load closed compiled UI assets")?),
-        None => Api::new(runs),
+        None => api,
     };
     let listener = bind_loopback(args.bind).context("bind read-only loopback API")?;
     println!(

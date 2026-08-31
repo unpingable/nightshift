@@ -2,13 +2,19 @@ use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    path::PathBuf,
     time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::{static_ui::StaticUi, LoadedRun, RunIndexEntryV1, RunIndexV1, RunSummaryV1};
+use crate::{
+    live_loader::reseal_live_projection, load_live_run_at, static_ui::StaticUi,
+    CaseworkLiveRunIndexEntryV1, CaseworkLiveRunIndexV1, LoadedLiveRun, LoadedRun, RunIndexEntryV1,
+    RunIndexV1, RunSummaryV1, CASEWORK_LIVE_RUN_INDEX_SCHEMA_V1,
+};
 
 const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
 const MAX_HEADER_LINES: usize = 100;
@@ -16,7 +22,16 @@ const MAX_HEADER_LINES: usize = 100;
 #[derive(Clone, Debug)]
 pub struct Api {
     runs: BTreeMap<String, LoadedRun>,
+    live_sources: BTreeMap<String, LiveRunSource>,
+    evaluated_at: Option<DateTime<Utc>>,
     static_ui: Option<StaticUi>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LiveRunSource {
+    pub navigation_id: String,
+    pub store_path: PathBuf,
+    pub run_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -32,8 +47,39 @@ impl Api {
     pub fn new(runs: BTreeMap<String, LoadedRun>) -> Self {
         Self {
             runs,
+            live_sources: BTreeMap::new(),
+            evaluated_at: None,
             static_ui: None,
         }
+    }
+
+    pub fn with_live_sources(
+        mut self,
+        sources: Vec<(PathBuf, String)>,
+        evaluated_at: Option<DateTime<Utc>>,
+    ) -> Result<Self, String> {
+        self.evaluated_at = evaluated_at;
+        let now = self.evaluation_time();
+        for (store_path, run_id) in sources {
+            let loaded =
+                load_live_run_at(&store_path, &run_id, now).map_err(|error| error.to_string())?;
+            let navigation_id = loaded.projection.navigation_id.clone();
+            if self
+                .live_sources
+                .insert(
+                    navigation_id.clone(),
+                    LiveRunSource {
+                        navigation_id: navigation_id.clone(),
+                        store_path,
+                        run_id,
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!("duplicate live run navigation id {navigation_id}"));
+            }
+        }
+        Ok(self)
     }
 
     pub fn with_static_ui(mut self, static_ui: StaticUi) -> Self {
@@ -60,6 +106,23 @@ impl Api {
             };
             return json_response(&index, None);
         }
+        if path == "/api/v1/active-runs" {
+            let mut runs = Vec::with_capacity(self.live_sources.len());
+            for source in self.live_sources.values() {
+                let loaded = match self.load_live(source) {
+                    Ok(loaded) => loaded,
+                    Err(response) => return response,
+                };
+                runs.push(live_index_entry(&loaded));
+            }
+            return json_response(
+                &CaseworkLiveRunIndexV1 {
+                    schema: CASEWORK_LIVE_RUN_INDEX_SCHEMA_V1.to_owned(),
+                    runs,
+                },
+                None,
+            );
+        }
         if !path.starts_with("/api/") {
             if let Some(asset) = self
                 .static_ui
@@ -74,6 +137,16 @@ impl Api {
                     body: asset.bytes.clone(),
                 };
             }
+        }
+        if let Some((navigation_id, suffix)) = parse_live_run_path(path) {
+            let Some(source) = self.live_sources.get(navigation_id) else {
+                return Response::text(404, "Not Found", b"not found\n".to_vec());
+            };
+            let loaded = match self.load_live(source) {
+                Ok(loaded) => loaded,
+                Err(response) => return response,
+            };
+            return live_response(&loaded, suffix);
         }
         let Some((run_id, suffix)) = parse_run_path(path) else {
             return Response::text(404, "Not Found", b"not found\n".to_vec());
@@ -101,6 +174,44 @@ impl Api {
             _ => Response::text(404, "Not Found", b"not found\n".to_vec()),
         }
     }
+
+    fn evaluation_time(&self) -> DateTime<Utc> {
+        self.evaluated_at.unwrap_or_else(Utc::now)
+    }
+
+    fn load_live(&self, source: &LiveRunSource) -> Result<LoadedLiveRun, Response> {
+        let mut loaded =
+            load_live_run_at(&source.store_path, &source.run_id, self.evaluation_time()).map_err(
+                |error| {
+                    Response::text(500, "Internal Server Error", {
+                        let _ = error;
+                        b"live read refused\n".to_vec()
+                    })
+                },
+            )?;
+        loaded.projection.sealed_case_run_id =
+            loaded
+                .final_snapshot_bytes
+                .as_ref()
+                .and_then(|final_bytes| {
+                    self.runs
+                        .values()
+                        .find(|sealed| {
+                            sealed.projection.packet.packet_digest
+                                == loaded.projection.packet.packet_digest
+                                && sealed.receipt_bytes == *final_bytes
+                        })
+                        .map(|sealed| sealed.projection.run_id.clone())
+                });
+        reseal_live_projection(&mut loaded.projection).map_err(|_| {
+            Response::text(
+                500,
+                "Internal Server Error",
+                b"live projection refused\n".to_vec(),
+            )
+        })?;
+        Ok(loaded)
+    }
 }
 
 impl Response {
@@ -120,6 +231,16 @@ impl Response {
             reason,
             content_type: "text/plain; charset=utf-8",
             etag: None,
+            body,
+        }
+    }
+
+    fn binary(body: Vec<u8>, etag: String) -> Self {
+        Self {
+            status: 200,
+            reason: "OK",
+            content_type: "application/octet-stream",
+            etag: Some(quoted_etag(&etag)),
             body,
         }
     }
@@ -225,6 +346,104 @@ fn parse_run_path(path: &str) -> Option<(&str, &str)> {
     Some((run_id, suffix))
 }
 
+fn parse_live_run_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/api/v1/active-runs/")?;
+    let (navigation_id, suffix) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    if !valid_digest_id(navigation_id) {
+        return None;
+    }
+    Some((navigation_id, suffix))
+}
+
+fn valid_digest_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn live_index_entry(run: &LoadedLiveRun) -> CaseworkLiveRunIndexEntryV1 {
+    CaseworkLiveRunIndexEntryV1 {
+        navigation_id: run.projection.navigation_id.clone(),
+        run_id: run.projection.run_id.clone(),
+        projection_digest: run.projection.projection_digest.clone(),
+        packet_id: run.projection.packet.packet_id.clone(),
+        packet_digest: run.projection.packet.packet_digest.clone(),
+        lifecycle: run.projection.foreman.lifecycle.clone(),
+        sealed_case_run_id: run.projection.sealed_case_run_id.clone(),
+        scheduler_state_counts: run.projection.foreman.scheduler_state_counts.clone(),
+    }
+}
+
+fn live_response(run: &LoadedLiveRun, suffix: &str) -> Response {
+    match suffix {
+        "" => json_response(
+            &run.projection,
+            Some(quoted_etag(&run.projection.projection_digest)),
+        ),
+        "/events" => json_response(&run.projection.events, None),
+        "/raw/packet" => Response::json(
+            200,
+            "OK",
+            run.packet_bytes.clone(),
+            Some(quoted_etag(&run.projection.raw_sources.packet_sha256)),
+        ),
+        "/raw/admission" => Response::json(
+            200,
+            "OK",
+            run.admission_bytes.clone(),
+            Some(quoted_etag(&run.projection.raw_sources.admission_sha256)),
+        ),
+        "/raw/profile" => Response::json(
+            200,
+            "OK",
+            run.profile_bytes.clone(),
+            Some(quoted_etag(&run.projection.raw_sources.profile_sha256)),
+        ),
+        "/raw/foreman-journal" => Response::binary(
+            run.journal_framing_bytes.clone(),
+            run.projection.raw_sources.journal_framing_sha256.clone(),
+        ),
+        "/raw/accepted-receipts" => Response::binary(
+            run.accepted_receipts_framing_bytes.clone(),
+            run.projection
+                .raw_sources
+                .accepted_receipts_framing_sha256
+                .clone(),
+        ),
+        "/raw/final" => match (
+            &run.final_snapshot_bytes,
+            &run.projection.raw_sources.final_snapshot_sha256,
+        ) {
+            (Some(bytes), Some(digest)) => {
+                Response::json(200, "OK", bytes.clone(), Some(quoted_etag(digest)))
+            }
+            _ => Response::text(404, "Not Found", b"final snapshot absent\n".to_vec()),
+        },
+        _ => {
+            let Some(sequence) = suffix
+                .strip_prefix("/events/")
+                .and_then(|value| value.strip_suffix("/raw"))
+                .and_then(|value| value.parse::<u64>().ok())
+            else {
+                return Response::text(404, "Not Found", b"not found\n".to_vec());
+            };
+            match run.event_bytes.get(&sequence) {
+                Some(bytes) => Response::json(
+                    200,
+                    "OK",
+                    bytes.clone(),
+                    Some(quoted_etag(&format!("sha256:{:x}", Sha256::digest(bytes)))),
+                ),
+                None => Response::text(404, "Not Found", b"not found\n".to_vec()),
+            }
+        }
+    }
+}
+
 fn index_entry(run: &LoadedRun) -> RunIndexEntryV1 {
     let projection = &run.projection;
     RunIndexEntryV1 {
@@ -281,6 +500,9 @@ mod wire_tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
+    use crate::live_loader::test_support::{
+        closed_fixture, fixture as live_fixture, instant as live_instant,
+    };
     use crate::load_runs_at;
 
     const GOLDEN: &str = concat!(
@@ -345,5 +567,102 @@ mod wire_tests {
             let response = wire_request(api.clone(), request.as_bytes());
             assert!(response.starts_with(b"HTTP/1.1 405 Method Not Allowed\r\n"));
         }
+    }
+
+    #[test]
+    fn registered_live_routes_are_query_only_exact_and_navigation_bound() {
+        let (_directory, store_path, run_id) = live_fixture();
+        let loaded = load_live_run_at(&store_path, &run_id, live_instant()).unwrap();
+        let navigation_id = loaded.projection.navigation_id.clone();
+        let api = Api::new(BTreeMap::new())
+            .with_live_sources(vec![(store_path, run_id)], Some(live_instant()))
+            .unwrap();
+
+        let detail = api.response("GET", &format!("/api/v1/active-runs/{navigation_id}"));
+        assert_eq!(detail.status, 200);
+        let projection: crate::CaseworkLiveRunV1 = serde_json::from_slice(&detail.body).unwrap();
+        assert_eq!(projection.navigation_id, navigation_id);
+
+        let packet = api.response(
+            "GET",
+            &format!("/api/v1/active-runs/{navigation_id}/raw/packet"),
+        );
+        assert_eq!(packet.status, 200);
+        assert_eq!(packet.body, loaded.packet_bytes);
+        let receipts = api.response(
+            "GET",
+            &format!("/api/v1/active-runs/{navigation_id}/raw/accepted-receipts"),
+        );
+        assert_eq!(receipts.status, 200);
+        assert_eq!(receipts.body, loaded.accepted_receipts_framing_bytes);
+        assert_eq!(
+            api.response("GET", "/api/v1/active-runs/not-a-navigation-id")
+                .status,
+            404
+        );
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            assert_eq!(
+                api.response(method, &format!("/api/v1/active-runs/{navigation_id}"))
+                    .status,
+                405
+            );
+        }
+    }
+
+    #[test]
+    fn closed_live_history_links_only_to_exact_packet_and_final_bytes() {
+        let (_store_directory, store_path, run_id, final_bytes) = closed_fixture();
+        let loaded = load_live_run_at(&store_path, &run_id, live_instant()).unwrap();
+        assert!(loaded
+            .accepted_receipts_framing_bytes
+            .starts_with(crate::FOREMAN_ACCEPTED_RECEIPTS_FRAMING_V1));
+
+        let case_directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            case_directory.path().join("packet.v1.json"),
+            &loaded.packet_bytes,
+        )
+        .unwrap();
+        std::fs::write(
+            case_directory.path().join("run-receipts.v1.json"),
+            &final_bytes,
+        )
+        .unwrap();
+        let sealed_runs =
+            load_runs_at(&[case_directory.path().to_path_buf()], live_instant()).unwrap();
+        let sealed_run_id = sealed_runs
+            .values()
+            .next()
+            .unwrap()
+            .projection
+            .run_id
+            .clone();
+        let navigation_id = loaded.projection.navigation_id;
+        let api = Api::new(sealed_runs)
+            .with_live_sources(
+                vec![(store_path.clone(), run_id.clone())],
+                Some(live_instant()),
+            )
+            .unwrap();
+        let response = api.response("GET", &format!("/api/v1/active-runs/{navigation_id}"));
+        let projection: crate::CaseworkLiveRunV1 = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(
+            projection.sealed_case_run_id.as_deref(),
+            Some(sealed_run_id.as_str())
+        );
+
+        let mut substituted_runs = api.runs.clone();
+        substituted_runs
+            .values_mut()
+            .next()
+            .unwrap()
+            .receipt_bytes
+            .push(b' ');
+        let substituted = Api::new(substituted_runs)
+            .with_live_sources(vec![(store_path, run_id)], Some(live_instant()))
+            .unwrap();
+        let response = substituted.response("GET", &format!("/api/v1/active-runs/{navigation_id}"));
+        let projection: crate::CaseworkLiveRunV1 = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(projection.sealed_case_run_id, None);
     }
 }

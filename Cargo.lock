@@ -480,6 +480,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "nightshift-foreman",
  "nightshiftd",
  "rustix",
  "serde",

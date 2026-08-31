@@ -138,3 +138,135 @@ export interface CaseworkRun {
   human_questions: HumanQuestion[];
   final_repository_custody: FinalCustody[];
 }
+
+export interface LiveRunIndexEntry {
+  navigation_id: string;
+  run_id: string;
+  projection_digest: string;
+  packet_id: string;
+  packet_digest: string;
+  lifecycle: string;
+  sealed_case_run_id: string | null;
+  scheduler_state_counts: Record<string, number>;
+}
+
+export interface LiveRunIndex {
+  schema: string;
+  runs: LiveRunIndexEntry[];
+}
+
+export interface LiveQuestion {
+  question_id: string;
+  question: string;
+  exhausted_evidence: string;
+  safe_default: string;
+  consequences: string;
+  resume_point: string;
+}
+
+export interface LiveWorkItem {
+  work_item_id: string;
+  track: string;
+  campaign_codename: string;
+  campaign_slug: string;
+  dependencies: string[];
+  entry_predicates: string[];
+  stop_conditions: string[];
+  scheduler_state: string;
+  scheduler_state_recognized: boolean;
+  dependency_terminality: Record<string, boolean>;
+  resource_lock_keys: string[];
+  active_attempt_id: string | null;
+  adapter_id: string;
+  adapter_version: string;
+  provider_model_class: string;
+  provider_identity: string | null;
+  model_identity: string | null;
+  session_identity: string | null;
+  thread_identity: string | null;
+  turn_identity: string | null;
+  queue_identity: string | null;
+  last_event_sequence: number | null;
+  last_event_digest: string | null;
+  human_questions: LiveQuestion[];
+  accepted_receipt_kind: string | null;
+  accepted_outcome: {
+    state: string;
+    result_classification: string;
+    receipt_digest: string;
+  } | null;
+  accepted_outcome_absent_reason: string | null;
+}
+
+export interface CaseworkLiveRun {
+  schema: string;
+  projection_digest: string;
+  navigation_id: string;
+  run_id: string;
+  evaluated_at: string;
+  packet: {
+    packet_id: string;
+    packet_digest: string;
+    exact_bytes_sha256: string;
+    integrity: string;
+    created_at: string;
+    current_until: string;
+    currentness: string;
+  };
+  admission: {
+    admission_digest: string;
+    exact_bytes_sha256: string;
+    admitted_at: string;
+    expires_at: string;
+    currentness: string;
+    maximum_concurrent_workers: number;
+  };
+  execution_profile: {
+    profile_digest: string;
+    exact_bytes_sha256: string;
+    budget_policy_ref: string;
+    capacity_binding_status: string;
+  };
+  foreman: {
+    source_schema: string;
+    lifecycle: string;
+    scheduler_state_counts: Record<string, number>;
+    terminal_receipt_count: number;
+    not_started_receipt_count: number;
+    closed_final_receipts_digest: string | null;
+  };
+  work_items: LiveWorkItem[];
+  resource_claims: Array<{
+    resource_lock_key: string;
+    work_item_id: string;
+    attempt_id: string;
+  }>;
+  events: Array<{
+    sequence: number;
+    event_id: string;
+    work_item_id: string | null;
+    attempt_id: string | null;
+    kind: string;
+    recorded_at: string;
+    retained_raw_digest: string;
+    exact_bytes_sha256: string;
+    raw_length: number;
+  }>;
+  raw_sources: {
+    packet_sha256: string;
+    admission_sha256: string;
+    profile_sha256: string;
+    journal_framing_sha256: string;
+    accepted_receipts_framing_sha256: string;
+    final_snapshot_sha256: string | null;
+  };
+  sealed_case_run_id: string | null;
+  provider_capacity: {
+    status: string;
+    observation_digest: string | null;
+    policy_digest: string | null;
+    decision_digest: string | null;
+    explanation: string;
+  };
+  authority_effect: string;
+}
