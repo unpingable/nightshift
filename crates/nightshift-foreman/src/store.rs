@@ -1578,7 +1578,8 @@ fn load_contracts(
     let profile = ExecutionProfileV2::from_slice(&profile_raw)?;
     profile.validate()?;
     validate_bindings(&packet, &admission, &profile)?;
-    if packet_digest != packet.packet_digest
+    if admission.run_id != run_id
+        || packet_digest != packet.packet_digest
         || admission_digest != admission.admission_digest
         || profile_digest != profile.profile_digest
         || admitted_at != admission.admitted_at.to_rfc3339()

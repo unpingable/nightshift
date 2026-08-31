@@ -1022,10 +1022,13 @@ fn query_only_snapshot_refuses_substituted_run_contract_columns() {
 
 #[test]
 fn query_only_snapshot_refuses_individually_valid_cross_contract_substitution() {
-    let (directory, store, _, _, mut profile) = setup();
+    let (directory, store, _, mut admission, mut profile) = setup();
     let database = directory.path().join("foreman.sqlite");
-    profile.admission_digest = format!("sha256:{}", "e".repeat(64));
+    admission.run_id = "substituted-run".to_owned();
+    admission.seal().unwrap();
+    profile.admission_digest = admission.admission_digest.clone();
     profile.seal().unwrap();
+    let admission_bytes = serde_jcs::to_vec(&admission).unwrap();
     let profile_bytes = serde_jcs::to_vec(&profile).unwrap();
     drop(store);
 
@@ -1035,9 +1038,16 @@ fn query_only_snapshot_refuses_individually_valid_cross_contract_substitution() 
         .unwrap();
     connection
         .execute(
-            "UPDATE runs SET profile_digest = ?1, profile_bytes = ?2
+            "UPDATE runs
+             SET admission_digest = ?1, admission_bytes = ?2,
+                 profile_digest = ?3, profile_bytes = ?4
              WHERE run_id = 'run-fixture'",
-            rusqlite::params![profile.profile_digest, profile_bytes],
+            rusqlite::params![
+                admission.admission_digest,
+                admission_bytes,
+                profile.profile_digest,
+                profile_bytes
+            ],
         )
         .unwrap();
     drop(connection);
