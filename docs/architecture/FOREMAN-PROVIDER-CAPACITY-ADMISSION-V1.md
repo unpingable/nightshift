@@ -64,6 +64,14 @@ requirement and capacity-admission events. Substituted bytes, provider or policy
 identity, stale evidence, missing or duplicate events, and a concurrent legacy
 transition are refused before an attempt can exist.
 
+Capacity journal custody has two independent byte laws. Each canonical requirement
+or admission journal event must fit the execution profile's `maximum_event_bytes`.
+The checked sum of all `capacity_requirement` and `capacity_admission` raw event
+bytes for one run must also remain at or below the fixed 16 MiB
+`MAXIMUM_CAPACITY_HISTORY_BYTES` ceiling. Both laws run inside the immediate
+append transaction and the shared replay/query-only validator. They do not apply
+retroactively to predecessor `internal` rows that carry no capacity payload.
+
 ## Projection and schemas
 
 The query-only foreman projection exposes the exact recorded admission,

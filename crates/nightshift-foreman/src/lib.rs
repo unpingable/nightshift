@@ -24,6 +24,12 @@ pub const WORKER_START_REQUEST_SCHEMA_V2: &str = "nightshift.worker-start-reques
 pub const WORKER_BRIEF_BASIS_SCHEMA_V2: &str = "nightshift.worker-brief-basis/v2";
 pub const MAXIMUM_ADAPTER_TIMEOUT_SECONDS: u64 = 86_400;
 pub const MAXIMUM_WORKER_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum cumulative canonical journal bytes retained for one run's provider-capacity history.
+///
+/// This is independent of the execution profile's per-event ceiling. It covers only the exact
+/// capacity-requirement and capacity-admission journal rows introduced by GAUGE-LATCH; predecessor
+/// non-capacity journal rows retain their original admission law.
+pub const MAXIMUM_CAPACITY_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAXIMUM_PREDECESSOR_RECEIPTS: usize = 1024;
 pub const MAXIMUM_WORKER_BRIEF_BYTES: usize = 16 * 1024 * 1024;
 pub const WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1: &str = "nightshift.worker-adapter-capabilities/v1";

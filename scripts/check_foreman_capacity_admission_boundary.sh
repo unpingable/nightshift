@@ -19,6 +19,12 @@ check_owner_law() {
     'TransactionBehavior::Immediate' \
     'capacity decision is not current at exact attempt admission' \
     'capacity decision is not the exact deterministic FUEL outcome' \
+    'validate_capacity_history' \
+    'MAXIMUM_CAPACITY_HISTORY_BYTES' \
+    'capacity journal history' \
+    'capacity observation model family' \
+    '"capacity_requirement"' \
+    '"capacity_admission"' \
     'CapacityRequirementAdmitted' \
     'CapacityAdmissionAccepted' \
     'capacity_admissions'; do

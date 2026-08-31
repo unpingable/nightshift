@@ -14,9 +14,9 @@ use nightshift_foreman::{
     TeardownDeclarationV1, TerminalReceiptV1, WorkItemExecutionV1, WorkerAdapterCapabilitiesV1,
     WorkerBriefV2, WorkerStartRequestV2, FOREMAN_ADMISSION_SCHEMA_V1,
     FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1,
-    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_WORKER_BRIEF_BYTES,
-    WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1, WORKER_ADAPTER_EVENT_SCHEMA_V1,
-    WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
+    FOREMAN_EXECUTION_PROFILE_SCHEMA_V2, MAXIMUM_CAPACITY_HISTORY_BYTES,
+    MAXIMUM_WORKER_BRIEF_BYTES, WORKER_ADAPTER_CAPABILITIES_SCHEMA_V1,
+    WORKER_ADAPTER_EVENT_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V2,
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshift_provider_capacity::{
@@ -1639,7 +1639,7 @@ fn capacity_observation(at: chrono::DateTime<Utc>, remaining: f64) -> CapacityOb
         schema: CAPACITY_OBSERVATION_SCHEMA_V1.into(),
         provider_id: "provider:fixture".into(),
         account_profile_locator: "fixture-profile".into(),
-        model_family: Some("bounded".into()),
+        model_family: None,
         observed_at: at - Duration::seconds(1),
         expires_at: at + Duration::minutes(10),
         source_class: SourceClass::Observed,
@@ -1804,7 +1804,11 @@ fn capacity_matrix_case(
     remaining: f64,
     unknown_observation: bool,
     unknown_allows_new_cheap_work: bool,
-) -> (CapacityAdmissionDisposition, Result<(), ForemanError>) {
+) -> (
+    CapacityState,
+    CapacityAdmissionDisposition,
+    Result<(), ForemanError>,
+) {
     let directory = tempfile::tempdir().unwrap();
     let mut packet = packet();
     for work in &mut packet.work_items {
@@ -1871,6 +1875,7 @@ fn capacity_matrix_case(
         observation_bytes = serde_jcs::to_vec(&observation).unwrap();
         decision_bytes = serde_jcs::to_vec(&decision).unwrap();
     }
+    let state = decision.state;
     let disposition = decision.admission;
     let result = store
         .prepare_attempt_with_capacity(
@@ -1885,58 +1890,541 @@ fn capacity_matrix_case(
             instant(1),
         )
         .map(|_| ());
-    (disposition, result)
+    (state, disposition, result)
+}
+
+struct CapacityRunFixture {
+    _directory: TempDir,
+    path: PathBuf,
+    store: ForemanStore,
+    packet: NightshiftPacketV1,
+    admission: ForemanAdmissionV1,
+    profile: ExecutionProfileV2,
+    requirement: ForemanCapacityRequirementV1,
+    policy: CapacityPolicyV1,
+}
+
+fn capacity_run_fixture() -> CapacityRunFixture {
+    capacity_run_fixture_with_event_maximum(65_536)
+}
+
+fn capacity_run_fixture_with_event_maximum(maximum_event_bytes: u64) -> CapacityRunFixture {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite");
+    let packet = packet();
+    let admission = admission(&packet);
+    let policy = CapacityPolicyV1::default();
+    let mut profile = profile(&packet, &admission);
+    profile.budget_policy_ref = policy.policy_id.clone();
+    profile.maximum_event_bytes = maximum_event_bytes;
+    profile.seal().unwrap();
+    let requirement = capacity_requirement(&packet, &admission, &profile, &policy);
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .admit_with_capacity_requirement(
+            &packet.canonical_bytes().unwrap(),
+            &serde_jcs::to_vec(&admission).unwrap(),
+            &serde_jcs::to_vec(&profile).unwrap(),
+            &serde_jcs::to_vec(&requirement).unwrap(),
+            instant(0),
+        )
+        .unwrap();
+    CapacityRunFixture {
+        _directory: directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        requirement,
+        policy,
+    }
+}
+
+fn prepare_capacity_fixture(
+    fixture: &CapacityRunFixture,
+    work_item_id: &str,
+    at: chrono::DateTime<Utc>,
+) -> WorkerStartRequestV2 {
+    let (admission, observation, policy, decision, _) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &fixture.packet,
+            admission: &fixture.admission,
+            profile: &fixture.profile,
+            requirement: &fixture.requirement,
+            policy: &fixture.policy,
+        },
+        work_item_id,
+        at,
+        0.60,
+    );
+    fixture
+        .store
+        .prepare_attempt_with_capacity(
+            "run-fixture",
+            work_item_id,
+            capacity_evidence(&admission, &observation, &policy, &decision),
+            at,
+        )
+        .unwrap()
+}
+
+fn resize_retained_capacity_event(
+    connection: &Connection,
+    kind: &str,
+    target_bytes: usize,
+) -> usize {
+    let raw: Vec<u8> = connection
+        .query_row(
+            "SELECT raw_bytes FROM events WHERE kind = ?1 ORDER BY sequence ASC LIMIT 1",
+            [kind],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut event: Value = serde_json::from_slice(&raw).unwrap();
+    let prior_id = event["event_id"].as_str().unwrap();
+    let fixed_bytes = raw.len().checked_sub(prior_id.len()).unwrap();
+    assert!(target_bytes > fixed_bytes);
+    let event_id = "x".repeat(target_bytes - fixed_bytes);
+    event["event_id"] = Value::String(event_id.clone());
+    let resized = serde_jcs::to_vec(&event).unwrap();
+    assert_eq!(resized.len(), target_bytes);
+    connection
+        .execute(
+            "UPDATE events SET event_id = ?1, raw_bytes = ?2, raw_digest = ?3 WHERE kind = ?4",
+            rusqlite::params![event_id, resized, retained_raw_digest(&resized), kind],
+        )
+        .unwrap();
+    target_bytes
 }
 
 #[test]
 fn capacity_policy_disposition_matrix_is_enforced_at_attempt_admission() {
-    let (ordinary_expensive, result) = capacity_matrix_case("medium", 0.60, false, false);
-    assert_eq!(
-        ordinary_expensive,
-        CapacityAdmissionDisposition::OrdinaryBounded
-    );
+    let (state, admission, result) = capacity_matrix_case("medium", 0.60, false, false);
+    assert_eq!(state, CapacityState::Abundant);
+    assert_eq!(admission, CapacityAdmissionDisposition::OrdinaryBounded);
     assert!(result.is_ok());
 
-    let (conserve_cheap, result) = capacity_matrix_case("bounded", 0.15, false, false);
-    assert_eq!(
-        conserve_cheap,
-        CapacityAdmissionDisposition::CheapBoundedOnly
-    );
+    let (state, admission, result) = capacity_matrix_case("bounded", 0.60, false, false);
+    assert_eq!(state, CapacityState::Abundant);
+    assert_eq!(admission, CapacityAdmissionDisposition::OrdinaryBounded);
     assert!(result.is_ok());
 
-    let (conserve_expensive, result) = capacity_matrix_case("medium", 0.15, false, false);
-    assert_eq!(
-        conserve_expensive,
-        CapacityAdmissionDisposition::CheapBoundedOnly
-    );
+    let (state, admission, result) = capacity_matrix_case("medium", 0.30, false, false);
+    assert_eq!(state, CapacityState::Normal);
+    assert_eq!(admission, CapacityAdmissionDisposition::OrdinaryBounded);
+    assert!(result.is_ok());
+
+    let (state, admission, result) = capacity_matrix_case("bounded", 0.15, false, false);
+    assert_eq!(state, CapacityState::Conserve);
+    assert_eq!(admission, CapacityAdmissionDisposition::CheapBoundedOnly);
+    assert!(result.is_ok());
+
+    let (state, admission, result) = capacity_matrix_case("medium", 0.15, false, false);
+    assert_eq!(state, CapacityState::Conserve);
+    assert_eq!(admission, CapacityAdmissionDisposition::CheapBoundedOnly);
     assert!(matches!(
         result,
         Err(ForemanError::Transition(message))
             if message.contains("only closed cheap model classes")
     ));
 
-    let (unknown_cheap, result) = capacity_matrix_case("bounded", 0.60, true, true);
-    assert_eq!(
-        unknown_cheap,
-        CapacityAdmissionDisposition::CheapBoundedOnly
-    );
+    let (state, admission, result) = capacity_matrix_case("bounded", 0.60, true, true);
+    assert_eq!(state, CapacityState::Unknown);
+    assert_eq!(admission, CapacityAdmissionDisposition::CheapBoundedOnly);
     assert!(result.is_ok());
 
-    let (unknown_refused, result) = capacity_matrix_case("bounded", 0.60, true, false);
-    assert_eq!(unknown_refused, CapacityAdmissionDisposition::NoNewWork);
+    let (state, admission, result) = capacity_matrix_case("medium", 0.60, true, true);
+    assert_eq!(state, CapacityState::Unknown);
+    assert_eq!(admission, CapacityAdmissionDisposition::CheapBoundedOnly);
+    assert!(matches!(
+        result,
+        Err(ForemanError::Transition(message))
+            if message.contains("only closed cheap model classes")
+    ));
+
+    let (state, admission, result) = capacity_matrix_case("bounded", 0.60, true, false);
+    assert_eq!(state, CapacityState::Unknown);
+    assert_eq!(admission, CapacityAdmissionDisposition::NoNewWork);
     assert!(matches!(
         result,
         Err(ForemanError::Transition(message)) if message.contains("admits no new work")
     ));
 
     for model_class in ["bounded", "medium"] {
-        let (no_new_work, result) = capacity_matrix_case(model_class, 0.01, false, false);
-        assert_eq!(no_new_work, CapacityAdmissionDisposition::NoNewWork);
+        let (state, admission, result) = capacity_matrix_case(model_class, 0.01, false, false);
+        assert_eq!(state, CapacityState::Critical);
+        assert_eq!(admission, CapacityAdmissionDisposition::NoNewWork);
         assert!(matches!(
             result,
             Err(ForemanError::Transition(message)) if message.contains("admits no new work")
         ));
     }
+}
+
+#[test]
+fn shared_capacity_history_refuses_digest_consistent_restart_mutations() {
+    {
+        let fixture = capacity_run_fixture();
+        let path = fixture.path.clone();
+        drop(fixture.store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER events_no_update;")
+            .unwrap();
+        let raw: Vec<u8> = connection
+            .query_row(
+                "SELECT raw_bytes FROM events WHERE kind = 'capacity_requirement'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut event: Value = serde_json::from_slice(&raw).unwrap();
+        let mut requirement: ForemanCapacityRequirementV1 =
+            serde_json::from_value(event["payload"]["requirement"].clone()).unwrap();
+        requirement.policy_id = "substituted-policy".into();
+        requirement.seal().unwrap();
+        let requirement_bytes = serde_jcs::to_vec(&requirement).unwrap();
+        event["payload"]["requirement"] = serde_json::to_value(&requirement).unwrap();
+        event["payload"]["requirement_bytes"] = serde_json::to_value(&requirement_bytes).unwrap();
+        let substituted = serde_jcs::to_vec(&event).unwrap();
+        connection
+            .execute(
+                "UPDATE events SET raw_bytes = ?1, raw_digest = ?2
+                 WHERE kind = 'capacity_requirement'",
+                rusqlite::params![substituted, retained_raw_digest(&substituted)],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(ForemanStore::open(&path)
+            .and_then(|store| store.projection("run-fixture"))
+            .is_err());
+    }
+
+    {
+        let fixture = capacity_run_fixture();
+        prepare_capacity_fixture(&fixture, "root-a", instant(1));
+        let (root_b_admission, root_b_observation, root_b_policy, root_b_decision, _) =
+            capacity_bundle(
+                CapacityFixtureOwner {
+                    packet: &fixture.packet,
+                    admission: &fixture.admission,
+                    profile: &fixture.profile,
+                    requirement: &fixture.requirement,
+                    policy: &fixture.policy,
+                },
+                "root-b",
+                instant(2),
+                0.60,
+            );
+        let path = fixture.path.clone();
+        drop(fixture.store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER events_no_update;")
+            .unwrap();
+        let raw: Vec<u8> = connection
+            .query_row(
+                "SELECT raw_bytes FROM events WHERE kind = 'capacity_admission'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut event: Value = serde_json::from_slice(&raw).unwrap();
+        event["work_item_id"] = Value::String("root-b".into());
+        let substituted = serde_jcs::to_vec(&event).unwrap();
+        connection
+            .execute(
+                "UPDATE events SET work_item_id = 'root-b', raw_bytes = ?1, raw_digest = ?2
+                 WHERE kind = 'capacity_admission'",
+                rusqlite::params![substituted, retained_raw_digest(&substituted)],
+            )
+            .unwrap();
+        let attempts_before: u64 = connection
+            .query_row(
+                "SELECT count(*) FROM events WHERE event_id LIKE 'attempt-created-%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(connection);
+        let store = ForemanStore::open(&path).unwrap();
+        assert!(store
+            .prepare_attempt_with_capacity(
+                "run-fixture",
+                "root-b",
+                capacity_evidence(
+                    &root_b_admission,
+                    &root_b_observation,
+                    &root_b_policy,
+                    &root_b_decision,
+                ),
+                instant(2),
+            )
+            .is_err());
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let attempts_after: u64 = connection
+            .query_row(
+                "SELECT count(*) FROM events WHERE event_id LIKE 'attempt-created-%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempts_after, attempts_before);
+    }
+
+    {
+        let fixture = capacity_run_fixture();
+        prepare_capacity_fixture(&fixture, "root-a", instant(1));
+        let path = fixture.path.clone();
+        drop(fixture.store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_update;
+                 UPDATE events
+                 SET sequence = (SELECT max(sequence) FROM events) + 100
+                 WHERE event_id LIKE 'attempt-created-%';",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(ForemanStore::open(&path)
+            .and_then(|store| store.projection("run-fixture"))
+            .is_err());
+    }
+
+    {
+        let fixture = capacity_run_fixture();
+        prepare_capacity_fixture(&fixture, "root-a", instant(1));
+        let path = fixture.path.clone();
+        drop(fixture.store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_delete;
+                 DELETE FROM events WHERE kind = 'capacity_admission';",
+            )
+            .unwrap();
+        drop(connection);
+        assert!(ForemanStore::open(&path)
+            .and_then(|store| store.projection("run-fixture"))
+            .is_err());
+    }
+}
+
+#[test]
+fn cumulative_capacity_history_bound_refuses_two_subceiling_rows_on_reopen_and_mutation() {
+    let fixture = capacity_run_fixture_with_event_maximum(MAXIMUM_CAPACITY_HISTORY_BYTES);
+    prepare_capacity_fixture(&fixture, "root-a", instant(1));
+    let (root_b_admission, root_b_observation, root_b_policy, root_b_decision, _) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &fixture.packet,
+            admission: &fixture.admission,
+            profile: &fixture.profile,
+            requirement: &fixture.requirement,
+            policy: &fixture.policy,
+        },
+        "root-b",
+        instant(2),
+        0.60,
+    );
+    let path = fixture.path.clone();
+    drop(fixture.store);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER events_no_update;")
+        .unwrap();
+    let each = usize::try_from(MAXIMUM_CAPACITY_HISTORY_BYTES / 2).unwrap() + 4_096;
+    resize_retained_capacity_event(&connection, "capacity_requirement", each);
+    resize_retained_capacity_event(&connection, "capacity_admission", each);
+    let lengths = {
+        let mut statement = connection
+            .prepare(
+                "SELECT length(raw_bytes) FROM events
+                 WHERE kind IN ('capacity_requirement', 'capacity_admission')
+                 ORDER BY sequence ASC",
+            )
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, u64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(lengths, vec![each as u64, each as u64]);
+    assert!(lengths
+        .iter()
+        .all(|length| *length <= fixture.profile.maximum_event_bytes));
+    assert!(lengths.iter().sum::<u64>() > MAXIMUM_CAPACITY_HISTORY_BYTES);
+    let attempts_before: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM events WHERE event_id LIKE 'attempt-created-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(matches!(
+        store.projection("run-fixture"),
+        Err(ForemanError::InputTooLarge("capacity journal history"))
+    ));
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-b",
+            capacity_evidence(
+                &root_b_admission,
+                &root_b_observation,
+                &root_b_policy,
+                &root_b_decision,
+            ),
+            instant(2),
+        ),
+        Err(ForemanError::InputTooLarge("capacity journal history"))
+    ));
+    drop(store);
+    let connection = Connection::open(&path).unwrap();
+    let attempts_after: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM events WHERE event_id LIKE 'attempt-created-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(attempts_after, attempts_before);
+}
+
+#[test]
+fn cumulative_capacity_history_is_checked_atomically_before_append() {
+    let fixture = capacity_run_fixture_with_event_maximum(MAXIMUM_CAPACITY_HISTORY_BYTES);
+    prepare_capacity_fixture(&fixture, "root-a", instant(1));
+    let (root_b_admission, root_b_observation, root_b_policy, root_b_decision, _) = capacity_bundle(
+        CapacityFixtureOwner {
+            packet: &fixture.packet,
+            admission: &fixture.admission,
+            profile: &fixture.profile,
+            requirement: &fixture.requirement,
+            policy: &fixture.policy,
+        },
+        "root-b",
+        instant(2),
+        0.60,
+    );
+    let path = fixture.path.clone();
+    drop(fixture.store);
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER events_no_update;")
+        .unwrap();
+    let requirement_bytes: u64 = connection
+        .query_row(
+            "SELECT length(raw_bytes) FROM events WHERE kind = 'capacity_requirement'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let retained_allowance = MAXIMUM_CAPACITY_HISTORY_BYTES
+        .checked_sub(requirement_bytes)
+        .unwrap()
+        .checked_sub(512)
+        .unwrap();
+    resize_retained_capacity_event(
+        &connection,
+        "capacity_admission",
+        usize::try_from(retained_allowance).unwrap(),
+    );
+    let retained_total: u64 = connection
+        .query_row(
+            "SELECT sum(length(raw_bytes)) FROM events
+             WHERE kind IN ('capacity_requirement', 'capacity_admission')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained_total, MAXIMUM_CAPACITY_HISTORY_BYTES - 512);
+    let attempts_before: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM events WHERE event_id LIKE 'attempt-created-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = ForemanStore::open(&path).unwrap();
+    store.projection("run-fixture").unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-b",
+            capacity_evidence(
+                &root_b_admission,
+                &root_b_observation,
+                &root_b_policy,
+                &root_b_decision,
+            ),
+            instant(2),
+        ),
+        Err(ForemanError::InputTooLarge("capacity journal history"))
+    ));
+    drop(store);
+    let connection = Connection::open(&path).unwrap();
+    let attempts_after: u64 = connection
+        .query_row(
+            "SELECT count(*) FROM events WHERE event_id LIKE 'attempt-created-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(attempts_after, attempts_before);
+}
+
+#[test]
+fn legacy_non_capacity_internal_event_above_capacity_ceiling_remains_readable() {
+    let (directory, store, _, _, profile) = setup();
+    let path = directory.path().join("foreman.sqlite");
+    drop(store);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER events_no_update;")
+        .unwrap();
+    let raw: Vec<u8> = connection
+        .query_row(
+            "SELECT raw_bytes FROM events WHERE event_id LIKE 'run-admitted-%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut event: Value = serde_json::from_slice(&raw).unwrap();
+    let event_id = format!(
+        "run-admitted-{}",
+        "x".repeat(profile.maximum_event_bytes as usize)
+    );
+    event["event_id"] = Value::String(event_id.clone());
+    let enlarged = serde_jcs::to_vec(&event).unwrap();
+    assert!(enlarged.len() > profile.maximum_event_bytes as usize);
+    connection
+        .execute(
+            "UPDATE events SET event_id = ?1, raw_bytes = ?2, raw_digest = ?3
+             WHERE event_id LIKE 'run-admitted-%'",
+            rusqlite::params![event_id, enlarged, retained_raw_digest(&enlarged)],
+        )
+        .unwrap();
+    drop(connection);
+    assert_eq!(
+        ForemanStore::open(&path)
+            .unwrap()
+            .projection("run-fixture")
+            .unwrap()
+            .work_items
+            .len(),
+        4
+    );
 }
 
 #[test]
@@ -2016,6 +2504,67 @@ fn capacity_required_run_is_atomic_restartable_and_legacy_path_cannot_win() {
         ),
         Err(ContractError::InvalidField("evaluated_at"))
     ));
+
+    let mut scoped_mismatch_observation: CapacityObservationV1 =
+        serde_json::from_slice(&root_a_observation).unwrap();
+    scoped_mismatch_observation.model_family = Some("medium".into());
+    scoped_mismatch_observation.observation_digest =
+        scoped_mismatch_observation.compute_digest().unwrap();
+    let scoped_mismatch_decision =
+        decide_capacity(&scoped_mismatch_observation, &policy, instant(1)).unwrap();
+    let mut scoped_mismatch_admission =
+        ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    scoped_mismatch_admission.observation_digest =
+        scoped_mismatch_observation.observation_digest.clone();
+    scoped_mismatch_admission.decision_digest = scoped_mismatch_decision.decision_digest.clone();
+    scoped_mismatch_admission.seal().unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &serde_jcs::to_vec(&scoped_mismatch_admission).unwrap(),
+                &serde_jcs::to_vec(&scoped_mismatch_observation).unwrap(),
+                &policy_raw,
+                &serde_jcs::to_vec(&scoped_mismatch_decision).unwrap(),
+            ),
+            instant(1),
+        ),
+        Err(ForemanError::IdentityMismatch(
+            "capacity observation model family"
+        ))
+    ));
+
+    let mut oversized_observation: CapacityObservationV1 =
+        serde_json::from_slice(&root_a_observation).unwrap();
+    oversized_observation.account_profile_locator = "x".repeat(30_000);
+    oversized_observation.observation_digest = oversized_observation.compute_digest().unwrap();
+    let oversized_decision = decide_capacity(&oversized_observation, &policy, instant(1)).unwrap();
+    let mut oversized_admission =
+        ForemanCapacityAdmissionV1::from_slice(&root_a_admission).unwrap();
+    oversized_admission.observation_digest = oversized_observation.observation_digest.clone();
+    oversized_admission.decision_digest = oversized_decision.decision_digest.clone();
+    oversized_admission.seal().unwrap();
+    assert!(matches!(
+        store.prepare_attempt_with_capacity(
+            "run-fixture",
+            "root-a",
+            capacity_evidence(
+                &serde_jcs::to_vec(&oversized_admission).unwrap(),
+                &serde_jcs::to_vec(&oversized_observation).unwrap(),
+                &policy_raw,
+                &serde_jcs::to_vec(&oversized_decision).unwrap(),
+            ),
+            instant(1),
+        ),
+        Err(ForemanError::InputTooLarge("capacity journal event"))
+    ));
+    assert!(store
+        .projection("run-fixture")
+        .unwrap()
+        .work_items
+        .iter()
+        .all(|work| work.active_attempt_id.is_none()));
 
     let exact_observation: CapacityObservationV1 =
         serde_json::from_slice(&root_a_observation).unwrap();
