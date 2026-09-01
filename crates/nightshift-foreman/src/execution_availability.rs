@@ -538,6 +538,14 @@ impl ProviderAdmissionOwnerPinsV1 {
         }
         Ok(())
     }
+
+    pub fn adapter_owner_head(&self) -> &str {
+        &self.switchyard_owner_head
+    }
+
+    pub fn adapter_schema_sha256(&self) -> &str {
+        &self.switchyard_schema_sha256
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

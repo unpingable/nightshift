@@ -452,6 +452,10 @@ fn live_response(run: &LoadedLiveRun, suffix: &str) -> Response {
             &run.projection,
             Some(quoted_etag(&run.projection.projection_digest)),
         ),
+        "/provider-execution" => json_response(
+            &run.provider_execution,
+            Some(quoted_etag(&run.provider_execution.projection_digest)),
+        ),
         "/events" => json_response(&run.projection.events, None),
         "/raw/packet" => Response::json(
             200,
@@ -706,6 +710,19 @@ mod wire_tests {
         let projection: crate::CaseworkLiveRunV1 = serde_json::from_slice(&detail.body).unwrap();
         assert_eq!(projection.navigation_id, navigation_id);
 
+        let execution = api.response(
+            "GET",
+            &format!("/api/v1/active-runs/{navigation_id}/provider-execution"),
+        );
+        assert_eq!(execution.status, 200);
+        let execution: crate::CaseworkLiveProviderExecutionV1 =
+            serde_json::from_slice(&execution.body).unwrap();
+        assert_eq!(execution.status, "NOT_RECORDED_BY_FOREMAN");
+        assert_eq!(
+            execution.projection_digest,
+            loaded.provider_execution.projection_digest
+        );
+
         let packet = api.response(
             "GET",
             &format!("/api/v1/active-runs/{navigation_id}/raw/packet"),
@@ -725,8 +742,11 @@ mod wire_tests {
         );
         for method in ["POST", "PUT", "PATCH", "DELETE"] {
             assert_eq!(
-                api.response(method, &format!("/api/v1/active-runs/{navigation_id}"))
-                    .status,
+                api.response(
+                    method,
+                    &format!("/api/v1/active-runs/{navigation_id}/provider-execution"),
+                )
+                .status,
                 405
             );
         }

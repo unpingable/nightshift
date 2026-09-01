@@ -3,6 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub const CASEWORK_LIVE_RUN_SCHEMA_V1: &str = "nightshift.casework-live-run/v1";
+pub const CASEWORK_LIVE_PROVIDER_EXECUTION_SCHEMA_V1: &str =
+    "nightshift.casework-live-provider-execution/v1";
+pub const CASEWORK_LIVE_PROVIDER_EXECUTION_DIGEST_DOMAIN_V1: &[u8] =
+    b"nightshift.casework-live-provider-execution.digest/v1\0";
 pub const CASEWORK_LIVE_RUN_INDEX_SCHEMA_V1: &str = "nightshift.casework-live-run-index/v1";
 pub const CASEWORK_LIVE_RUN_DIGEST_DOMAIN_V1: &[u8] = b"nightshift.casework-live-run.digest/v1\0";
 pub const CASEWORK_LIVE_NAVIGATION_DOMAIN_V1: &[u8] =
@@ -212,6 +216,203 @@ pub struct LiveProviderCapacityAttemptV1 {
     pub observation_exact_bytes_sha256: String,
     pub policy_exact_bytes_sha256: String,
     pub decision_exact_bytes_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderDeferralV1 {
+    pub journal_sequence: u64,
+    pub journal_event_id: String,
+    pub journal_exact_bytes_sha256: String,
+    pub disposition_digest: String,
+    pub deferred_dispatch_digest: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub last_dispatch_occurrence_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub selected_model_ordinal: u16,
+    pub remaining_model_ordinals: Vec<u16>,
+    pub refusal_received_at: String,
+    pub wake_basis: String,
+    pub backoff_ordinal: u16,
+    pub backoff_seconds: u64,
+    pub provider_retry_after: Option<String>,
+    pub wake_at: String,
+    pub parked_resource_lock_policy: String,
+    pub provider_capacity_released: bool,
+    pub deferred_exact_bytes_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderWakeV1 {
+    pub journal_sequence: u64,
+    pub journal_event_id: String,
+    pub journal_exact_bytes_sha256: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub wake_occurrence_id: String,
+    pub deferred_dispatch_digest: String,
+    pub next_dispatch_digest: String,
+    pub recorded_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderResumeV1 {
+    pub journal_sequence: u64,
+    pub journal_event_id: String,
+    pub journal_exact_bytes_sha256: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub resume_occurrence_id: String,
+    pub disposition_digest: String,
+    pub adapter_process_occurrence_id: String,
+    pub execution_identity: LiveProviderExecutionIdentityV1,
+    pub recorded_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderResourceTransitionV1 {
+    pub journal_sequence: u64,
+    pub journal_event_id: String,
+    pub journal_exact_bytes_sha256: String,
+    pub transition: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub dispatch_digest: String,
+    pub policy_digest: String,
+    pub wake_occurrence_id: Option<String>,
+    pub resource_lock_keys: Vec<String>,
+    pub recorded_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderDispositionV1 {
+    pub journal_sequence: u64,
+    pub journal_event_id: String,
+    pub journal_exact_bytes_sha256: String,
+    pub journal_retained_raw_digest: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub dispatch_occurrence_id: String,
+    pub dispatch_digest: String,
+    pub disposition_digest: String,
+    pub reconciles_disposition_digest: Option<String>,
+    pub provider_id: String,
+    pub model_id: String,
+    pub availability_state: String,
+    pub admission_disposition: String,
+    pub mechanism_state: String,
+    pub observed_at: String,
+    pub evidence_received_at: String,
+    pub expires_at: String,
+    pub disposition_received_at: String,
+    pub currentness: String,
+    pub source_identity: String,
+    pub source_version: String,
+    pub response_created: bool,
+    pub acquisition_complete: bool,
+    pub provider_retry_after: Option<String>,
+    pub provider_request_occurrence_id: String,
+    pub provider_execution: Option<LiveProviderExecutionIdentityV1>,
+    pub mapper_snapshot_schema: String,
+    pub mapper_snapshot_digest: String,
+    pub approval_response_sent: bool,
+    pub protected_effect_absent: bool,
+    pub observation_digest: String,
+    pub observation_exact_bytes_sha256: String,
+    pub disposition_exact_bytes_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderExecutionIdentityV1 {
+    pub provider_id: String,
+    pub model_id: String,
+    pub app_server_session_identity: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub first_response_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderDispatchV1 {
+    pub journal_sequence: u64,
+    pub journal_event_id: String,
+    pub journal_exact_bytes_sha256: String,
+    pub journal_retained_raw_digest: String,
+    pub work_item_id: String,
+    pub work_attempt_id: String,
+    pub dispatch_occurrence_id: String,
+    pub dispatch_ordinal: u16,
+    pub selected_model_ordinal: u16,
+    pub provider_id: String,
+    pub model_id: String,
+    pub model_class: String,
+    pub adapter_id: String,
+    pub adapter_version: String,
+    pub adapter_protocol: String,
+    pub adapter_process_occurrence_id: String,
+    pub app_server_session_identity: String,
+    pub worker_start_request_digest: String,
+    pub worker_brief_digest: String,
+    pub dispatch_digest: String,
+    pub opened_at: String,
+    pub start_request_exact_bytes_sha256: String,
+    pub dispatch_exact_bytes_sha256: String,
+    pub provider_execution_identity_absent_at_start: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderExecutionRequirementV1 {
+    pub journal_sequence: u64,
+    pub requirement_digest: String,
+    pub policy_id: String,
+    pub policy_digest: String,
+    pub provider_id: String,
+    pub adapter_id: String,
+    pub adapter_protocol: String,
+    pub adapter_version: String,
+    pub adapter_executable_identity: String,
+    pub codex_owner_head: String,
+    pub provider_admission_owner_head: String,
+    pub provider_admission_schema_sha256: String,
+    pub deterministic_fixture_sha256: String,
+    pub admitted_at: String,
+    pub requirement_exact_bytes_sha256: String,
+    pub policy_exact_bytes_sha256: String,
+    pub parked_resource_lock_policy: String,
+    pub allow_ordered_model_fallback: bool,
+    pub automatic_semantic_retry: bool,
+    pub approval_response_authorized: bool,
+    pub authority_effect: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaseworkLiveProviderExecutionV1 {
+    pub schema: String,
+    pub projection_digest: String,
+    pub run_id: String,
+    pub packet_digest: String,
+    pub evaluated_at: String,
+    pub status: String,
+    pub requirement: Option<LiveProviderExecutionRequirementV1>,
+    pub dispatches: Vec<LiveProviderDispatchV1>,
+    pub dispositions: Vec<LiveProviderDispositionV1>,
+    pub deferrals: Vec<LiveProviderDeferralV1>,
+    pub wakes: Vec<LiveProviderWakeV1>,
+    pub resumes: Vec<LiveProviderResumeV1>,
+    pub resource_transitions: Vec<LiveProviderResourceTransitionV1>,
+    pub independent_provider_capacity_status: String,
+    pub explanation: String,
+    pub authority_effect: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

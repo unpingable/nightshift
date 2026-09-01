@@ -480,6 +480,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "hex",
  "nightshift-foreman",
  "nightshift-provider-capacity",
  "nightshiftd",

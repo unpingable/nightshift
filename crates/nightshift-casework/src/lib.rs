@@ -5,6 +5,7 @@
 //! aggregate result, retry, execution request, or canonical runtime state.
 
 mod live_capacity;
+mod live_execution;
 mod live_loader;
 mod live_model;
 mod loader;

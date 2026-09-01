@@ -10,7 +10,10 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::{live_capacity::project_provider_capacity, live_model::*};
+use crate::{
+    live_capacity::project_provider_capacity, live_execution::project_provider_execution,
+    live_model::*,
+};
 
 #[derive(Debug, Error)]
 pub enum LiveCaseworkError {
@@ -29,6 +32,7 @@ pub enum LiveCaseworkError {
 #[derive(Clone, Debug)]
 pub struct LoadedLiveRun {
     pub projection: CaseworkLiveRunV1,
+    pub provider_execution: CaseworkLiveProviderExecutionV1,
     pub packet_bytes: Vec<u8>,
     pub admission_bytes: Vec<u8>,
     pub profile_bytes: Vec<u8>,
@@ -242,6 +246,14 @@ fn project(
 
     let provider_capacity =
         project_provider_capacity(&snapshot, &packet, &admission, &profile, evaluated_at)?;
+    let provider_execution = project_provider_execution(
+        &snapshot,
+        &packet,
+        &admission,
+        &profile,
+        evaluated_at,
+        &provider_capacity.status,
+    )?;
     let capacity_binding_status = if provider_capacity.requirement.is_some() {
         "EXACT_RECORDED_CAPACITY_REQUIREMENT"
     } else {
@@ -312,6 +324,7 @@ fn project(
     projection.projection_digest = projection_digest(&projection)?;
     Ok(LoadedLiveRun {
         projection,
+        provider_execution,
         packet_bytes: snapshot.packet_bytes,
         admission_bytes: snapshot.admission_bytes,
         profile_bytes: snapshot.profile_bytes,
@@ -426,11 +439,21 @@ pub(crate) mod test_support {
     use chrono::{Duration, TimeZone as _};
     use nightshift_foreman::{
         AdapterRegistrationV2, CapacityAdmissionEvidenceV1, CapacityCostClassV1,
-        ExecutionProfileV2, ForemanAdmissionV1, ForemanCapacityAdmissionV1,
-        ForemanCapacityRequirementV1, ForemanStore, NotStartedReceiptV1, WorkItemExecutionV1,
-        FOREMAN_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1,
-        FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-        WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+        DeferredProviderDispatchV1, DeferredWakeBasisV1, DeterministicProviderAdmissionEvidenceV1,
+        DeterministicProviderAdmissionOutcomeV1, ExactAvailabilityEvidenceV1,
+        ExactMapperSnapshotV1, ExecutionAvailabilityObservationV1, ExecutionAvailabilityPolicyV1,
+        ExecutionAvailabilityStateV1, ExecutionProfileV2, ForemanAdmissionV1,
+        ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1,
+        ForemanExecutionAvailabilityRequirementV1, ForemanStore, NotStartedReceiptV1,
+        ParkedResourceLockPolicyV1, ProviderAdmissionDispositionKindV1,
+        ProviderAdmissionDispositionV1, ProviderAdmissionOwnerPinsV1,
+        ProviderDispositionEvidenceV1, ProviderExecutionIdentityV1, ProviderMechanismStateV1,
+        ProviderModelSelectionV1, WorkItemExecutionV1,
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+        EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1, FOREMAN_ADMISSION_SCHEMA_V1,
+        FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1,
+        FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
     };
 
     use nightshift_provider_capacity::{
@@ -523,6 +546,683 @@ pub(crate) mod test_support {
         (directory, path, admission.run_id)
     }
 
+    fn recorded_execution_requirement_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
+        let mut admission = ForemanAdmissionV1 {
+            schema: FOREMAN_ADMISSION_SCHEMA_V1.to_owned(),
+            admission_digest: format!("sha256:{}", "0".repeat(64)),
+            run_id: "holding/casework:fixture".to_owned(),
+            packet_digest: packet.packet_digest.clone(),
+            operator_basis_digest: format!("sha256:{}", "a".repeat(64)),
+            admitted_at: instant() - Duration::hours(1),
+            expires_at: instant() + Duration::hours(1),
+            local_runtime_identity: "holding-casework-fixture".to_owned(),
+            maximum_concurrent_workers: 2,
+            allowed_adapter_ids: vec!["switchyard-codex".to_owned()],
+            allowed_provider_model_classes: packet
+                .work_items
+                .iter()
+                .map(|item| item.model_routing.class.clone())
+                .collect(),
+            maximum_new_attempts_per_work_item: 1,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+            target_effects_authorized: false,
+        };
+        admission.allowed_provider_model_classes.sort();
+        admission.allowed_provider_model_classes.dedup();
+        admission.seal().unwrap();
+        let work_items = packet
+            .work_items
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    WorkItemExecutionV1 {
+                        adapter_id: "switchyard-codex".to_owned(),
+                        workspace_identity: format!("workspace:{}", item.id),
+                        resource_lock_keys: vec![format!("resource:{}", item.id)],
+                        provider_model_class: item.model_routing.class.clone(),
+                    },
+                )
+            })
+            .collect();
+        let mut profile = ExecutionProfileV2 {
+            schema: FOREMAN_EXECUTION_PROFILE_SCHEMA_V2.to_owned(),
+            profile_digest: format!("sha256:{}", "0".repeat(64)),
+            packet_digest: packet.packet_digest.clone(),
+            admission_digest: admission.admission_digest.clone(),
+            adapters: BTreeMap::from([(
+                "switchyard-codex".to_owned(),
+                AdapterRegistrationV2 {
+                    adapter_id: "switchyard-codex".to_owned(),
+                    protocol: "switchyard.codex-app-server/v2".to_owned(),
+                    adapter_version: "2.0.0".to_owned(),
+                    executable_identity: format!("sha256:{}", "b".repeat(64)),
+                    bounded_arguments: vec![],
+                },
+            )]),
+            work_items,
+            budget_policy_ref: "holding-policy".to_owned(),
+            log_custody_root: "/tmp/holding-casework/log".to_owned(),
+            receipt_custody_root: "/tmp/holding-casework/receipts".to_owned(),
+            maximum_event_bytes: 1024 * 1024,
+            maximum_receipt_bytes: 1024 * 1024,
+            adapter_timeout_seconds: 60,
+            closeout_policy: "ALL_EXPLICIT_TERMINAL_OR_NOT_STARTED".to_owned(),
+        };
+        profile.seal().unwrap();
+        let mut policy = ExecutionAvailabilityPolicyV1 {
+            schema: EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1.to_owned(),
+            policy_digest: format!("sha256:{}", "0".repeat(64)),
+            policy_id: profile.budget_policy_ref.clone(),
+            maximum_dispatch_occurrences_per_attempt: 4,
+            backoff_seconds: vec![5, 10, 20, 40],
+            maximum_total_deferral_seconds: 600,
+            parked_resource_lock_policy: ParkedResourceLockPolicyV1::ReleaseAndReacquire,
+            provider_capacity_released_while_parked: true,
+            reconcile_indeterminate: true,
+            allow_ordered_model_fallback: true,
+            automatic_semantic_retry: false,
+            approval_response_authorized: false,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+        };
+        policy.seal().unwrap();
+        let selections = packet
+            .work_items
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    vec![
+                        ProviderModelSelectionV1 {
+                            provider_id: "openai".to_owned(),
+                            model_id: "fixture-model".to_owned(),
+                            model_class: item.model_routing.class.clone(),
+                        },
+                        ProviderModelSelectionV1 {
+                            provider_id: "openai".to_owned(),
+                            model_id: "fixture-fallback".to_owned(),
+                            model_class: item.model_routing.class.clone(),
+                        },
+                    ],
+                )
+            })
+            .collect();
+        let adapter = &profile.adapters["switchyard-codex"];
+        let mut requirement = ForemanExecutionAvailabilityRequirementV1 {
+            schema: FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1.to_owned(),
+            requirement_digest: format!("sha256:{}", "0".repeat(64)),
+            packet_digest: packet.packet_digest.clone(),
+            admission_digest: admission.admission_digest.clone(),
+            profile_digest: profile.profile_digest.clone(),
+            run_id: admission.run_id.clone(),
+            adapter_id: adapter.adapter_id.clone(),
+            adapter_protocol: adapter.protocol.clone(),
+            adapter_version: adapter.adapter_version.clone(),
+            adapter_executable_identity: adapter.executable_identity.clone(),
+            owner_pins: ProviderAdmissionOwnerPinsV1::accepted(),
+            policy_id: policy.policy_id.clone(),
+            policy_digest: policy.policy_digest.clone(),
+            work_item_model_selections: selections,
+            admitted_at: admission.admitted_at,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+        };
+        requirement.seal().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("foreman.sqlite");
+        ForemanStore::open(&path)
+            .unwrap()
+            .admit_with_execution_availability(
+                PACKET,
+                &serde_jcs::to_vec(&admission).unwrap(),
+                &serde_jcs::to_vec(&profile).unwrap(),
+                &serde_jcs::to_vec(&requirement).unwrap(),
+                &serde_jcs::to_vec(&policy).unwrap(),
+                admission.admitted_at,
+            )
+            .unwrap();
+        (directory, path, admission.run_id)
+    }
+
+    fn recorded_execution_dispatch_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (directory, path, run_id) = recorded_execution_requirement_fixture();
+        let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
+        let work_item_id = packet
+            .work_items
+            .iter()
+            .find(|item| item.dependencies.is_empty())
+            .unwrap()
+            .id
+            .clone();
+        ForemanStore::open(&path)
+            .unwrap()
+            .prepare_provider_attempt(
+                &run_id,
+                &work_item_id,
+                "casework-dispatch-1",
+                "casework-process-1",
+                "casework-session-1",
+                0,
+                instant() - Duration::minutes(30),
+            )
+            .unwrap();
+        (directory, path, run_id)
+    }
+
+    fn qualification_rate_limit(
+        opened: &nightshift_foreman::OpenedProviderDispatchV1,
+        received_at: DateTime<Utc>,
+    ) -> DeterministicProviderAdmissionEvidenceV1 {
+        let retry_after = received_at + Duration::seconds(5);
+        let raw = serde_jcs::to_vec(&serde_json::json!({
+            "outcome": "RATE_LIMITED", "response_created": false,
+            "non_admission_proven": true, "retry_after": retry_after,
+            "observed_at": received_at,
+        }))
+        .unwrap();
+        let mut evidence = DeterministicProviderAdmissionEvidenceV1 {
+            schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+            evidence_digest: format!("sha256:{}", "0".repeat(64)),
+            producer_id: nightshift_foreman::HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+            producer_version: nightshift_foreman::HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+            executable_id: nightshift_foreman::HOLDING_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+            executable_sha256: nightshift_foreman::HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+                .to_owned(),
+            work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+            dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+            provider_request_occurrence_id: "casework-request-1".to_owned(),
+            provider_id: opened.dispatch.selection.provider_id.clone(),
+            model_id: opened.dispatch.selection.model_id.clone(),
+            outcome: DeterministicProviderAdmissionOutcomeV1::RateLimited,
+            response_created: false,
+            non_admission_proven: true,
+            retry_after: Some(retry_after),
+            observed_at: received_at,
+            received_at,
+            raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
+                "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+                &raw,
+            )
+            .unwrap(),
+            authority_effect: "QUALIFICATION_MECHANISM_EVIDENCE_ONLY".to_owned(),
+        };
+        evidence.seal().unwrap();
+        evidence
+    }
+
+    fn replace_fixture_strings(value: &mut serde_json::Value, replacements: &[(&str, &str)]) {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some((_, replacement)) = replacements.iter().find(|(from, _)| text == from) {
+                    *text = (*replacement).to_owned();
+                }
+            }
+            serde_json::Value::Array(values) => values
+                .iter_mut()
+                .for_each(|value| replace_fixture_strings(value, replacements)),
+            serde_json::Value::Object(values) => values
+                .values_mut()
+                .for_each(|value| replace_fixture_strings(value, replacements)),
+            _ => {}
+        }
+    }
+
+    fn seal_fixture_value(
+        mut value: serde_json::Value,
+        field: &str,
+        domain: &[u8],
+    ) -> serde_json::Value {
+        value[field] = serde_json::Value::String(format!("sha256:{}", "0".repeat(64)));
+        let mut basis = value.clone();
+        basis.as_object_mut().unwrap().remove(field);
+        let mut hash = Sha256::new();
+        hash.update(domain);
+        hash.update(serde_jcs::to_vec(&basis).unwrap());
+        value[field] = serde_json::Value::String(format!("sha256:{:x}", hash.finalize()));
+        value
+    }
+
+    fn switchyard_snapshot(name: &str) -> serde_json::Value {
+        if name == "waiting" {
+            let mut snapshot: serde_json::Value = serde_json::from_slice(include_bytes!(
+                "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"
+            )).unwrap();
+            let execution = snapshot["provider_execution_identity"].clone();
+            let mut wire = serde_json::to_vec(&serde_json::json!({
+                "method":"item/commandExecution/requestApproval",
+                "params":{"threadId":"thread-holding-1","turnId":"turn-holding-1"}
+            }))
+            .unwrap();
+            wire.push(b'\n');
+            let approval = &mut snapshot["records"][3];
+            approval["kind"] = serde_json::json!("WAITING_APPROVAL");
+            approval["method"] = serde_json::json!("item/commandExecution/requestApproval");
+            approval["raw"] = serde_json::json!({
+                "representation":"EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+                "byte_length":wire.len(),"sha256":format!("sha256:{:x}",Sha256::digest(&wire)),
+                "encoding":"hex","bytes_hex":hex::encode(wire)
+            });
+            approval["normalized"] = serde_json::json!({
+                "approval_response_sent":false,"protected_effect_absent":true,
+                "provider_execution_identity":execution
+            });
+            snapshot["records"].as_array_mut().unwrap().truncate(4);
+            snapshot["acquisition_cut"] = serde_json::Value::Null;
+            snapshot["admission_disposition"] = serde_json::json!("EXECUTION_ADMITTED");
+            snapshot["mechanism_state"] = serde_json::json!("WAITING_APPROVAL");
+            return snapshot;
+        }
+        let bytes: &[u8] = match name {
+            "indeterminate" => include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-admission-indeterminate.snapshot.v1.json"),
+            "interrupted" => include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-post-admission-interrupted.snapshot.v1.json"),
+            "approval" => include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"),
+            "completed" => include_bytes!("../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"),
+            _ => panic!("unknown snapshot"),
+        };
+        serde_json::from_slice(bytes).unwrap()
+    }
+
+    fn retarget_switchyard_snapshot(
+        mut snapshot: serde_json::Value,
+        opened: &nightshift_foreman::OpenedProviderDispatchV1,
+    ) -> Vec<u8> {
+        let replacements = [
+            (
+                "attempt-holding-1",
+                opened.dispatch.work_attempt_id.as_str(),
+            ),
+            (
+                "dispatch-holding-1",
+                opened.dispatch.dispatch_occurrence_id.as_str(),
+            ),
+            (
+                "adapter-process-holding-1",
+                opened.dispatch.adapter_process_occurrence_id.as_str(),
+            ),
+            (
+                "fixture-estate-holding-1",
+                opened.dispatch.app_server_session_identity.as_str(),
+            ),
+            ("gpt-5.6-sol", opened.dispatch.selection.model_id.as_str()),
+        ];
+        replace_fixture_strings(&mut snapshot, &replacements);
+        for record in snapshot["records"].as_array_mut().unwrap() {
+            if !record["raw"].is_null() {
+                let bytes = hex::decode(record["raw"]["bytes_hex"].as_str().unwrap()).unwrap();
+                let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                replace_fixture_strings(&mut wire, &replacements);
+                let mut exact = serde_json::to_vec(&wire).unwrap();
+                exact.push(b'\n');
+                record["raw"] = serde_json::json!({
+                    "representation":"EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+                    "byte_length":exact.len(), "sha256":format!("sha256:{:x}", Sha256::digest(&exact)),
+                    "encoding":"hex", "bytes_hex":hex::encode(exact),
+                });
+            }
+        }
+        snapshot["binding"] = seal_fixture_value(
+            snapshot["binding"].clone(),
+            "binding_digest",
+            b"switchyard.codex-provider-admission-binding.digest/v1\0",
+        );
+        let binding_digest = snapshot["binding"]["binding_digest"].clone();
+        for record in snapshot["records"].as_array_mut().unwrap() {
+            record["binding_digest"] = binding_digest.clone();
+            *record = seal_fixture_value(
+                record.clone(),
+                "evidence_digest",
+                b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+            );
+        }
+        snapshot = seal_fixture_value(
+            snapshot,
+            "snapshot_digest",
+            b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+        );
+        serde_jcs::to_vec(&snapshot).unwrap()
+    }
+
+    fn switchyard_records(
+        requirement: &ForemanExecutionAvailabilityRequirementV1,
+        opened: &nightshift_foreman::OpenedProviderDispatchV1,
+        name: &str,
+        received_at: DateTime<Utc>,
+    ) -> (
+        ExecutionAvailabilityObservationV1,
+        ProviderAdmissionDispositionV1,
+    ) {
+        let snapshot_bytes = retarget_switchyard_snapshot(switchyard_snapshot(name), opened);
+        let snapshot: serde_json::Value = serde_json::from_slice(&snapshot_bytes).unwrap();
+        let execution = snapshot["provider_execution_identity"]
+            .as_object()
+            .map(|identity| ProviderExecutionIdentityV1 {
+                provider_id: identity["provider"].as_str().unwrap().to_owned(),
+                model_id: identity["model"].as_str().unwrap().to_owned(),
+                app_server_session_identity: identity["app_server_session_identity"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                thread_id: identity["thread_id"].as_str().unwrap().to_owned(),
+                turn_id: identity["turn_id"].as_str().unwrap().to_owned(),
+                first_response_id: identity["first_response_id"].as_str().unwrap().to_owned(),
+            });
+        let disposition_kind = match snapshot["admission_disposition"].as_str().unwrap() {
+            "EXECUTION_ADMITTED" => ProviderAdmissionDispositionKindV1::ExecutionAdmitted,
+            "ADMISSION_INDETERMINATE" => ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+            _ => panic!("unexpected disposition"),
+        };
+        let mechanism_state = match snapshot["mechanism_state"].as_str().unwrap() {
+            "ADMISSION_INDETERMINATE" => ProviderMechanismStateV1::AdmissionIndeterminate,
+            "POST_ADMISSION_INTERRUPTED" => ProviderMechanismStateV1::PostAdmissionInterrupted,
+            "WAITING_APPROVAL" => ProviderMechanismStateV1::WaitingApproval,
+            "PROVIDER_COMPLETED" => ProviderMechanismStateV1::ProviderCompleted,
+            _ => panic!("unexpected mechanism state"),
+        };
+        let request_id = snapshot["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|record| record["normalized"]["request_occurrence_id"].as_str())
+            .unwrap_or("request-0")
+            .to_owned();
+        let mut disposition = ProviderAdmissionDispositionV1 {
+            schema: nightshift_foreman::PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1.to_owned(),
+            disposition_digest: format!("sha256:{}", "0".repeat(64)),
+            dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+            requirement_digest: requirement.requirement_digest.clone(),
+            policy_digest: requirement.policy_digest.clone(),
+            packet_digest: requirement.packet_digest.clone(),
+            run_id: requirement.run_id.clone(),
+            work_item_id: opened.dispatch.work_item_id.clone(),
+            work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+            dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+            provider_id: opened.dispatch.selection.provider_id.clone(),
+            model_id: opened.dispatch.selection.model_id.clone(),
+            provider_request_occurrence_id: request_id,
+            adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
+            app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+            thread_id: snapshot["binding"]["thread_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            turn_id: snapshot["binding"]["turn_id"].as_str().unwrap().to_owned(),
+            disposition: disposition_kind,
+            mechanism_state,
+            received_at,
+            response_created: execution.is_some(),
+            will_retry: false,
+            acquisition_complete: snapshot["acquisition_cut"]["clean"]
+                .as_bool()
+                .unwrap_or(false),
+            provider_retry_after: None,
+            provider_execution: execution,
+            mapper_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1".to_owned(),
+            mapper_snapshot_digest: snapshot["snapshot_digest"].as_str().unwrap().to_owned(),
+            mapper_snapshot: ExactMapperSnapshotV1::from_bytes(&snapshot_bytes).unwrap(),
+            approval_response_sent: false,
+            protected_effect_absent: true,
+            authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+        };
+        disposition.seal().unwrap();
+        let source_kind = match disposition.disposition {
+            ProviderAdmissionDispositionKindV1::ExecutionAdmitted => "PROVIDER_EXECUTION_STEP",
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => "ADMISSION_DISCREPANCY",
+            _ => unreachable!(),
+        };
+        let source = snapshot["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["kind"] == source_kind)
+            .unwrap();
+        let exact_evidence = if source["raw"].is_null() {
+            None
+        } else {
+            Some(serde_json::from_value(source["raw"].clone()).unwrap())
+        };
+        let observed_at = source["normalized"]["observed_at_ms"]
+            .as_i64()
+            .and_then(DateTime::<Utc>::from_timestamp_millis)
+            .unwrap_or(received_at);
+        let state = match disposition.disposition {
+            ProviderAdmissionDispositionKindV1::ExecutionAdmitted => {
+                ExecutionAvailabilityStateV1::Available
+            }
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate => {
+                ExecutionAvailabilityStateV1::Unknown
+            }
+            _ => unreachable!(),
+        };
+        let mut observation = ExecutionAvailabilityObservationV1 {
+            schema: nightshift_foreman::EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+            observation_digest: format!("sha256:{}", "0".repeat(64)),
+            provider_id: disposition.provider_id.clone(),
+            model_id: disposition.model_id.clone(),
+            model_class: opened.dispatch.selection.model_class.clone(),
+            observed_at,
+            received_at,
+            expires_at: received_at + Duration::minutes(10),
+            state,
+            source_identity: "switchyard:provider-admission".to_owned(),
+            source_version: "v1".to_owned(),
+            provider_retry_after: None,
+            exact_evidence,
+            authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+        };
+        observation.seal().unwrap();
+        (observation, disposition)
+    }
+
+    fn recorded_switchyard_state_fixture(
+        name: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (directory, path, run_id) = recorded_execution_dispatch_fixture();
+        let snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let history = snapshot.execution_availability.unwrap();
+        let opened = nightshift_foreman::OpenedProviderDispatchV1 {
+            worker_start_request: history.worker_start_requests[0].clone(),
+            dispatch: history.dispatches[0].clone(),
+        };
+        let (observation, disposition) = switchyard_records(
+            &history.requirement,
+            &opened,
+            name,
+            instant() + Duration::hours(8) + Duration::seconds(1),
+        );
+        let observation_bytes = serde_jcs::to_vec(&observation).unwrap();
+        let disposition_bytes = serde_jcs::to_vec(&disposition).unwrap();
+        ForemanStore::open(&path)
+            .unwrap()
+            .record_provider_disposition(
+                &run_id,
+                &disposition.work_item_id,
+                &disposition.work_attempt_id,
+                ProviderDispositionEvidenceV1 {
+                    observation_bytes: &observation_bytes,
+                    disposition_bytes: &disposition_bytes,
+                    deferred_bytes: None,
+                },
+                None,
+            )
+            .unwrap();
+        (directory, path, run_id)
+    }
+
+    fn recorded_execution_resume_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (directory, path, run_id) = recorded_switchyard_state_fixture("interrupted");
+        let snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let history = snapshot.execution_availability.unwrap();
+        let disposition = &history.dispositions[0];
+        let execution = disposition.provider_execution.as_ref().unwrap();
+        ForemanStore::open(&path)
+            .unwrap()
+            .resume_provider_execution(
+                &run_id,
+                &disposition.work_item_id,
+                &disposition.work_attempt_id,
+                "casework-resume-1",
+                &disposition.disposition_digest,
+                "casework-process-resume-1",
+                execution,
+                disposition.received_at + Duration::seconds(1),
+            )
+            .unwrap();
+        (directory, path, run_id)
+    }
+
+    fn qualification_parked_records(
+        requirement: &ForemanExecutionAvailabilityRequirementV1,
+        policy: &ExecutionAvailabilityPolicyV1,
+        opened: &nightshift_foreman::OpenedProviderDispatchV1,
+        received_at: DateTime<Utc>,
+    ) -> (
+        ExecutionAvailabilityObservationV1,
+        ProviderAdmissionDispositionV1,
+        DeferredProviderDispatchV1,
+    ) {
+        let evidence = qualification_rate_limit(opened, received_at);
+        let evidence_bytes = serde_jcs::to_vec(&evidence).unwrap();
+        let mut disposition = ProviderAdmissionDispositionV1 {
+            schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2.to_owned(),
+            disposition_digest: format!("sha256:{}", "0".repeat(64)),
+            dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+            requirement_digest: requirement.requirement_digest.clone(),
+            policy_digest: policy.policy_digest.clone(),
+            packet_digest: requirement.packet_digest.clone(),
+            run_id: requirement.run_id.clone(),
+            work_item_id: opened.dispatch.work_item_id.clone(),
+            work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+            dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+            provider_id: opened.dispatch.selection.provider_id.clone(),
+            model_id: opened.dispatch.selection.model_id.clone(),
+            provider_request_occurrence_id: evidence.provider_request_occurrence_id.clone(),
+            adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
+            app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+            thread_id: "qualification-thread".to_owned(),
+            turn_id: "qualification-turn".to_owned(),
+            disposition: ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited,
+            mechanism_state: ProviderMechanismStateV1::ParkedNotAdmitted,
+            received_at,
+            response_created: false,
+            will_retry: false,
+            acquisition_complete: true,
+            provider_retry_after: evidence.retry_after,
+            provider_execution: None,
+            mapper_snapshot_schema: evidence.schema.clone(),
+            mapper_snapshot_digest: evidence.evidence_digest.clone(),
+            mapper_snapshot: ExactMapperSnapshotV1::from_qualification_evidence_bytes(
+                &evidence_bytes,
+            )
+            .unwrap(),
+            approval_response_sent: false,
+            protected_effect_absent: true,
+            authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+        };
+        disposition.seal().unwrap();
+        let mut observation = ExecutionAvailabilityObservationV1 {
+            schema: nightshift_foreman::EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+            observation_digest: format!("sha256:{}", "0".repeat(64)),
+            provider_id: disposition.provider_id.clone(),
+            model_id: disposition.model_id.clone(),
+            model_class: opened.dispatch.selection.model_class.clone(),
+            observed_at: received_at,
+            received_at,
+            expires_at: received_at + Duration::minutes(10),
+            state: ExecutionAvailabilityStateV1::RateLimited,
+            source_identity: nightshift_foreman::HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+            source_version: nightshift_foreman::HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+            provider_retry_after: disposition.provider_retry_after,
+            exact_evidence: Some(evidence.raw_evidence.clone()),
+            authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+        };
+        observation.seal().unwrap();
+        let mut deferred = DeferredProviderDispatchV1 {
+            schema: nightshift_foreman::DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1.to_owned(),
+            deferred_dispatch_digest: format!("sha256:{}", "0".repeat(64)),
+            requirement_digest: requirement.requirement_digest.clone(),
+            policy_digest: policy.policy_digest.clone(),
+            disposition_digest: disposition.disposition_digest.clone(),
+            packet_digest: requirement.packet_digest.clone(),
+            run_id: requirement.run_id.clone(),
+            work_item_id: disposition.work_item_id.clone(),
+            work_attempt_id: disposition.work_attempt_id.clone(),
+            last_dispatch_occurrence_id: disposition.dispatch_occurrence_id.clone(),
+            provider_id: disposition.provider_id.clone(),
+            model_id: disposition.model_id.clone(),
+            selected_model_ordinal: opened.dispatch.selected_model_ordinal,
+            remaining_model_ordinals: vec![1],
+            refusal_received_at: received_at,
+            wake_basis: DeferredWakeBasisV1::ProviderRetryAfter,
+            backoff_ordinal: opened.dispatch.dispatch_ordinal - 1,
+            backoff_seconds: 5,
+            provider_retry_after: disposition.provider_retry_after,
+            wake_at: disposition.provider_retry_after.unwrap(),
+            parked_resource_lock_policy: policy.parked_resource_lock_policy,
+            provider_capacity_released: true,
+            semantic_retry: false,
+            authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+        };
+        deferred.seal().unwrap();
+        (observation, disposition, deferred)
+    }
+
+    fn recorded_execution_parked_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (directory, path, run_id) = recorded_execution_dispatch_fixture();
+        let snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let history = snapshot.execution_availability.unwrap();
+        let opened = nightshift_foreman::OpenedProviderDispatchV1 {
+            worker_start_request: history.worker_start_requests[0].clone(),
+            dispatch: history.dispatches[0].clone(),
+        };
+        let received_at = instant() - Duration::minutes(29);
+        let (observation, disposition, deferred) = qualification_parked_records(
+            &history.requirement,
+            &history.policy,
+            &opened,
+            received_at,
+        );
+        let observation_bytes = serde_jcs::to_vec(&observation).unwrap();
+        let disposition_bytes = serde_jcs::to_vec(&disposition).unwrap();
+        let deferred_bytes = serde_jcs::to_vec(&deferred).unwrap();
+        ForemanStore::open(&path)
+            .unwrap()
+            .record_provider_disposition(
+                &run_id,
+                &disposition.work_item_id,
+                &disposition.work_attempt_id,
+                ProviderDispositionEvidenceV1 {
+                    observation_bytes: &observation_bytes,
+                    disposition_bytes: &disposition_bytes,
+                    deferred_bytes: Some(&deferred_bytes),
+                },
+                None,
+            )
+            .unwrap();
+        (directory, path, run_id)
+    }
+
+    fn recorded_execution_wake_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (directory, path, run_id) = recorded_execution_parked_fixture();
+        let snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let history = snapshot.execution_availability.unwrap();
+        let first = &history.dispatches[0];
+        ForemanStore::open(&path)
+            .unwrap()
+            .wake_provider_dispatch(
+                &run_id,
+                &first.work_item_id,
+                &first.work_attempt_id,
+                "casework-wake-1",
+                "casework-dispatch-2",
+                "casework-process-2",
+                "casework-session-2",
+                1,
+                instant() - Duration::minutes(28),
+            )
+            .unwrap();
+        (directory, path, run_id)
+    }
+
     pub(crate) fn closed_fixture() -> (tempfile::TempDir, std::path::PathBuf, String, Vec<u8>) {
         let (directory, path, run_id) = fixture();
         let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
@@ -580,6 +1280,8 @@ pub(crate) mod test_support {
         assert_eq!(loaded.projection.run_id, "ledger/live:fixture");
         assert_eq!(loaded.projection.navigation_id.len(), 64);
         assert_eq!(loaded.projection.foreman.lifecycle, "OPEN");
+        assert_eq!(loaded.provider_execution.status, "NOT_RECORDED_BY_FOREMAN");
+        assert!(loaded.provider_execution.requirement.is_none());
         assert_eq!(
             loaded.projection.provider_capacity.status,
             "NOT_RECORDED_BY_FOREMAN"
@@ -602,6 +1304,189 @@ pub(crate) mod test_support {
             loaded.event_bytes[&loaded.projection.events[0].sequence],
             loaded.journal_framing_bytes[FOREMAN_JOURNAL_FRAMING_V1.len() + 16..]
         );
+    }
+
+    #[test]
+    fn recorded_execution_requirement_is_exact_restartable_and_query_only() {
+        let (_directory, path, run_id) = recorded_execution_requirement_fixture();
+        let before = database_census(&path);
+        let first = load_live_run_at(&path, &run_id, instant()).unwrap();
+        let second = load_live_run_at(&path, &run_id, instant()).unwrap();
+        let after = database_census(&path);
+        assert_eq!(before, after);
+        assert_eq!(first.provider_execution, second.provider_execution);
+        let projected = first.provider_execution;
+        assert_eq!(projected.status, "EXACT_RECORDED_FOREMAN_HISTORY");
+        assert_eq!(
+            projected.independent_provider_capacity_status,
+            "NOT_RECORDED_BY_FOREMAN"
+        );
+        let requirement = projected.requirement.unwrap();
+        assert_eq!(requirement.provider_id, "openai");
+        assert_eq!(
+            requirement.adapter_protocol,
+            "switchyard.codex-app-server/v2"
+        );
+        assert_eq!(requirement.journal_sequence, 2);
+        assert!(!requirement.automatic_semantic_retry);
+        assert!(!requirement.approval_response_authorized);
+        assert!(projected.dispatches.is_empty());
+        assert!(projected.dispositions.is_empty());
+        assert!(projected.resource_transitions.is_empty());
+    }
+
+    #[test]
+    fn recorded_provider_dispatch_retains_distinct_attempt_and_occurrence_custody() {
+        let (_directory, path, run_id) = recorded_execution_dispatch_fixture();
+        let before = database_census(&path);
+        let loaded = load_live_run_at(&path, &run_id, instant()).unwrap();
+        assert_eq!(before, database_census(&path));
+        let dispatch = &loaded.provider_execution.dispatches[0];
+        assert_eq!(dispatch.dispatch_occurrence_id, "casework-dispatch-1");
+        assert_ne!(dispatch.work_attempt_id, dispatch.dispatch_occurrence_id);
+        assert_eq!(dispatch.adapter_process_occurrence_id, "casework-process-1");
+        assert_eq!(dispatch.app_server_session_identity, "casework-session-1");
+        assert_eq!(dispatch.provider_id, "openai");
+        assert!(dispatch.provider_execution_identity_absent_at_start);
+        assert!(dispatch.journal_exact_bytes_sha256.starts_with("sha256:"));
+        assert!(dispatch
+            .start_request_exact_bytes_sha256
+            .starts_with("sha256:"));
+        assert!(loaded.provider_execution.dispositions.is_empty());
+    }
+
+    #[test]
+    fn recorded_parked_disposition_retains_backoff_currentness_and_resource_release() {
+        let (_directory, path, run_id) = recorded_execution_parked_fixture();
+        let before = database_census(&path);
+        let loaded = load_live_run_at(&path, &run_id, instant()).unwrap();
+        assert_eq!(before, database_census(&path));
+        let disposition = &loaded.provider_execution.dispositions[0];
+        assert_eq!(disposition.availability_state, "RATE_LIMITED");
+        assert_eq!(
+            disposition.admission_disposition,
+            "NOT_ADMITTED_RATE_LIMITED"
+        );
+        assert_eq!(disposition.mechanism_state, "PARKED_NOT_ADMITTED");
+        assert_eq!(disposition.currentness, "EXPIRED");
+        assert!(!disposition.response_created);
+        assert!(disposition.provider_execution.is_none());
+        let deferred = &loaded.provider_execution.deferrals[0];
+        assert_eq!(deferred.wake_basis, "PROVIDER_RETRY_AFTER");
+        assert_eq!(deferred.backoff_seconds, 5);
+        assert_eq!(
+            deferred.parked_resource_lock_policy,
+            "RELEASE_AND_REACQUIRE"
+        );
+        assert_eq!(
+            loaded.provider_execution.resource_transitions[0].transition,
+            "RELEASED"
+        );
+        assert_eq!(
+            loaded
+                .provider_execution
+                .independent_provider_capacity_status,
+            "NOT_RECORDED_BY_FOREMAN"
+        );
+    }
+
+    #[test]
+    fn recorded_wake_retains_fresh_dispatch_and_resource_reacquisition() {
+        let (_directory, path, run_id) = recorded_execution_wake_fixture();
+        let loaded = load_live_run_at(&path, &run_id, instant()).unwrap();
+        assert_eq!(loaded.provider_execution.dispatches.len(), 2);
+        let wake = &loaded.provider_execution.wakes[0];
+        let next = &loaded.provider_execution.dispatches[1];
+        assert_eq!(wake.wake_occurrence_id, "casework-wake-1");
+        assert_eq!(wake.next_dispatch_digest, next.dispatch_digest);
+        assert_eq!(next.dispatch_occurrence_id, "casework-dispatch-2");
+        assert_eq!(next.selected_model_ordinal, 1);
+        assert_eq!(next.model_id, "fixture-fallback");
+        assert_eq!(
+            loaded.provider_execution.resource_transitions[1].transition,
+            "REACQUIRED"
+        );
+        assert_eq!(
+            loaded.provider_execution.resource_transitions[1]
+                .wake_occurrence_id
+                .as_deref(),
+            Some("casework-wake-1")
+        );
+    }
+
+    #[test]
+    fn exact_switchyard_states_remain_distinct_and_never_gain_authority() {
+        for (fixture, mechanism, admitted) in [
+            ("indeterminate", "ADMISSION_INDETERMINATE", false),
+            ("interrupted", "POST_ADMISSION_INTERRUPTED", true),
+            ("waiting", "WAITING_APPROVAL", true),
+            ("approval", "POST_ADMISSION_INTERRUPTED", true),
+            ("completed", "PROVIDER_COMPLETED", true),
+        ] {
+            let (_directory, path, run_id) = recorded_switchyard_state_fixture(fixture);
+            let loaded = load_live_run_at(&path, &run_id, instant()).unwrap();
+            let disposition = &loaded.provider_execution.dispositions[0];
+            assert_eq!(disposition.mechanism_state, mechanism);
+            assert_eq!(disposition.provider_execution.is_some(), admitted);
+            assert!(!disposition.approval_response_sent);
+            assert!(disposition.protected_effect_absent);
+            assert_eq!(
+                loaded.provider_execution.authority_effect,
+                "READ_ONLY_MECHANISM_PROJECTION"
+            );
+        }
+    }
+
+    #[test]
+    fn post_admission_resume_retains_same_execution_and_fresh_process_occurrence() {
+        let (_directory, path, run_id) = recorded_execution_resume_fixture();
+        let loaded = load_live_run_at(&path, &run_id, instant()).unwrap();
+        let disposition = &loaded.provider_execution.dispositions[0];
+        let resume = &loaded.provider_execution.resumes[0];
+        assert_eq!(resume.disposition_digest, disposition.disposition_digest);
+        assert_eq!(
+            resume.execution_identity,
+            disposition.provider_execution.clone().unwrap()
+        );
+        assert_eq!(resume.resume_occurrence_id, "casework-resume-1");
+        assert_eq!(
+            resume.adapter_process_occurrence_id,
+            "casework-process-resume-1"
+        );
+        assert_eq!(loaded.provider_execution.dispatches.len(), 1);
+    }
+
+    #[test]
+    fn provider_execution_nested_raw_substitution_refuses_before_projection() {
+        let (_directory, path, run_id) = recorded_execution_requirement_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let row = snapshot
+            .events
+            .iter_mut()
+            .find(|row| row.kind == "execution_availability_requirement")
+            .unwrap();
+        let mut event: serde_json::Value = serde_json::from_slice(&row.raw_bytes).unwrap();
+        event["payload"]["requirement_bytes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!(32));
+        row.raw_bytes = serde_jcs::to_vec(&event).unwrap();
+        let mut digest = Sha256::new();
+        digest.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+        digest.update(&row.raw_bytes);
+        row.raw_digest = format!("sha256:{:x}", digest.finalize());
+        let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
+        let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
+        let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();
+        assert!(crate::live_execution::project_provider_execution(
+            &snapshot,
+            &packet,
+            &admission,
+            &profile,
+            instant(),
+            "NOT_RECORDED_BY_FOREMAN",
+        )
+        .is_err());
     }
 
     #[test]

@@ -365,6 +365,57 @@ pub enum ReadOnlyCapacityJournalEventV1 {
     },
 }
 
+/// One exact execution-availability event reopened from retained canonical
+/// journal bytes. This query-only view grants no transition authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReadOnlyExecutionAvailabilityJournalEventV1 {
+    Requirement {
+        requirement: Box<ForemanExecutionAvailabilityRequirementV1>,
+        requirement_bytes: Vec<u8>,
+        policy: Box<ExecutionAvailabilityPolicyV1>,
+        policy_bytes: Vec<u8>,
+    },
+    Dispatch {
+        start_request: Box<WorkerStartRequestV3>,
+        start_request_bytes: Vec<u8>,
+        dispatch: Box<ProviderDispatchOccurrenceV1>,
+        dispatch_bytes: Vec<u8>,
+    },
+    Disposition {
+        observation: Box<ExecutionAvailabilityObservationV1>,
+        observation_bytes: Vec<u8>,
+        disposition: Box<ProviderAdmissionDispositionV1>,
+        disposition_bytes: Vec<u8>,
+        deferred: Option<Box<DeferredProviderDispatchV1>>,
+        deferred_bytes: Option<Vec<u8>>,
+        reconciles_disposition_digest: Option<String>,
+    },
+    Wake {
+        wake_occurrence_id: String,
+        deferred_dispatch_digest: String,
+        next_dispatch_digest: String,
+    },
+    Resume {
+        resume_occurrence_id: String,
+        disposition_digest: String,
+        adapter_process_occurrence_id: String,
+        execution_identity: Box<ProviderExecutionIdentityV1>,
+    },
+    ResourcesReleased {
+        disposition_digest: String,
+        dispatch_digest: String,
+        policy_digest: String,
+        resource_lock_keys: Vec<String>,
+    },
+    ResourcesReacquired {
+        wake_occurrence_id: String,
+        deferred_dispatch_digest: String,
+        next_dispatch_digest: String,
+        policy_digest: String,
+        resource_lock_keys: Vec<String>,
+    },
+}
+
 /// Reopen a capacity journal row without interpreting non-capacity events.
 ///
 /// The returned nested typed record and exact nested bytes have been proved
@@ -477,6 +528,221 @@ pub fn reopen_capacity_journal_event(
         }
         _ => Err(ForemanError::ReadOnlyStore(
             "row is not an exact recognized capacity journal event".to_owned(),
+        )),
+    }
+}
+
+/// Reopen one exact execution-availability journal row without changing store
+/// or scheduler state.
+pub fn reopen_execution_availability_journal_event(
+    row: &ReadOnlyEventRowV1,
+    expected_run_id: &str,
+) -> Result<ReadOnlyExecutionAvailabilityJournalEventV1, ForemanError> {
+    if row.sequence == 0 || row.raw_digest != raw_digest(&row.raw_bytes) {
+        return Err(ForemanError::ReadOnlyStore(
+            "execution-availability retained-raw identity mismatch".to_owned(),
+        ));
+    }
+    let event: InternalEvent = serde_json::from_slice(&row.raw_bytes)
+        .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+    if event.schema != INTERNAL_EVENT_SCHEMA
+        || event.run_id != expected_run_id
+        || event.event_id != row.event_id
+        || event.work_item_id != row.work_item_id
+        || event.attempt_id != row.attempt_id
+        || event.recorded_at.to_rfc3339() != row.recorded_at
+        || serde_jcs::to_vec(&event)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != row.raw_bytes
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "execution-availability event row identity mismatch".to_owned(),
+        ));
+    }
+    reopen_execution_availability_payload(row.kind.as_str(), event.payload)
+}
+
+fn reopen_execution_availability_payload(
+    kind: &str,
+    payload: InternalPayload,
+) -> Result<ReadOnlyExecutionAvailabilityJournalEventV1, ForemanError> {
+    match payload {
+        InternalPayload::ExecutionAvailabilityConfigured {
+            requirement,
+            requirement_bytes,
+            policy,
+            policy_bytes,
+        } if kind == "execution_availability_requirement" => {
+            let reopened =
+                validate_execution_availability_configuration(&requirement_bytes, &policy_bytes)?;
+            if reopened.requirement != *requirement || reopened.policy != *policy {
+                return Err(ForemanError::ReadOnlyStore(
+                    "execution-availability requirement typed/raw split".to_owned(),
+                ));
+            }
+            Ok(ReadOnlyExecutionAvailabilityJournalEventV1::Requirement {
+                requirement: Box::new(reopened.requirement),
+                requirement_bytes: reopened.requirement_bytes,
+                policy: Box::new(reopened.policy),
+                policy_bytes: reopened.policy_bytes,
+            })
+        }
+        InternalPayload::ProviderDispatchOpened {
+            start_request,
+            start_request_bytes,
+            dispatch,
+            dispatch_bytes,
+        } if kind == "provider_dispatch" => {
+            start_request.validate()?;
+            dispatch.validate()?;
+            if serde_jcs::to_vec(&*start_request)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                != start_request_bytes
+                || serde_jcs::to_vec(&*dispatch)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != dispatch_bytes
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "provider dispatch typed/raw split".to_owned(),
+                ));
+            }
+            Ok(ReadOnlyExecutionAvailabilityJournalEventV1::Dispatch {
+                start_request,
+                start_request_bytes,
+                dispatch,
+                dispatch_bytes,
+            })
+        }
+        other => reopen_execution_availability_payload_tail(kind, other),
+    }
+}
+
+fn reopen_execution_availability_payload_tail(
+    kind: &str,
+    payload: InternalPayload,
+) -> Result<ReadOnlyExecutionAvailabilityJournalEventV1, ForemanError> {
+    match payload {
+        InternalPayload::ProviderDispositionRecorded {
+            observation,
+            observation_bytes,
+            disposition,
+            disposition_bytes,
+            deferred,
+            deferred_bytes,
+            reconciles_disposition_digest,
+        } if kind == "provider_disposition" => {
+            observation.validate()?;
+            disposition.validate()?;
+            if serde_jcs::to_vec(&*observation)
+                .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                != observation_bytes
+                || serde_jcs::to_vec(&*disposition)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != disposition_bytes
+                || deferred.is_some() != deferred_bytes.is_some()
+            {
+                return Err(ForemanError::ReadOnlyStore(
+                    "provider disposition typed/raw split".to_owned(),
+                ));
+            }
+            if let (Some(record), Some(bytes)) = (&deferred, &deferred_bytes) {
+                record.validate()?;
+                if serde_jcs::to_vec(&**record)
+                    .map_err(|error| ForemanError::Serialization(error.to_string()))?
+                    != *bytes
+                {
+                    return Err(ForemanError::ReadOnlyStore(
+                        "provider deferral typed/raw split".to_owned(),
+                    ));
+                }
+            }
+            Ok(ReadOnlyExecutionAvailabilityJournalEventV1::Disposition {
+                observation,
+                observation_bytes,
+                disposition,
+                disposition_bytes,
+                deferred,
+                deferred_bytes,
+                reconciles_disposition_digest,
+            })
+        }
+        other => reopen_execution_availability_payload_occurrence(kind, other),
+    }
+}
+
+fn reopen_execution_availability_payload_occurrence(
+    kind: &str,
+    payload: InternalPayload,
+) -> Result<ReadOnlyExecutionAvailabilityJournalEventV1, ForemanError> {
+    match payload {
+        InternalPayload::ProviderWakeOpened {
+            wake_occurrence_id,
+            deferred_dispatch_digest,
+            next_dispatch_digest,
+        } if kind == "provider_wake" => Ok(ReadOnlyExecutionAvailabilityJournalEventV1::Wake {
+            wake_occurrence_id,
+            deferred_dispatch_digest,
+            next_dispatch_digest,
+        }),
+        InternalPayload::ProviderExecutionResumeRequested {
+            resume_occurrence_id,
+            disposition_digest,
+            adapter_process_occurrence_id,
+            execution_identity,
+        } if kind == "provider_resume" => {
+            execution_identity.validate()?;
+            Ok(ReadOnlyExecutionAvailabilityJournalEventV1::Resume {
+                resume_occurrence_id,
+                disposition_digest,
+                adapter_process_occurrence_id,
+                execution_identity,
+            })
+        }
+        other => reopen_execution_availability_payload_resource(kind, other),
+    }
+}
+
+fn reopen_execution_availability_payload_resource(
+    kind: &str,
+    payload: InternalPayload,
+) -> Result<ReadOnlyExecutionAvailabilityJournalEventV1, ForemanError> {
+    match (kind, payload) {
+        (
+            "provider_resources_released",
+            InternalPayload::ProviderResourcesReleased {
+                disposition_digest,
+                dispatch_digest,
+                policy_digest,
+                resource_lock_keys,
+            },
+        ) => Ok(
+            ReadOnlyExecutionAvailabilityJournalEventV1::ResourcesReleased {
+                disposition_digest,
+                dispatch_digest,
+                policy_digest,
+                resource_lock_keys,
+            },
+        ),
+        (
+            "provider_resources_reacquired",
+            InternalPayload::ProviderResourcesReacquired {
+                wake_occurrence_id,
+                deferred_dispatch_digest,
+                next_dispatch_digest,
+                policy_digest,
+                resource_lock_keys,
+            },
+        ) => Ok(
+            ReadOnlyExecutionAvailabilityJournalEventV1::ResourcesReacquired {
+                wake_occurrence_id,
+                deferred_dispatch_digest,
+                next_dispatch_digest,
+                policy_digest,
+                resource_lock_keys,
+            },
+        ),
+        _ => Err(ForemanError::ReadOnlyStore(
+            "row is not an exact execution-availability event".to_owned(),
         )),
     }
 }

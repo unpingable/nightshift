@@ -12,12 +12,13 @@ pub use contract::*;
 pub use execution_availability::*;
 pub use scheduler::{LiveRunProjectionV1, LiveWorkItemV1, Scheduler};
 pub use store::{
-    read_only_run_snapshot, reopen_capacity_journal_event, CapacityAdmissionEvidenceV1,
-    ForemanError, ForemanStore, OpenedProviderDispatchV1, ProviderDispositionEvidenceV1,
+    read_only_run_snapshot, reopen_capacity_journal_event,
+    reopen_execution_availability_journal_event, CapacityAdmissionEvidenceV1, ForemanError,
+    ForemanStore, OpenedProviderDispatchV1, ProviderDispositionEvidenceV1,
     ReadOnlyCapacityAdmissionV1, ReadOnlyCapacityJournalEventV1, ReadOnlyCapacityRequirementV1,
     ReadOnlyEventRowV1, ReadOnlyExecutionAvailabilityHistoryV1,
-    ReadOnlyProviderResourceTransitionV1, ReadOnlyRunSnapshotV1, ReadOnlyTerminalReceiptRowV1,
-    RunMechanismRequirementsV1,
+    ReadOnlyExecutionAvailabilityJournalEventV1, ReadOnlyProviderResourceTransitionV1,
+    ReadOnlyRunSnapshotV1, ReadOnlyTerminalReceiptRowV1, RunMechanismRequirementsV1,
 };
 
 pub const FOREMAN_ADMISSION_SCHEMA_V1: &str = "nightshift.foreman-admission/v1";
