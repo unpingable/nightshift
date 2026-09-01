@@ -1367,6 +1367,20 @@ fn only_exact_model_capacity_disposition_permits_automatic_park() {
 }
 
 #[test]
+fn fuel_owned_quota_cannot_seal_as_provider_admission_disposition() {
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let mut disposition = disposition(&requirement, &dispatch);
+    disposition.disposition = ProviderAdmissionDispositionKindV1::QuotaExhaustedFuelOwned;
+
+    assert_eq!(
+        disposition.seal().unwrap_err().to_string(),
+        "invalid field: disposition is not emitted by accepted Switchyard V1"
+    );
+}
+
+#[test]
 fn exact_switchyard_vectors_reopen_with_distinct_terminal_mechanism_states() {
     let policy = policy();
     let requirement = requirement(&policy);

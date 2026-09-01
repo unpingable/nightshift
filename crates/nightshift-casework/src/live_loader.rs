@@ -782,6 +782,60 @@ pub(crate) mod test_support {
         value
     }
 
+    fn substitute_resource_edge(
+        row: &mut nightshift_foreman::ReadOnlyEventRowV1,
+        field: &str,
+        digest: &str,
+        release_event_id: bool,
+    ) {
+        let mut event: serde_json::Value = serde_json::from_slice(&row.raw_bytes).unwrap();
+        event["payload"][field] = serde_json::json!(digest);
+        if release_event_id {
+            row.event_id = format!("provider-resources-released-{digest}");
+            event["event_id"] = serde_json::json!(row.event_id);
+        }
+        row.raw_bytes = serde_jcs::to_vec(&event).unwrap();
+        let mut hash = Sha256::new();
+        hash.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+        hash.update(&row.raw_bytes);
+        row.raw_digest = format!("sha256:{:x}", hash.finalize());
+    }
+
+    fn substitute_requirement_selection(snapshot: &mut nightshift_foreman::ReadOnlyRunSnapshotV1) {
+        let mut requirement = snapshot
+            .execution_availability
+            .as_ref()
+            .unwrap()
+            .requirement
+            .clone();
+        let dispatched_work_item = snapshot.execution_availability.as_ref().unwrap().dispatches[1]
+            .work_item_id
+            .clone();
+        requirement
+            .work_item_model_selections
+            .get_mut(&dispatched_work_item)
+            .unwrap()[1]
+            .model_id = "substituted-fallback".to_owned();
+        requirement.seal().unwrap();
+        let requirement_bytes = serde_jcs::to_vec(&requirement).unwrap();
+        let history = snapshot.execution_availability.as_mut().unwrap();
+        history.requirement = requirement.clone();
+        history.requirement_bytes.clone_from(&requirement_bytes);
+        let row = snapshot
+            .events
+            .iter_mut()
+            .find(|row| row.kind == "execution_availability_requirement")
+            .unwrap();
+        let mut event: serde_json::Value = serde_json::from_slice(&row.raw_bytes).unwrap();
+        event["payload"]["requirement"] = serde_json::to_value(requirement).unwrap();
+        event["payload"]["requirement_bytes"] = serde_json::to_value(requirement_bytes).unwrap();
+        row.raw_bytes = serde_jcs::to_vec(&event).unwrap();
+        let mut hash = Sha256::new();
+        hash.update(b"nightshift.foreman-retained-raw.digest/v1\0");
+        hash.update(&row.raw_bytes);
+        row.raw_digest = format!("sha256:{:x}", hash.finalize());
+    }
+
     fn switchyard_snapshot(name: &str) -> serde_json::Value {
         if name == "waiting" {
             let mut snapshot: serde_json::Value = serde_json::from_slice(include_bytes!(
@@ -1328,6 +1382,17 @@ pub(crate) mod test_support {
             "switchyard.codex-app-server/v2"
         );
         assert_eq!(requirement.journal_sequence, 2);
+        assert!(requirement
+            .work_item_model_selections
+            .values()
+            .all(|selections| {
+                selections.len() == 2
+                    && selections[0].provider_id == "openai"
+                    && selections[0].model_id == "fixture-model"
+                    && selections[1].provider_id == "openai"
+                    && selections[1].model_id == "fixture-fallback"
+                    && selections[0].model_class == selections[1].model_class
+            }));
         assert!(!requirement.automatic_semantic_retry);
         assert!(!requirement.approval_response_authorized);
         assert!(projected.dispatches.is_empty());
@@ -1383,6 +1448,15 @@ pub(crate) mod test_support {
             "RELEASED"
         );
         assert_eq!(
+            loaded.provider_execution.resource_transitions[0]
+                .disposition_digest
+                .as_deref(),
+            Some(disposition.disposition_digest.as_str())
+        );
+        assert!(loaded.provider_execution.resource_transitions[0]
+            .deferred_dispatch_digest
+            .is_none());
+        assert_eq!(
             loaded
                 .provider_execution
                 .independent_provider_capacity_status,
@@ -1412,6 +1486,18 @@ pub(crate) mod test_support {
                 .as_deref(),
             Some("casework-wake-1")
         );
+        assert_eq!(
+            loaded.provider_execution.resource_transitions[1]
+                .deferred_dispatch_digest
+                .as_deref(),
+            loaded.provider_execution.deferrals[0]
+                .deferred_dispatch_digest
+                .as_str()
+                .into()
+        );
+        assert!(loaded.provider_execution.resource_transitions[1]
+            .disposition_digest
+            .is_none());
     }
 
     #[test]
@@ -1475,6 +1561,136 @@ pub(crate) mod test_support {
         digest.update(b"nightshift.foreman-retained-raw.digest/v1\0");
         digest.update(&row.raw_bytes);
         row.raw_digest = format!("sha256:{:x}", digest.finalize());
+        let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
+        let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
+        let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();
+        assert!(crate::live_execution::project_provider_execution(
+            &snapshot,
+            &packet,
+            &admission,
+            &profile,
+            instant(),
+            "NOT_RECORDED_BY_FOREMAN",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn provider_execution_ordered_selection_substitution_refuses_exact_journal() {
+        let (_directory, path, run_id) = recorded_execution_requirement_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let history = snapshot.execution_availability.as_mut().unwrap();
+        history
+            .requirement
+            .work_item_model_selections
+            .values_mut()
+            .next()
+            .unwrap()[1]
+            .model_id = "substituted-fallback".to_owned();
+        let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
+        let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
+        let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();
+
+        assert!(crate::live_execution::project_provider_execution(
+            &snapshot,
+            &packet,
+            &admission,
+            &profile,
+            instant(),
+            "NOT_RECORDED_BY_FOREMAN",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn coherent_ordered_selection_and_raw_journal_substitution_refuses_dispatch_graph() {
+        let (_directory, path, run_id) = recorded_execution_wake_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        substitute_requirement_selection(&mut snapshot);
+        let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
+        let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
+        let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();
+
+        assert!(crate::live_execution::project_provider_execution(
+            &snapshot,
+            &packet,
+            &admission,
+            &profile,
+            instant(),
+            "NOT_RECORDED_BY_FOREMAN",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn provider_resource_predecessor_substitution_refuses_exact_journal() {
+        let (_directory, path, run_id) = recorded_execution_parked_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        snapshot
+            .execution_availability
+            .as_mut()
+            .unwrap()
+            .resource_transitions[0]
+            .disposition_digest = Some(format!("sha256:{}", "f".repeat(64)));
+        let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
+        let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
+        let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();
+
+        assert!(crate::live_execution::project_provider_execution(
+            &snapshot,
+            &packet,
+            &admission,
+            &profile,
+            instant(),
+            "NOT_RECORDED_BY_FOREMAN",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn coherent_resource_edge_and_raw_journal_substitutions_refuse() {
+        let substituted = format!("sha256:{}", "e".repeat(64));
+        let (_directory, path, run_id) = recorded_execution_parked_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let row = snapshot
+            .events
+            .iter_mut()
+            .find(|row| row.kind == "provider_resources_released")
+            .unwrap();
+        substitute_resource_edge(row, "disposition_digest", &substituted, true);
+        snapshot
+            .execution_availability
+            .as_mut()
+            .unwrap()
+            .resource_transitions[0]
+            .disposition_digest = Some(substituted.clone());
+        let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
+        let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
+        let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();
+        assert!(crate::live_execution::project_provider_execution(
+            &snapshot,
+            &packet,
+            &admission,
+            &profile,
+            instant(),
+            "NOT_RECORDED_BY_FOREMAN",
+        )
+        .is_err());
+
+        let (_directory, path, run_id) = recorded_execution_wake_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let row = snapshot
+            .events
+            .iter_mut()
+            .find(|row| row.kind == "provider_resources_reacquired")
+            .unwrap();
+        substitute_resource_edge(row, "deferred_dispatch_digest", &substituted, false);
+        snapshot
+            .execution_availability
+            .as_mut()
+            .unwrap()
+            .resource_transitions[1]
+            .deferred_dispatch_digest = Some(substituted);
         let packet = NightshiftPacketV1::from_slice(&snapshot.packet_bytes).unwrap();
         let admission = ForemanAdmissionV1::from_slice(&snapshot.admission_bytes).unwrap();
         let profile = ExecutionProfileV2::from_slice(&snapshot.profile_bytes).unwrap();

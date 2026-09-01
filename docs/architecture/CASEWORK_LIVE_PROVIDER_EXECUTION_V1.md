@@ -9,13 +9,21 @@ law at:
 
 `/api/v1/active-runs/{navigation-id}/provider-execution`
 
+`HEAD` and every write method remain `405`; this additive route does not widen
+the inherited live API method surface.
+
 The foreman owner reopens each canonical journal event, validates its retained
 raw digest and exact nested typed/raw equality, and rejects unknown placement.
 Casework then cross-binds the singular requirement and policy to the exact
 packet, admission, execution profile, adapter registration, provider identity,
 and transaction-consistent read snapshot. The projection retains ordered
 dispatch, disposition, deferral, wake, resume, and resource release/reacquire
-facts with source-byte SHA-256 custody.
+facts with source-byte SHA-256 custody. The requirement exposes the exact
+ordered provider/model/class selections for every work item, so a later
+fallback remains visibly bounded by its predecessor list. Resource release
+retains its exact disposition digest and resource reacquisition retains its
+exact deferred-dispatch digest as typed edges in addition to raw journal
+custody.
 
 Observation currentness is explicit: `NOT_YET_CURRENT` before receipt,
 `CURRENT` from receipt until but excluding expiry, and `EXPIRED` afterward.

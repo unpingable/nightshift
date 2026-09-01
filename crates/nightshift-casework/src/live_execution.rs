@@ -296,28 +296,40 @@ fn reopen_resource(
     work_item_id: String,
     attempt_id: String,
 ) -> Result<(), LiveCaseworkError> {
-    let (transition, dispatch_digest, policy_digest, wake_id, locks) = match value {
+    let (
+        transition,
+        dispatch_digest,
+        disposition_digest,
+        deferred_dispatch_digest,
+        policy_digest,
+        wake_id,
+        locks,
+    ) = match value {
         ReadOnlyExecutionAvailabilityJournalEventV1::ResourcesReleased {
-            disposition_digest: _,
+            disposition_digest,
             dispatch_digest,
             policy_digest,
             resource_lock_keys,
         } => (
             "RELEASED",
             dispatch_digest,
+            Some(disposition_digest),
+            None,
             policy_digest,
             None,
             resource_lock_keys,
         ),
         ReadOnlyExecutionAvailabilityJournalEventV1::ResourcesReacquired {
             wake_occurrence_id,
-            deferred_dispatch_digest: _,
+            deferred_dispatch_digest,
             next_dispatch_digest,
             policy_digest,
             resource_lock_keys,
         } => (
             "REACQUIRED",
             next_dispatch_digest,
+            None,
+            Some(deferred_dispatch_digest),
             policy_digest,
             Some(wake_occurrence_id),
             resource_lock_keys,
@@ -332,12 +344,27 @@ fn reopen_resource(
         || retained.work_item_id != work_item_id
         || retained.work_attempt_id != attempt_id
         || retained.dispatch_digest != dispatch_digest
+        || retained.disposition_digest != disposition_digest
+        || retained.deferred_dispatch_digest != deferred_dispatch_digest
         || retained.policy_digest != policy_digest
         || retained.wake_occurrence_id != wake_id
         || retained.resource_lock_keys != locks
         || retained.recorded_at.to_rfc3339() != row.recorded_at
     {
         return Err(identity("provider resource transition journal equality"));
+    }
+    let predecessor_is_exact = match (&disposition_digest, &deferred_dispatch_digest) {
+        (Some(digest), None) => result.dispositions.iter().any(|value| {
+            value.disposition_digest == *digest && value.dispatch_digest == dispatch_digest
+        }),
+        (None, Some(digest)) => result
+            .deferrals
+            .iter()
+            .any(|value| value.deferred_dispatch_digest == *digest),
+        _ => false,
+    };
+    if !predecessor_is_exact {
+        return Err(identity("provider resource transition predecessor"));
     }
     result
         .resource_transitions
@@ -349,6 +376,8 @@ fn reopen_resource(
             work_item_id,
             work_attempt_id: attempt_id,
             dispatch_digest,
+            disposition_digest,
+            deferred_dispatch_digest,
             policy_digest,
             wake_occurrence_id: wake_id,
             resource_lock_keys: locks,
@@ -496,6 +525,23 @@ fn project_requirement(
         policy_id: requirement.policy_id.clone(),
         policy_digest: requirement.policy_digest.clone(),
         provider_id: provider_id.to_owned(),
+        work_item_model_selections: requirement
+            .work_item_model_selections
+            .iter()
+            .map(|(work_item_id, selections)| {
+                (
+                    work_item_id.clone(),
+                    selections
+                        .iter()
+                        .map(|selection| LiveProviderModelSelectionV1 {
+                            provider_id: selection.provider_id.clone(),
+                            model_id: selection.model_id.clone(),
+                            model_class: selection.model_class.clone(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
         adapter_id: requirement.adapter_id.clone(),
         adapter_protocol: requirement.adapter_protocol.clone(),
         adapter_version: requirement.adapter_version.clone(),
@@ -560,6 +606,14 @@ fn reopen_rows(
             } => {
                 if history.worker_start_requests.get(dispatches) != Some(&*start_request)
                     || history.dispatches.get(dispatches) != Some(&*dispatch)
+                    || history
+                        .requirement
+                        .work_item_model_selections
+                        .get(&dispatch.work_item_id)
+                        .and_then(|selections| {
+                            selections.get(usize::from(dispatch.selected_model_ordinal))
+                        })
+                        != Some(&dispatch.selection)
                 {
                     return Err(identity("provider dispatch journal equality"));
                 }

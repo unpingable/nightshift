@@ -283,10 +283,20 @@ pub struct LiveProviderResourceTransitionV1 {
     pub work_item_id: String,
     pub work_attempt_id: String,
     pub dispatch_digest: String,
+    pub disposition_digest: Option<String>,
+    pub deferred_dispatch_digest: Option<String>,
     pub policy_digest: String,
     pub wake_occurrence_id: Option<String>,
     pub resource_lock_keys: Vec<String>,
     pub recorded_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveProviderModelSelectionV1 {
+    pub provider_id: String,
+    pub model_id: String,
+    pub model_class: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -376,6 +386,7 @@ pub struct LiveProviderExecutionRequirementV1 {
     pub policy_id: String,
     pub policy_digest: String,
     pub provider_id: String,
+    pub work_item_model_selections: BTreeMap<String, Vec<LiveProviderModelSelectionV1>>,
     pub adapter_id: String,
     pub adapter_protocol: String,
     pub adapter_version: String,

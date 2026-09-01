@@ -740,7 +740,7 @@ mod wire_tests {
                 .status,
             404
         );
-        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+        for method in ["HEAD", "POST", "PUT", "PATCH", "DELETE"] {
             assert_eq!(
                 api.response(
                     method,
