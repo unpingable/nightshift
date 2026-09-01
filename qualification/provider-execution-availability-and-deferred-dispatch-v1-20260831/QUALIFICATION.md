@@ -139,15 +139,17 @@ aggregate result/health, or other control.
 
 - locked Rust workspace: **463 passed, 0 failed, 16 documented ignores**;
 - foreman contract **17**, integration **59**, worker-start V3 **5** passed;
-- executable schema/report suite **52 passed**;
+- executable schema/report suite **58 passed**;
 - frontend **32 passed across 7 files**; production build passed;
 - all-targets/all-features warnings-denied Clippy and formatting passed;
 - Switchyard parity: **5 snapshots, 126 terminal prefixes, 118
   generic-replayable, passed**;
 - V3 boundary passed and canonical nightshiftd binary count remained two;
-- no-actuation, HOLDING, foreman query-only, foreman capacity,
-  provider-capacity, sealed Casework, live Casework, and UI gates passed;
-- all eight deterministic negative controls passed.
+- no-actuation, HOLDING mechanism, HOLDING qualification-receipt, foreman
+  query-only, foreman capacity, provider-capacity, sealed Casework, live
+  Casework, and UI gates passed;
+- all nine deterministic negative controls passed, including the closed
+  qualification-receipt substitution control.
 
 The browser journey was not run because no local API listener was started.
 Deterministic DOM qualification and production build remain separately passed.

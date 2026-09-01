@@ -96,7 +96,7 @@
     "foreman_integration_passed": 59,
     "named_holding_integration_passed": 29,
     "worker_start_v3_passed": 5,
-    "schema_and_report_passed": 52,
+    "schema_and_report_passed": 58,
     "frontend_passed": 32,
     "frontend_test_files": 7,
     "frontend_production_build": "PASSED",
@@ -108,8 +108,8 @@
     "switchyard_parity": "PASSED",
     "worker_start_v3_boundary": "PASSED",
     "canonical_nightshiftd_production_binary_count": 2,
-    "structural_gates_passed": 8,
-    "deterministic_negative_controls_passed": 8,
+    "structural_gates_passed": 9,
+    "deterministic_negative_controls_passed": 9,
     "independent_ui_audit": "ACCEPTED"
   },
   "casework": {
