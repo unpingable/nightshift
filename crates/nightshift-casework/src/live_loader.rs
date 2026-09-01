@@ -1994,6 +1994,26 @@ pub(crate) mod test_support {
     }
 
     #[test]
+    #[ignore = "set NIGHTSHIFT_CASEWORK_PROVIDER_EXECUTION_FIXTURE_DIR for schema qualification"]
+    fn emit_provider_execution_schema_fixture() {
+        let output = std::env::var_os("NIGHTSHIFT_CASEWORK_PROVIDER_EXECUTION_FIXTURE_DIR")
+            .map(std::path::PathBuf::from)
+            .expect(
+                "NIGHTSHIFT_CASEWORK_PROVIDER_EXECUTION_FIXTURE_DIR must name an explicit temporary directory",
+            );
+        assert!(output.is_dir());
+        let (_directory, path, run_id) = recorded_execution_wake_fixture();
+        let projection = load_live_run_at(&path, &run_id, instant())
+            .unwrap()
+            .provider_execution;
+        fs::write(
+            output.join("provider-execution.v1.json"),
+            serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     #[ignore = "set NIGHTSHIFT_LEDGER_FIXTURE_DIR for the installed-browser qualification journey"]
     fn emit_installed_browser_fixture() {
         let output = std::env::var_os("NIGHTSHIFT_LEDGER_FIXTURE_DIR")

@@ -1,5 +1,8 @@
 import copy
 import json
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -192,6 +195,65 @@ class CaseworkProviderExecutionSchemaTests(unittest.TestCase):
         recorded["resource_transitions"][0]["deferred_dispatch_digest"] = None
         with self.assertRaises(ValidationError):
             self.validator.validate(recorded)
+
+    def test_runtime_recorded_projection_obeys_owner_selection_bound(self):
+        owner_schema = json.loads(
+            (
+                ROOT
+                / "schemas/nightshift.foreman-execution-availability-requirement.v1.schema.json"
+            ).read_text()
+        )
+        owner_bound = owner_schema["properties"]["work_item_model_selections"][
+            "maxProperties"
+        ]
+        casework_bound = self.schema["$defs"]["requirement"]["properties"][
+            "work_item_model_selections"
+        ]["maxProperties"]
+        self.assertEqual(owner_bound, 1024)
+        self.assertEqual(casework_bound, owner_bound)
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["NIGHTSHIFT_CASEWORK_PROVIDER_EXECUTION_FIXTURE_DIR"] = directory
+            completed = subprocess.run(
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "-p",
+                    "nightshift-casework",
+                    "--lib",
+                    "emit_provider_execution_schema_fixture",
+                    "--",
+                    "--ignored",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stdout + "\n" + completed.stderr,
+            )
+            runtime_projection = json.loads(
+                (Path(directory) / "provider-execution.v1.json").read_text()
+            )
+
+        self.validator.validate(runtime_projection)
+        selections = runtime_projection["requirement"]["work_item_model_selections"]
+        self.assertGreater(len(selections), 0)
+        self.assertLessEqual(len(selections), owner_bound)
+
+        oversized = copy.deepcopy(runtime_projection)
+        selection = next(iter(selections.values()))
+        oversized["requirement"]["work_item_model_selections"] = {
+            f"work-{index:04d}": copy.deepcopy(selection) for index in range(1025)
+        }
+        with self.assertRaises(ValidationError):
+            self.validator.validate(oversized)
 
     def test_every_object_definition_is_closed(self):
         self.assertFalse(self.schema["additionalProperties"])
