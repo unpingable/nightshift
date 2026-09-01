@@ -83,6 +83,17 @@ The graph must establish:
 - recursive worker swarms are forbidden; and
 - no packet work item is itself the SECOND-WATCH campaign.
 
+The qualification adapter registration is not selected by cross-record
+agreement alone. For `CAMPAIGN_QUALIFICATION_DETERMINISTIC_FAKE`, the graph
+requires the exact accepted HOLDING owner mapping:
+
+- adapter ID `nightshift:holding-pattern-deterministic-fake-adapter`;
+- protocol `nightshift.holding-deterministic-provider-admission-evidence/v1`;
+- adapter version `v1`;
+- executable identity
+  `sha256:e8a310d46cb40b0aef6399a8da6c97ac99f0fc5eab6a78c5e7007600d5cbfa82`; and
+- an empty bounded-argument vector.
+
 All of this occurs before a SQLite path is admitted or created. A pathname is
 not contract identity. Future runtime work must preserve the existing
 no-follow, exact-file, and query-only store custody laws.
@@ -176,6 +187,7 @@ The bootstrap stops before store mutation on:
 - malformed, noncanonical, unknown-field, oversized, or digest-invalid input;
 - any predecessor, packet, run, admission, profile, policy, adapter, model,
   question-path, or runtime-identity substitution;
+- any alternate qualification-adapter registration, even if coherently resealed;
 - stale packet or admission;
 - reuse of the sealed V2 packet;
 - fewer than two independent runnable lanes;

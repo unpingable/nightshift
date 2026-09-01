@@ -114,3 +114,16 @@ accepted. The campaign starts no provider, browser, listener, service, timer,
 or production route during this checkpoint. Any contract discrepancy,
 predecessor substitution, stale packet/admission, recursive bootstrap, missing
 independent lane, or authority widening stops before state mutation.
+
+## Non-rewriting contract correction
+
+Checkpoint 987a0689deafea0e1a97172c439b558170b1de67 was not accepted because
+cross-equality among the admission, profile, and availability requirement could
+admit a coherently resealed alternate qualification adapter.
+
+Its child requires the exact accepted HOLDING qualification mapping: producer
+ID as adapter ID, deterministic evidence schema as protocol, producer version
+as adapter version, exact fixture executable SHA-256 as executable identity,
+and empty bounded arguments. Direct coherent substitutions of each field
+refuse. No scheduler store, command, service, timer, browser, or provider was
+started or activated by this correction.

@@ -21,6 +21,15 @@ required_source=(
   '0dff82fa3522e59a6ce8e8161f6aed92cbacc061'
   'ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD'
   'ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD'
+  'HOLDING_QUALIFICATION_PRODUCER_ID'
+  'DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1'
+  'HOLDING_QUALIFICATION_PRODUCER_VERSION'
+  'HOLDING_QUALIFICATION_EXECUTABLE_SHA256'
+  'adapter.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID'
+  'adapter.protocol != DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1'
+  'adapter.adapter_version != HOLDING_QUALIFICATION_PRODUCER_VERSION'
+  'adapter.executable_identity != HOLDING_QUALIFICATION_EXECUTABLE_SHA256'
+  '|| !adapter.bounded_arguments.is_empty()'
   '|| self.approval_response_authorized'
   '|| self.protected_effect_authorized'
   '|| self.semantic_retry_authorized'
@@ -61,6 +70,17 @@ if [[ "${1:-}" == "--self-test-inject" ]]; then
   if ! rg -q 'missing closed law.*approval_response_authorized' "$fixture/output"; then
     cat "$fixture/output"
     echo "SECOND-WATCH boundary negative control failed without exact disposition"
+    exit 1
+  fi
+  injected_adapter="$fixture/bootstrap-adapter.rs"
+  sed 's/adapter.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID/false/' "$source_file" >"$injected_adapter"
+  if env NIGHTSHIFT_SECOND_WATCH_BOOTSTRAP_SOURCE="$injected_adapter" "$0" >"$fixture/adapter-output" 2>&1; then
+    echo "SECOND-WATCH boundary negative control did not refuse missing adapter guard"
+    exit 1
+  fi
+  if ! rg -q 'missing closed law.*adapter.adapter_id' "$fixture/adapter-output"; then
+    cat "$fixture/adapter-output"
+    echo "SECOND-WATCH adapter negative control failed without exact disposition"
     exit 1
   fi
   echo "SECOND-WATCH boundary deterministic substitution control: passed"

@@ -17,6 +17,8 @@ use crate::{
     ForemanCapacityRequirementV1, ForemanExecutionAvailabilityRequirementV1,
     ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD,
     ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD,
+    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1, HOLDING_QUALIFICATION_EXECUTABLE_SHA256,
+    HOLDING_QUALIFICATION_PRODUCER_ID, HOLDING_QUALIFICATION_PRODUCER_VERSION,
 };
 
 pub const SELF_HOSTED_FOREMAN_BOOTSTRAP_SCHEMA_V1: &str =
@@ -393,6 +395,16 @@ impl SelfHostedForemanBootstrapV1 {
                 .any(|work| work.adapter_id != adapter.adapter_id)
         {
             return Err(ContractError::InvalidField("bootstrap adapter closure"));
+        }
+        if adapter.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID
+            || adapter.protocol != DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+            || adapter.adapter_version != HOLDING_QUALIFICATION_PRODUCER_VERSION
+            || adapter.executable_identity != HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+            || !adapter.bounded_arguments.is_empty()
+        {
+            return Err(ContractError::InvalidField(
+                "bootstrap accepted qualification adapter",
+            ));
         }
         for item in &packet.work_items {
             let work = &profile.work_items[&item.id];

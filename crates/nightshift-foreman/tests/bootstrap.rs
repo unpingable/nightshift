@@ -141,7 +141,7 @@ fn admission(packet: &NightshiftPacketV1) -> ForemanAdmissionV1 {
         expires_at: time(0) + Duration::hours(1),
         local_runtime_identity: "second-watch-local-runtime".to_owned(),
         maximum_concurrent_workers: 2,
-        allowed_adapter_ids: vec!["second-watch-fake-adapter".to_owned()],
+        allowed_adapter_ids: vec![HOLDING_QUALIFICATION_PRODUCER_ID.to_owned()],
         allowed_provider_model_classes: vec!["bounded".to_owned()],
         maximum_new_attempts_per_work_item: 1,
         authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
@@ -180,7 +180,7 @@ fn profile(
             (
                 item.id.clone(),
                 WorkItemExecutionV1 {
-                    adapter_id: "second-watch-fake-adapter".to_owned(),
+                    adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
                     workspace_identity: format!("workspace:{}", item.id),
                     resource_lock_keys: vec![format!("fixture:{}", item.id)],
                     provider_model_class: "bounded".to_owned(),
@@ -194,11 +194,11 @@ fn profile(
         packet_digest: packet.packet_digest.clone(),
         admission_digest: admission.admission_digest.clone(),
         adapters: BTreeMap::from([(
-            "second-watch-fake-adapter".to_owned(),
+            HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
             AdapterRegistrationV2 {
-                adapter_id: "second-watch-fake-adapter".to_owned(),
-                protocol: "second-watch.deterministic-fake/v1".to_owned(),
-                adapter_version: "v1".to_owned(),
+                adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+                protocol: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+                adapter_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
                 executable_identity: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
                 bounded_arguments: vec![],
             },
@@ -264,7 +264,7 @@ fn availability_requirement(
     profile: &ExecutionProfileV2,
     policy: &ExecutionAvailabilityPolicyV1,
 ) -> ForemanExecutionAvailabilityRequirementV1 {
-    let adapter = &profile.adapters["second-watch-fake-adapter"];
+    let adapter = &profile.adapters[HOLDING_QUALIFICATION_PRODUCER_ID];
     let selections = packet
         .work_items
         .iter()
@@ -324,6 +324,41 @@ impl Fixture {
             &canonical(&self.availability_policy),
         )
     }
+}
+
+fn reseal_adapter_graph(value: &mut Fixture, adapter: AdapterRegistrationV2) {
+    let adapter_id = adapter.adapter_id.clone();
+    value.admission.allowed_adapter_ids = vec![adapter_id.clone()];
+    value.admission.seal().unwrap();
+
+    value.profile.admission_digest = value.admission.admission_digest.clone();
+    for work in value.profile.work_items.values_mut() {
+        work.adapter_id = adapter_id.clone();
+    }
+    value.profile.adapters = BTreeMap::from([(adapter_id.clone(), adapter.clone())]);
+    value.profile.seal().unwrap();
+
+    value.capacity_requirement.admission_digest = value.admission.admission_digest.clone();
+    value.capacity_requirement.profile_digest = value.profile.profile_digest.clone();
+    value.capacity_requirement.seal().unwrap();
+
+    value.availability_requirement.admission_digest = value.admission.admission_digest.clone();
+    value.availability_requirement.profile_digest = value.profile.profile_digest.clone();
+    value.availability_requirement.adapter_id = adapter_id;
+    value.availability_requirement.adapter_protocol = adapter.protocol;
+    value.availability_requirement.adapter_version = adapter.adapter_version;
+    value.availability_requirement.adapter_executable_identity = adapter.executable_identity;
+    value.availability_requirement.seal().unwrap();
+
+    value.plan.admission_digest = value.admission.admission_digest.clone();
+    value.plan.profile_digest = value.profile.profile_digest.clone();
+    value.plan.capacity_requirement_digest = value
+        .capacity_requirement
+        .capacity_requirement_digest
+        .clone();
+    value.plan.execution_availability_requirement_digest =
+        value.availability_requirement.requirement_digest.clone();
+    value.plan.seal().unwrap();
 }
 
 fn fixture() -> Fixture {
@@ -405,6 +440,21 @@ fn fixture() -> Fixture {
 fn closed_bootstrap_plan_and_exact_graph_validate() {
     let value = fixture();
     value.validate().unwrap();
+    let adapter = value.profile.adapters.values().next().unwrap();
+    assert_eq!(adapter.adapter_id, HOLDING_QUALIFICATION_PRODUCER_ID);
+    assert_eq!(
+        adapter.protocol,
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+    );
+    assert_eq!(
+        adapter.adapter_version,
+        HOLDING_QUALIFICATION_PRODUCER_VERSION
+    );
+    assert_eq!(
+        adapter.executable_identity,
+        HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+    );
+    assert!(adapter.bounded_arguments.is_empty());
     let raw = canonical(&value.plan);
     let reopened = SelfHostedForemanBootstrapV1::from_slice(&raw).unwrap();
     assert_eq!(reopened, value.plan);
@@ -485,6 +535,30 @@ fn graph_substitution_and_topology_cases_fail_closed() {
         .clone();
     wrong_admission_time.plan.seal().unwrap();
     assert!(wrong_admission_time.validate().is_err());
+
+    let exact = fixture().profile.adapters.values().next().unwrap().clone();
+    let mut substituted_adapters = Vec::new();
+    let mut substituted = exact.clone();
+    substituted.adapter_id = "substituted-adapter".to_owned();
+    substituted_adapters.push(substituted);
+    let mut substituted = exact.clone();
+    substituted.protocol = "substituted.protocol/v1".to_owned();
+    substituted_adapters.push(substituted);
+    let mut substituted = exact.clone();
+    substituted.adapter_version = "v2".to_owned();
+    substituted_adapters.push(substituted);
+    let mut substituted = exact.clone();
+    substituted.executable_identity = format!("sha256:{}", "f".repeat(64));
+    substituted_adapters.push(substituted);
+    let mut substituted = exact;
+    substituted.bounded_arguments = vec!["--substituted".to_owned()];
+    substituted_adapters.push(substituted);
+
+    for adapter in substituted_adapters {
+        let mut coherent = fixture();
+        reseal_adapter_graph(&mut coherent, adapter);
+        assert!(coherent.validate().is_err());
+    }
 }
 
 #[test]
