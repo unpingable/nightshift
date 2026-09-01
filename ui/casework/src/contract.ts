@@ -305,6 +305,184 @@ export interface CaseworkLiveRun {
   };
   authority_effect: string;
 }
+
+export interface LiveProviderExecutionIdentity {
+  provider_id: string;
+  model_id: string;
+  app_server_session_identity: string;
+  thread_id: string;
+  turn_id: string;
+  first_response_id: string;
+}
+
+export interface LiveProviderExecutionRequirement {
+  journal_sequence: number;
+  requirement_digest: string;
+  policy_id: string;
+  policy_digest: string;
+  provider_id: string;
+  work_item_model_selections: Record<string, Array<{
+    provider_id: string;
+    model_id: string;
+    model_class: string;
+  }>>;
+  adapter_id: string;
+  adapter_protocol: string;
+  adapter_version: string;
+  adapter_executable_identity: string;
+  codex_owner_head: string;
+  provider_admission_owner_head: string;
+  provider_admission_schema_sha256: string;
+  deterministic_fixture_sha256: string;
+  admitted_at: string;
+  requirement_exact_bytes_sha256: string;
+  policy_exact_bytes_sha256: string;
+  parked_resource_lock_policy: string;
+  allow_ordered_model_fallback: boolean;
+  automatic_semantic_retry: false;
+  approval_response_authorized: false;
+  authority_effect: "READ_ONLY_MECHANISM_PROJECTION";
+}
+
+export interface LiveProviderDispatch {
+  journal_sequence: number;
+  journal_event_id: string;
+  journal_exact_bytes_sha256: string;
+  journal_retained_raw_digest: string;
+  work_item_id: string;
+  work_attempt_id: string;
+  dispatch_occurrence_id: string;
+  dispatch_ordinal: number;
+  selected_model_ordinal: number;
+  provider_id: string;
+  model_id: string;
+  model_class: string;
+  adapter_id: string;
+  adapter_version: string;
+  adapter_protocol: string;
+  adapter_process_occurrence_id: string;
+  app_server_session_identity: string;
+  worker_start_request_digest: string;
+  worker_brief_digest: string;
+  dispatch_digest: string;
+  opened_at: string;
+  start_request_exact_bytes_sha256: string;
+  dispatch_exact_bytes_sha256: string;
+  provider_execution_identity_absent_at_start: true;
+}
+
+export interface LiveProviderDisposition {
+  journal_sequence: number;
+  journal_event_id: string;
+  journal_exact_bytes_sha256: string;
+  journal_retained_raw_digest: string;
+  work_item_id: string;
+  work_attempt_id: string;
+  dispatch_occurrence_id: string;
+  dispatch_digest: string;
+  disposition_digest: string;
+  reconciles_disposition_digest: string | null;
+  provider_id: string;
+  model_id: string;
+  availability_state: string;
+  admission_disposition: string;
+  mechanism_state: string;
+  observed_at: string;
+  evidence_received_at: string;
+  expires_at: string;
+  disposition_received_at: string;
+  currentness: string;
+  source_identity: string;
+  source_version: string;
+  response_created: boolean;
+  acquisition_complete: boolean;
+  provider_retry_after: string | null;
+  provider_request_occurrence_id: string;
+  provider_execution: LiveProviderExecutionIdentity | null;
+  mapper_snapshot_schema: string;
+  mapper_snapshot_digest: string;
+  approval_response_sent: false;
+  protected_effect_absent: true;
+  observation_digest: string;
+  observation_exact_bytes_sha256: string;
+  disposition_exact_bytes_sha256: string;
+}
+
+export interface CaseworkLiveProviderExecution {
+  schema: "nightshift.casework-live-provider-execution/v1";
+  projection_digest: string;
+  run_id: string;
+  packet_digest: string;
+  evaluated_at: string;
+  status: "NOT_RECORDED_BY_FOREMAN" | "EXACT_RECORDED_FOREMAN_HISTORY";
+  requirement: LiveProviderExecutionRequirement | null;
+  dispatches: LiveProviderDispatch[];
+  dispositions: LiveProviderDisposition[];
+  deferrals: Array<{
+    journal_sequence: number;
+    journal_event_id: string;
+    journal_exact_bytes_sha256: string;
+    disposition_digest: string;
+    deferred_dispatch_digest: string;
+    work_item_id: string;
+    work_attempt_id: string;
+    last_dispatch_occurrence_id: string;
+    provider_id: string;
+    model_id: string;
+    selected_model_ordinal: number;
+    remaining_model_ordinals: number[];
+    refusal_received_at: string;
+    wake_basis: string;
+    backoff_ordinal: number;
+    backoff_seconds: number;
+    provider_retry_after: string | null;
+    wake_at: string;
+    parked_resource_lock_policy: string;
+    provider_capacity_released: boolean;
+    deferred_exact_bytes_sha256: string;
+  }>;
+  wakes: Array<{
+    journal_sequence: number;
+    journal_event_id: string;
+    journal_exact_bytes_sha256: string;
+    work_item_id: string;
+    work_attempt_id: string;
+    wake_occurrence_id: string;
+    deferred_dispatch_digest: string;
+    next_dispatch_digest: string;
+    recorded_at: string;
+  }>;
+  resumes: Array<{
+    journal_sequence: number;
+    journal_event_id: string;
+    journal_exact_bytes_sha256: string;
+    work_item_id: string;
+    work_attempt_id: string;
+    resume_occurrence_id: string;
+    disposition_digest: string;
+    adapter_process_occurrence_id: string;
+    execution_identity: LiveProviderExecutionIdentity;
+    recorded_at: string;
+  }>;
+  resource_transitions: Array<{
+    journal_sequence: number;
+    journal_event_id: string;
+    journal_exact_bytes_sha256: string;
+    transition: "RELEASED" | "REACQUIRED";
+    work_item_id: string;
+    work_attempt_id: string;
+    dispatch_digest: string;
+    disposition_digest: string | null;
+    deferred_dispatch_digest: string | null;
+    policy_digest: string;
+    wake_occurrence_id: string | null;
+    resource_lock_keys: string[];
+    recorded_at: string;
+  }>;
+  independent_provider_capacity_status: "NOT_RECORDED_BY_FOREMAN" | "EXACT_RECORDED_BY_FOREMAN";
+  explanation: string;
+  authority_effect: "READ_ONLY_MECHANISM_PROJECTION";
+}
 export interface OperationalConditionIndexEntry {
   navigation_id: string;
   projection_digest: string;

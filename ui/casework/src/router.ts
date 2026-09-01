@@ -13,6 +13,7 @@ export type Route =
   | { kind: "live-work-item"; navigationId: string; id: string }
   | { kind: "live-question"; navigationId: string; id: string }
   | { kind: "live-events"; navigationId: string }
+  | { kind: "live-provider-execution"; navigationId: string }
   | { kind: "live-raw"; navigationId: string }
   | { kind: "not-found" };
 
@@ -47,6 +48,9 @@ export function parseRoute(pathname: string): Route {
     if (!navigationId) return { kind: "not-found" };
     if (parts.length === 2) return { kind: "live-run", navigationId };
     if (parts.length === 3 && parts[2] === "events") return { kind: "live-events", navigationId };
+    if (parts.length === 3 && parts[2] === "provider-execution") {
+      return { kind: "live-provider-execution", navigationId };
+    }
     if (parts.length === 3 && parts[2] === "raw") return { kind: "live-raw", navigationId };
     if (parts.length === 4 && parts[2] === "work-items") {
       const id = decode(parts[3]);
@@ -97,6 +101,10 @@ export function liveWorkItemPath(navigationId: string, id: string): string {
 
 export function liveQuestionPath(navigationId: string, id: string): string {
   return `${liveRunPath(navigationId)}/questions/${encodeURIComponent(id)}`;
+}
+
+export function liveProviderExecutionPath(navigationId: string): string {
+  return `${liveRunPath(navigationId)}/provider-execution`;
 }
 export function operationalConditionPath(navigationId: string): string {
   return `/operational-conditions/${encodeURIComponent(navigationId)}`;

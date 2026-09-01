@@ -1,4 +1,4 @@
-import { operationalConditionPath, operationalQuestionPath, operationalRawPath, parseRoute, questionPath, runPath, workItemPath } from "./router";
+import { liveProviderExecutionPath, operationalConditionPath, operationalQuestionPath, operationalRawPath, parseRoute, questionPath, runPath, workItemPath } from "./router";
 
 describe("stable casework routes", () => {
   const digest = "01e9f695fd89af789023cea0b9220a8e5178f807066779c9f7a4b7b3b67d4ba7";
@@ -22,6 +22,10 @@ describe("stable casework routes", () => {
     expect(parseRoute(operationalRawPath(digest))).toEqual({
       kind: "operational-raw",
       navigationId: digest,
+    });
+    expect(parseRoute(liveProviderExecutionPath("run/one"))).toEqual({
+      kind: "live-provider-execution",
+      navigationId: "run/one",
     });
   });
 

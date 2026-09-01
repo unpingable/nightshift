@@ -7,6 +7,7 @@ import type { CaseworkRun, HumanQuestion, RunIndex, WorkItem } from "./contract"
 import {
   ActiveRunIndex,
   LiveEventsView,
+  LiveProviderExecutionView,
   LiveQuestionView,
   LiveRawView,
   LiveRunView,
@@ -315,6 +316,7 @@ function RoutedView({ route }: { route: Route }) {
     case "live-work-item": return <LiveWorkItemView navigationId={route.navigationId} id={route.id} />;
     case "live-question": return <LiveQuestionView navigationId={route.navigationId} id={route.id} />;
     case "live-events": return <LiveEventsView navigationId={route.navigationId} />;
+    case "live-provider-execution": return <LiveProviderExecutionView navigationId={route.navigationId} />;
     case "live-raw": return <LiveRawView navigationId={route.navigationId} />;
     default: return <main id="main" tabIndex={-1} className="page"><h1>Case route not found</h1><p><Link href="/">Return to run index</Link></p></main>;
   }
@@ -322,5 +324,5 @@ function RoutedView({ route }: { route: Route }) {
 
 export default function App() {
   const route = useRoute();
-  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection families: nightshift.casework-run/v1 · nightshift.casework-live-run/v1 · nightshift.casework-operational-condition/v1</span><span>Exact sources remain separate: sealed snapshots, query-only foreman journals, and operational testimony/qualification/lineage</span></footer></div>;
+  return <div className="app-shell"><a className="skip-link" href="#main">Skip to casework</a><header className="site-header"><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">N</span><span>Nightshift <b>Casework</b></span></Link><span className="readonly-marker">Read-only operator surface</span></header><RoutedView route={route} /><footer><span>Projection families: nightshift.casework-run/v1 · nightshift.casework-live-run/v1 · nightshift.casework-live-provider-execution/v1 · nightshift.casework-operational-condition/v1</span><span>Exact sources remain separate: sealed snapshots, query-only foreman journals, and operational testimony/qualification/lineage</span></footer></div>;
 }

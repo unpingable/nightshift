@@ -1,4 +1,4 @@
-import type { CaseworkLiveRun, CaseworkOperationalCondition, CaseworkRun, LiveRunIndex, OperationalConditionIndex, RunIndex } from "./contract";
+import type { CaseworkLiveProviderExecution, CaseworkLiveRun, CaseworkOperationalCondition, CaseworkRun, LiveRunIndex, OperationalConditionIndex, RunIndex } from "./contract";
 
 async function get(path: string): Promise<Response> {
   const response = await fetch(path, { method: "GET", headers: { Accept: "application/json" } });
@@ -24,6 +24,16 @@ export async function getLiveRunIndex(): Promise<LiveRunIndex> {
 
 export async function getLiveRun(navigationId: string): Promise<CaseworkLiveRun> {
   return (await get(`/api/v1/active-runs/${encodeURIComponent(navigationId)}`)).json() as Promise<CaseworkLiveRun>;
+}
+
+export async function getLiveProviderExecution(
+  navigationId: string,
+): Promise<CaseworkLiveProviderExecution> {
+  return (
+    await get(
+      `/api/v1/active-runs/${encodeURIComponent(navigationId)}/provider-execution`,
+    )
+  ).json() as Promise<CaseworkLiveProviderExecution>;
 }
 
 export async function getLiveRaw(

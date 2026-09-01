@@ -1,7 +1,73 @@
 import { render, screen, within } from "@testing-library/react";
 
 import App from "./App";
-import { at, installApiMock, liveIndex, liveRun, run } from "./test/fixture";
+import {
+  at,
+  installApiMock,
+  liveIndex,
+  liveRun,
+  operationalIndex,
+  providerExecution,
+  providerExecutionAbsent,
+  run,
+} from "./test/fixture";
+
+function recordedCapacityRun(): typeof liveRun {
+  return {
+    ...liveRun,
+    execution_profile: {
+      ...liveRun.execution_profile,
+      capacity_binding_status: "EXACT_RECORDED_CAPACITY_REQUIREMENT",
+    },
+    provider_capacity: {
+      status: "EXACT_RECORDED_BY_FOREMAN",
+      requirement: {
+        capacity_requirement_digest: "sha256:" + "1".repeat(64),
+        exact_bytes_sha256: "sha256:" + "2".repeat(64),
+        recorded_at: "2026-08-31T00:00:00Z",
+        policy_id: "policy:fixture",
+        provider_id: "provider:fixture",
+        model_cost_classes: { bounded: "CHEAP" },
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
+      },
+      attempts: [{
+        journal_sequence: 3,
+        work_item_id: "lane-a",
+        attempt_id: "attempt:one",
+        recorded_at: "2026-08-31T00:00:00Z",
+        provider_id: "provider:fixture",
+        packet_model_class: "bounded",
+        profile_model_class: "bounded",
+        cost_class: "CHEAP",
+        capacity_state: "CONSERVE",
+        admission_disposition: "CHEAP_BOUNDED_ONLY",
+        source_class: "OBSERVED",
+        confidence: "HIGH",
+        observation_disposition: "USABLE",
+        observed_at: "2026-08-30T23:59:59Z",
+        expires_at: "2026-08-31T00:10:00Z",
+        decision_at: "2026-08-31T00:00:00Z",
+        evaluated_at: "2026-08-31T00:00:00Z",
+        currentness: "CURRENT",
+        capacity_admission_digest: "sha256:" + "3".repeat(64),
+        observation_digest: "sha256:" + "4".repeat(64),
+        policy_digest: "sha256:" + "5".repeat(64),
+        decision_digest: "sha256:" + "6".repeat(64),
+        admission_exact_bytes_sha256: "sha256:" + "7".repeat(64),
+        observation_exact_bytes_sha256: "sha256:" + "8".repeat(64),
+        policy_exact_bytes_sha256: "sha256:" + "9".repeat(64),
+        decision_exact_bytes_sha256: "sha256:" + "a".repeat(64),
+      }],
+      explanation: "Exact journal-recorded mechanism evidence; no campaign result.",
+    },
+  };
+}
+
+function primitiveValues(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  if (typeof value === "object") return Object.values(value).flatMap(primitiveValues);
+  return [String(value)];
+}
 
 describe("live Casework projection", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -73,54 +139,7 @@ describe("live Casework projection", () => {
   });
 
   it("renders exact recorded provider-capacity attempts as mechanism facts without controls", async () => {
-    const recorded: typeof liveRun = {
-      ...liveRun,
-      execution_profile: {
-        ...liveRun.execution_profile,
-        capacity_binding_status: "EXACT_RECORDED_CAPACITY_REQUIREMENT",
-      },
-      provider_capacity: {
-        status: "EXACT_RECORDED_BY_FOREMAN",
-        requirement: {
-          capacity_requirement_digest: "sha256:" + "1".repeat(64),
-          exact_bytes_sha256: "sha256:" + "2".repeat(64),
-          recorded_at: "2026-08-31T00:00:00Z",
-          policy_id: "policy:fixture",
-          provider_id: "provider:fixture",
-          model_cost_classes: { bounded: "CHEAP" },
-          authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY",
-        },
-        attempts: [{
-          journal_sequence: 3,
-          work_item_id: "lane-a",
-          attempt_id: "attempt:one",
-          recorded_at: "2026-08-31T00:00:00Z",
-          provider_id: "provider:fixture",
-          packet_model_class: "bounded",
-          profile_model_class: "bounded",
-          cost_class: "CHEAP",
-          capacity_state: "CONSERVE",
-          admission_disposition: "CHEAP_BOUNDED_ONLY",
-          source_class: "OBSERVED",
-          confidence: "HIGH",
-          observation_disposition: "USABLE",
-          observed_at: "2026-08-30T23:59:59Z",
-          expires_at: "2026-08-31T00:10:00Z",
-          decision_at: "2026-08-31T00:00:00Z",
-          evaluated_at: "2026-08-31T00:00:00Z",
-          currentness: "CURRENT",
-          capacity_admission_digest: "sha256:" + "3".repeat(64),
-          observation_digest: "sha256:" + "4".repeat(64),
-          policy_digest: "sha256:" + "5".repeat(64),
-          decision_digest: "sha256:" + "6".repeat(64),
-          admission_exact_bytes_sha256: "sha256:" + "7".repeat(64),
-          observation_exact_bytes_sha256: "sha256:" + "8".repeat(64),
-          policy_exact_bytes_sha256: "sha256:" + "9".repeat(64),
-          decision_exact_bytes_sha256: "sha256:" + "a".repeat(64),
-        }],
-        explanation: "Exact journal-recorded mechanism evidence; no campaign result.",
-      },
-    };
+    const recorded = recordedCapacityRun();
     installApiMock(run, liveIndex, recorded);
     at(`/active-runs/${recorded.navigation_id}`);
     render(<App />);
@@ -151,6 +170,68 @@ describe("live Casework projection", () => {
     expect(screen.getByText("No exact capacity decision was recorded.")).toBeVisible();
     expect(screen.queryByText("EXACT_RECORDED_BY_FOREMAN")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("renders the complete recorded provider-execution mechanism and exact raw custody without controls", async () => {
+    const recorded = recordedCapacityRun();
+    const fetchMock = installApiMock(run, liveIndex, recorded, operationalIndex, providerExecution);
+    at(`/active-runs/${recorded.navigation_id}/provider-execution`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Provider execution availability" })).toBeVisible();
+    for (const heading of [
+      "Exact requirement and ordered model selections",
+      "Work attempts and fresh dispatch occurrences",
+      "Exact provider-admission dispositions",
+      "Deferred wake, backoff, and fallback",
+      "Resource release and reacquisition",
+      "Same-execution resumes",
+      "Independent FUEL capacity evidence",
+      "Exact raw evidence routes",
+    ]) {
+      expect(screen.getByRole("heading", { name: heading })).toBeVisible();
+    }
+    for (const state of [
+      "PARKED_NOT_ADMITTED",
+      "ADMISSION_INDETERMINATE",
+      "EXECUTION_ADMITTED",
+      "WAITING_APPROVAL",
+      "POST_ADMISSION_INTERRUPTED",
+      "PROVIDER_COMPLETED",
+    ]) {
+      expect(document.body).toHaveTextContent(state);
+    }
+    for (const value of new Set(primitiveValues(providerExecution))) {
+      expect(document.body).toHaveTextContent(value);
+    }
+    for (const digit of ["3", "4", "5", "6", "7", "8", "9", "a"]) {
+      expect(document.body).toHaveTextContent("sha256:" + digit.repeat(64));
+    }
+    expect(screen.getByRole("link", { name: "Exact event 3 bytes" })).toHaveAttribute(
+      "href",
+      `/api/v1/active-runs/${recorded.navigation_id}/events/3/raw`,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/active-runs/${recorded.navigation_id}/provider-execution`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(document.querySelector("form")).not.toBeInTheDocument();
+  });
+
+  it("renders explicit provider-execution history absence without inferred mechanism facts", async () => {
+    installApiMock(run, liveIndex, liveRun, operationalIndex, providerExecutionAbsent);
+    at(`/active-runs/${liveRun.navigation_id}/provider-execution`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Provider-execution history absence" })).toBeVisible();
+    expect(screen.getAllByText("NOT_RECORDED_BY_FOREMAN").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(providerExecutionAbsent.explanation).length).toBe(2);
+    expect(screen.queryByRole("heading", { name: "Exact provider-admission dispositions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(document.querySelector("form")).not.toBeInTheDocument();
   });
 
   it("shows reciprocal navigation only for a server-qualified exact final-byte match", async () => {
