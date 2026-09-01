@@ -30,6 +30,26 @@ AG `/data/git/ag_ng` and `crates/ag-app/src/governed_loop.rs` own issuance/consu
 
 Never promote absence of observed duplicates into a physical exactly-once claim.
 
+Authorization consumption and enactment are separate local invariants connected
+by exact issuance and attempt identities, with outcome-unknown reconciliation.
+The strongest justified composed claim remains **one-spend / one-attempt bounded
+effect custody** until a stronger property is independently qualified.
+
+## Historical reliance views
+
+Every cross-ledger presentation and qualification keeps three answers separate:
+
+1. **Original decision** — what AG actually decided at the historical cut.
+2. **Historical warrant** — whether that decision was supported by the exact
+   evidence, policy/version, authority, subject/version, scope, and temporal
+   basis recorded for that cut.
+3. **Current support** — what the complete record supports now after later
+   evidence, revocation, correction, policy change, or observation.
+
+Changing historical warrant or current support never rewrites the original
+decision. No aggregate `admissibility`, `authorized`, `executed`, `healthy`, or
+success field spans these views.
+
 ## Two-plane operational architecture
 
 The observation/attention plane remains:
@@ -63,6 +83,33 @@ currentness by Nightshift, is required for a claim about the resulting world.
 ## Future qualification and read-only presentation
 
 Cross-bind AG authorization/issuance/spend/predecessor/currentness/receipt; Docket DB/standing/attempt/marker/dispatch bytes/audience/plan/times; ABSD admission/stable attempt-store/journal/mechanics evidence/terminal/reconciliation; all independent times; refusal before consumption/attempt/enactment, terminal and outcome-unknown cases; restart/concurrent writers; identity/byte/history/audience/attempt/receipt substitutions; independent classifications. Exit status, acknowledgement, duplicate-free samples, and final target appearance cannot substitute for owner receipts; outcome unknown does not erase honest AG/Docket custody.
+
+The read-only projection also exposes the exact policy and evidence references
+used at the AG cut when they are mechanically available. It never substitutes
+current policy, current evidence, reconstructed evidence, or an inferred edge
+for missing historical custody. Missing required material is explicitly
+`NOT_RECORDED`; unresolved or disagreeing authoritative material is explicitly
+`INDETERMINATE`. Presentation stops at the first unsupported edge.
+
+Before any owner-schema change, TALLY's durability qualification must reopen
+the exact policy catalog/version/content, observation/evidence record, resolver
+identity, subject/version, authority, scope, and temporal/freshness basis from
+authoritative retained artifacts. If this succeeds, CROSS consumes those
+references without a new receipt type. If it fails, only a versioned AG-owned
+successor may add the narrow stable references needed for historical reopening;
+Docket and ABSD continue to reference the chain by exact identities.
+
+Where an authorized owner already records later changes, append-only links to
+the historical AG decision distinguish `PROSPECTIVE_REVOCATION`,
+`RETROSPECTIVE_CORRECTION`, `EPISTEMIC_CONTRADICTION`, and `POLICY_AMENDMENT`.
+This roadmap does not itself authorize a new amendment service or record family.
+
+Qualification includes policy change after enactment, evidence staleness,
+later contradiction, prospective revocation, retrospective correction,
+wrong-subject evidence, missing historical policy, missing historical
+observation, current-for-historical substitution, and attempted inference of an
+unrecorded AG-to-Docket-to-ABSD edge. Each case must retain the original
+decision even when historical warrant or current support changes.
 
 Read-only Casework/Phosphor show exact raw chain, digests, result heads, bindings, time axes, contradictions, missing custody, outcome unknown, remaining trigger, and next lawful action. The view walks proposal/work, AG authorization occurrence, authority-state spend, Docket dispatch and custody, ABSD exercise occurrence, effect outcome or settlement, and fresh postcondition observation. It stops exactly where evidence stops and never reconstructs an edge from matching payload text, timestamps alone, filenames, hostnames, process exit, target paths, or free-text descriptions.
 

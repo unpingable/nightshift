@@ -27,4 +27,20 @@ Exact source surfaces: Docket `crates/gwr-local/src/{authz_intake.rs,governed_lo
 
 Prove one exact AG issuance/consumption reference becomes one Docket standing and canonical attempt; Docket admits at most one exact dispatch; dispatch bytes/audience/plan/ABSD endpoint/attempt bind exactly; ABSD admits only that attempt; duplicate delivery converges; terminal replay performs no mechanics; ambiguous loss becomes outcome unknown with same-attempt reconciliation only; refusal before attempt, refusal after custody, and outcome unknown remain distinct; owner classifications remain independent.
 
+VIOLET must preserve, but must not locally reinterpret, the AG historical
+reliance basis. Its read-only provenance surface distinguishes the immutable
+**original decision**, the independently reopened **historical warrant**, and
+the separately evaluated **current support**. Docket continues to own
+issuance-to-attempt and dispatch custody; ABSD continues to own same-attempt
+admission, journal, mechanics evidence, and reconciliation. Neither component
+copies AG policy evaluation, substitutes current evidence for historical
+evidence, or treats an AG authorization record as proof of enactment.
+
+When exact AG policy/evidence references are mechanically available, the
+projection exposes those references and their source owner. When required
+historical material cannot be reopened, it reports `NOT_RECORDED` or
+`INDETERMINATE` and stops at that evidentiary boundary. Matching payload text,
+timestamps, paths, process status, or present target state never manufactures a
+missing AG-to-Docket-to-ABSD edge.
+
 Casework/Phosphor may render exact raw provenance, identities, times, contradictions, missing evidence, and outcome unknown. No approve, answer, dispatch, retry, execute, reconcile, merge, promote, remediation, aggregate authority/health/success, or exactly-once indicator. Activation requires fresh authority, exact terminal convergence results, isolated worktrees, closed non-production fixtures, and independent review. No default merge, production/service/route activation, credential access, history rewrite, or consumed replay. Status remains **PLANNED / NOT STARTED**, classification **none**; QUALIFIED or NOT-QUALIFIED terminal results must be preserved exactly.

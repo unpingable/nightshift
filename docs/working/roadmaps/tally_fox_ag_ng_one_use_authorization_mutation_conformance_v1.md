@@ -23,6 +23,56 @@ Qualify: valid mutation yields one accepted row/receipt; identical replay conver
 
 Keep distinct: (1) exact-once authority consumption in AG; (2) at-most-once Docket attempt/dispatch admission; (3) ABSD idempotent/effectively-once same-attempt enactment; (4) outcome-unknown same-attempt reconciliation. None implies another; no literal physical exactly-once claim follows from absent duplicates.
 
+## Historical reliance basis
+
+TALLY must preserve three different answers without collapsing them into one
+`admissible`, `authorized`, or `valid` status:
+
+1. **Original decision** — the exact AG decision actually recorded at the
+   historical cut.
+2. **Historical warrant** — whether the exact evidence, policy, authority,
+   subject/version, scope, and temporal basis recorded for that cut supported
+   that decision.
+3. **Current support** — what the complete record supports now after later
+   evidence, revocation, correction, policy change, or observation.
+
+The accepted native AG design already retains the original decision and spend
+as distinct durable state. A bounded read-only inspection at exact AG subject
+`c612fadf8e86304dd54115ce0be54737a428c315` found that the stored runtime
+profile pins the exact-work catalog by path and byte digest, while the campaign
+store retains the runtime-profile bytes, decision `policy_basis`, complete
+resolver result, resolver identity, subject, scope, freshness windows,
+standing, and spend. It does not retain the exact catalog bytes themselves.
+Typed observation results may retain only an application-owned opaque basis
+identity, with no general owner-addressable source-evidence locator. Therefore
+AG custody alone does not yet guarantee independent reopening of every
+historical warrant after configured source artifacts disappear.
+
+TALLY's first owner qualification must separately test reopening of the exact
+policy catalog content, observation/evidence record, resolver identity,
+subject/version, authority, scope, and temporal/freshness basis. Current policy
+or evidence may never replace the recorded historical basis. If authoritative
+existing custody reopens every item, this remains a read-model clarification
+and no schema changes. Otherwise the narrow owner correction is a versioned AG
+successor that adds stable, owner-addressable references to the exact policy
+catalog and evidence records used at the decision cut. It must not duplicate
+evidence into Docket or ABSD, create a universal receipt, or make either
+downstream component an owner of AG policy semantics.
+
+Later owner records may affect current support without rewriting the original
+decision. Where the current AG owner already has a lawful record location, an
+append-only relation to the earlier decision must classify its effect as
+`PROSPECTIVE_REVOCATION`, `RETROSPECTIVE_CORRECTION`,
+`EPISTEMIC_CONTRADICTION`, or `POLICY_AMENDMENT`. No such record type is
+authorized merely by this roadmap.
+
+Qualification must cover policy change after enactment, evidence staleness,
+later contradiction, prospective revocation, retrospective correction, wrong
+subject-version evidence, missing historical policy, missing historical
+observation, substitution of current evidence for historical evidence, and an
+unrecorded AG-to-Docket provenance edge. The historical decision remains in
+custody when historical warrant or current support changes.
+
 Casework/Phosphor may render raw authorization, issuance, spend/predecessor, mutation receipt, consumer/attempt, currentness, and restart lineage. No approve, answer, consume, retry, dispatch, execute, reconcile, merge, promote, aggregate authority, or success control/verdict.
 
 TALLY remains **PLANNED / NOT STARTED**, classification **none**. Future activation requires fresh authority, clean exact AG base, isolated worktree, closed fixtures, query-only audit, and independent review. No default merge, production/live route, history rewrite, credential access, or downstream effect. Its exact terminal result, including NOT-QUALIFIED, becomes a CROSS-LEDGER prerequisite artifact.
