@@ -3,11 +3,13 @@
 //! This operator-tool crate is outside canonical `nightshiftd`. Scheduler state
 //! is mechanism evidence and never a campaign result or target-effect authority.
 
+pub mod bootstrap;
 pub mod contract;
 pub mod execution_availability;
 pub mod scheduler;
 pub mod store;
 
+pub use bootstrap::*;
 pub use contract::*;
 pub use execution_availability::*;
 pub use scheduler::{LiveRunProjectionV1, LiveWorkItemV1, Scheduler};
