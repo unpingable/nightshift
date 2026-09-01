@@ -23,6 +23,8 @@ use crate::{
 
 pub const SELF_HOSTED_FOREMAN_BOOTSTRAP_SCHEMA_V1: &str =
     "nightshift.self-hosted-foreman-bootstrap/v1";
+pub const SELF_HOSTED_FOREMAN_DRIVER_STEP_SCHEMA_V1: &str =
+    "nightshift.self-hosted-foreman-driver-step/v1";
 pub const SELF_HOSTED_FOREMAN_BOOTSTRAP_DIGEST_PREIMAGE_V1: &str =
     "domain prefix nightshift.self-hosted-foreman-bootstrap.digest/v1 NUL, then the bootstrap object with bootstrap_digest omitted as RFC8785-JCS";
 pub const SECOND_WATCH_CANONICAL_SLUG: &str = "nightshift-self-hosted-foreman-bootstrap-v1";
@@ -35,6 +37,7 @@ pub const SECOND_WATCH_PREDECESSOR_V2_PACKET_DIGEST: &str =
     "sha256:1df7f47bb3ea70d0f987e756f34aaa62f7187a659ef0bcc8d7c8aa2e645431fc";
 
 const BOOTSTRAP_DOMAIN: &[u8] = b"nightshift.self-hosted-foreman-bootstrap.digest/v1\0";
+const DRIVER_STEP_DOMAIN: &[u8] = b"nightshift.self-hosted-foreman-driver-step.digest/v1\0";
 
 /// One exact, bounded operator invocation admitted to hand scheduling custody
 /// to the durable foreman. The record is mechanism input, not authority or a
@@ -89,6 +92,34 @@ pub struct SelfHostedForemanBootstrapV1 {
     pub outer_conversation_scheduler: bool,
     pub timer_or_service_activation_authorized: bool,
     pub production_activation_authorized: bool,
+    pub aggregate_result_created: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SelfHostedDriverDispositionV1 {
+    ReadyWorkPresent,
+    WaitingForExactOwnerEvidence,
+    AllItemsExplicitTerminal,
+    BoundReached,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfHostedForemanDriverStepV1 {
+    pub schema: String,
+    pub step_digest: String,
+    pub bootstrap_digest: String,
+    pub bootstrap_occurrence_id: String,
+    pub run_id: String,
+    pub step_ordinal: u32,
+    pub scheduler_process_occurrence_id: String,
+    pub observed_projection_digest: String,
+    pub disposition: SelfHostedDriverDispositionV1,
+    pub recorded_at: DateTime<Utc>,
+    pub worker_dispatch_authorized: bool,
+    pub approval_response_authorized: bool,
+    pub protected_effect_authorized: bool,
+    pub semantic_retry_authorized: bool,
     pub aggregate_result_created: bool,
 }
 
@@ -426,6 +457,53 @@ impl SelfHostedForemanBootstrapV1 {
     }
 }
 
+impl SelfHostedForemanDriverStepV1 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|error| ContractError::Json(error.to_string()))?;
+        canonical_timestamp(&value, "recorded_at")?;
+        let record: Self = serde_json::from_value(value)
+            .map_err(|error| ContractError::Json(error.to_string()))?;
+        canonical_bytes("driver step canonical bytes", &record, bytes)?;
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn seal(&mut self) -> Result<(), ContractError> {
+        self.step_digest = digest_without(self, "step_digest", DRIVER_STEP_DOMAIN)?;
+        self.validate()
+    }
+
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.schema != SELF_HOSTED_FOREMAN_DRIVER_STEP_SCHEMA_V1 {
+            return Err(ContractError::ForeignSchema(self.schema.clone()));
+        }
+        digest("step_digest", &self.step_digest)?;
+        digest("bootstrap_digest", &self.bootstrap_digest)?;
+        digest(
+            "observed_projection_digest",
+            &self.observed_projection_digest,
+        )?;
+        id("bootstrap_occurrence_id", &self.bootstrap_occurrence_id)?;
+        id("run_id", &self.run_id)?;
+        id(
+            "scheduler_process_occurrence_id",
+            &self.scheduler_process_occurrence_id,
+        )?;
+        if self.step_ordinal == 0
+            || self.step_ordinal > 1_000_000
+            || self.worker_dispatch_authorized
+            || self.approval_response_authorized
+            || self.protected_effect_authorized
+            || self.semantic_retry_authorized
+            || self.aggregate_result_created
+            || digest_without(self, "step_digest", DRIVER_STEP_DOMAIN)? != self.step_digest
+        {
+            return Err(ContractError::InvalidField("driver step boundary"));
+        }
+        Ok(())
+    }
+}
 fn canonical_bytes<T: Serialize>(
     field: &'static str,
     record: &T,

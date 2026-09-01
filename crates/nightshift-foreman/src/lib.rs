@@ -20,7 +20,8 @@ pub use store::{
     ReadOnlyCapacityAdmissionV1, ReadOnlyCapacityJournalEventV1, ReadOnlyCapacityRequirementV1,
     ReadOnlyEventRowV1, ReadOnlyExecutionAvailabilityHistoryV1,
     ReadOnlyExecutionAvailabilityJournalEventV1, ReadOnlyProviderResourceTransitionV1,
-    ReadOnlyRunSnapshotV1, ReadOnlyTerminalReceiptRowV1, RunMechanismRequirementsV1,
+    ReadOnlyRunSnapshotV1, ReadOnlySelfHostedBootstrapV1, ReadOnlyTerminalReceiptRowV1,
+    RunMechanismRequirementsV1, SelfHostedBootstrapInputsV1,
 };
 
 pub const FOREMAN_ADMISSION_SCHEMA_V1: &str = "nightshift.foreman-admission/v1";

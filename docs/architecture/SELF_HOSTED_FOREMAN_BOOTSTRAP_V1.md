@@ -4,7 +4,7 @@ Campaign: SECOND-WATCH
 
 Canonical slug: nightshift-self-hosted-foreman-bootstrap-v1
 
-Status: contract checkpoint; runtime and store mutation held for independent audit
+Status: accepted contract; active bounded runtime/store qualification checkpoint
 
 This contract defines one bounded local operator invocation that transfers
 ordinary scheduling custody to the durable Nightshift foreman. It does not make
@@ -213,6 +213,39 @@ law:
 
 No lane-local stop is promoted into an aggregate campaign classification.
 
+## First runtime/store checkpoint
+
+The bounded bootstrap CLI acquires all eight exact input files as nonempty regular
+files with no-follow semantics and a 16 MiB per-file ceiling. It completes the
+accepted graph preflight before opening or initializing the SQLite destination.
+Run admission keeps the immutable admission time distinct from the later
+bootstrap evaluation time.
+
+One immediate transaction retains the normal run, capacity, and
+execution-availability owner history together with the exact bootstrap and
+capacity-policy bytes. Two append-only tables retain:
+
+- one exact bootstrap occurrence per run, its digest, bounded driver limits,
+  evaluation time, and deadline; and
+- canonical driver-step bytes in exact ordinal order.
+
+Update and delete triggers protect both tables. Query-only reopen revalidates the
+full bootstrap graph from the exact retained packet, admission, profile,
+requirements, and policies before returning typed or raw bootstrap custody.
+
+A driver step is an observation, not a dispatch. It binds the exact bootstrap,
+run, scheduler-process occurrence, ordinal, observed scheduler-projection
+digest, time, and one closed disposition. Worker dispatch, approval response,
+protected effect, semantic retry, and aggregate-result fields are fixed false.
+An already-retained expected ordinal returns the exact winner record so
+concurrent writers converge; skipped ordinals and wrong bootstrap identities
+refuse. A failed append rolls back, and restart may retain that same unused
+ordinal.
+
+This checkpoint does not yet invoke the deterministic fake adapter or complete
+the self-hosted golden journey. It starts no provider, subprocess, listener,
+timer, service, browser, or production route.
+
 ## Qualification boundary
 
 The first runtime qualification must use deterministic campaign-owned adapter
@@ -220,5 +253,5 @@ evidence only. It must not read/copy an authentication profile, contact a real
 provider, start a browser, install or activate a service/timer, or change a
 production/default route.
 
-Runtime mutation remains held until this contract checkpoint is independently
+This checkpoint activates only append-only bootstrap custody and observation-only driver steps. Worker dispatch, wake, receipt collection, final closeout, and the full golden journey remain outside this first runtime freeze; no provider or timer is active. The contract checkpoint was independently
 accepted.

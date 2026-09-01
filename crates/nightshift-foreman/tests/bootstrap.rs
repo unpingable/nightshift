@@ -589,3 +589,356 @@ fn noncanonical_time_and_unknown_fields_refuse() {
         )
         .is_err());
 }
+fn fixture_inputs(value: &Fixture) -> [Vec<u8>; 8] {
+    [
+        canonical(&value.plan),
+        canonical(&value.packet),
+        canonical(&value.admission),
+        canonical(&value.profile),
+        canonical(&value.capacity_requirement),
+        canonical(&value.capacity_policy),
+        canonical(&value.availability_requirement),
+        canonical(&value.availability_policy),
+    ]
+}
+
+fn admit_fixture(path: &std::path::Path, value: &Fixture) -> String {
+    let bytes = fixture_inputs(value);
+    ForemanStore::admit_self_hosted_at_path(
+        path,
+        SelfHostedBootstrapInputsV1 {
+            bootstrap_bytes: &bytes[0],
+            packet_bytes: &bytes[1],
+            admission_bytes: &bytes[2],
+            profile_bytes: &bytes[3],
+            capacity_requirement_bytes: &bytes[4],
+            capacity_policy_bytes: &bytes[5],
+            execution_availability_requirement_bytes: &bytes[6],
+            execution_availability_policy_bytes: &bytes[7],
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn driver_step_contract_is_closed_bounded_and_non_authorizing() {
+    let value = fixture();
+    let mut step = SelfHostedForemanDriverStepV1 {
+        schema: SELF_HOSTED_FOREMAN_DRIVER_STEP_SCHEMA_V1.to_owned(),
+        step_digest: placeholder(),
+        bootstrap_digest: value.plan.bootstrap_digest.clone(),
+        bootstrap_occurrence_id: value.plan.bootstrap_occurrence_id.clone(),
+        run_id: value.plan.run_id.clone(),
+        step_ordinal: 1,
+        scheduler_process_occurrence_id: "scheduler-process-1".to_owned(),
+        observed_projection_digest: format!("sha256:{}", "1".repeat(64)),
+        disposition: SelfHostedDriverDispositionV1::ReadyWorkPresent,
+        recorded_at: time(2),
+        worker_dispatch_authorized: false,
+        approval_response_authorized: false,
+        protected_effect_authorized: false,
+        semantic_retry_authorized: false,
+        aggregate_result_created: false,
+    };
+    step.seal().unwrap();
+    assert_eq!(
+        SelfHostedForemanDriverStepV1::from_slice(&canonical(&step)).unwrap(),
+        step
+    );
+
+    for ordinal in [0, 1_000_001] {
+        let mut substituted = step.clone();
+        substituted.step_ordinal = ordinal;
+        substituted.step_digest = placeholder();
+        assert!(substituted.seal().is_err());
+    }
+    let mut widened = step.clone();
+    widened.worker_dispatch_authorized = true;
+    widened.step_digest = placeholder();
+    assert!(widened.seal().is_err());
+}
+
+#[test]
+fn self_hosted_admission_preflights_before_store_creation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("invalid.sqlite3");
+    let mut value = fixture();
+    value.plan.profile_digest = format!("sha256:{}", "f".repeat(64));
+    value.plan.seal().unwrap();
+    let bytes = fixture_inputs(&value);
+    assert!(ForemanStore::admit_self_hosted_at_path(
+        &path,
+        SelfHostedBootstrapInputsV1 {
+            bootstrap_bytes: &bytes[0],
+            packet_bytes: &bytes[1],
+            admission_bytes: &bytes[2],
+            profile_bytes: &bytes[3],
+            capacity_requirement_bytes: &bytes[4],
+            capacity_policy_bytes: &bytes[5],
+            execution_availability_requirement_bytes: &bytes[6],
+            execution_availability_policy_bytes: &bytes[7],
+        },
+    )
+    .is_err());
+    assert!(!path.exists());
+}
+
+#[test]
+fn self_hosted_store_reopens_and_driver_step_is_idempotent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    assert_eq!(run_id, value.plan.run_id);
+
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(store.self_hosted_bootstrap(&run_id).is_err());
+    let first = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-1",
+            time(2),
+        )
+        .unwrap();
+    assert_eq!(first.step_ordinal, 1);
+    assert_eq!(
+        first.disposition,
+        SelfHostedDriverDispositionV1::ReadyWorkPresent
+    );
+    assert!(!first.worker_dispatch_authorized);
+
+    let duplicate = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-losing-writer",
+            time(3),
+        )
+        .unwrap();
+    assert_eq!(duplicate, first);
+    assert!(store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            3,
+            "scheduler-process-3",
+            time(3),
+        )
+        .is_err());
+
+    drop(store);
+    let casework_snapshot = read_only_run_snapshot(&path, &run_id).unwrap();
+    assert_eq!(casework_snapshot.run_id, run_id);
+    assert_eq!(casework_snapshot.packet_bytes, canonical(&value.packet));
+    let reopened = ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&run_id)
+        .unwrap();
+    assert_eq!(reopened.bootstrap, value.plan);
+    assert_eq!(reopened.bootstrap_bytes, canonical(&value.plan));
+    assert_eq!(
+        reopened.capacity_policy_bytes,
+        canonical(&value.capacity_policy)
+    );
+    assert_eq!(reopened.steps, vec![first.clone()]);
+    assert_eq!(reopened.step_bytes, vec![canonical(&first)]);
+}
+#[test]
+fn concurrent_driver_writers_converge_on_one_custody_record() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for process in ["scheduler-process-a", "scheduler-process-b"] {
+        let path = path.clone();
+        let run_id = run_id.clone();
+        let digest = value.plan.bootstrap_digest.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            let store = ForemanStore::open(path).unwrap();
+            barrier.wait();
+            store
+                .advance_self_hosted_driver(&run_id, &digest, 1, process, time(2))
+                .unwrap()
+        }));
+    }
+    let first = handles.remove(0).join().unwrap();
+    let second = handles.remove(0).join().unwrap();
+    assert_eq!(first, second);
+    let reopened = ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&run_id)
+        .unwrap();
+    assert_eq!(reopened.steps, vec![first]);
+}
+
+#[test]
+fn failed_driver_append_rolls_back_and_restart_recovers_exact_ordinal() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    let fixture_connection = rusqlite::Connection::open(&path).unwrap();
+    fixture_connection
+        .execute_batch(
+            "CREATE TRIGGER qualification_driver_insert_refusal
+             BEFORE INSERT ON self_hosted_driver_steps
+             BEGIN SELECT RAISE(ABORT, 'qualification fixture'); END;",
+        )
+        .unwrap();
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(store.self_hosted_bootstrap(&run_id).is_err());
+    assert!(store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-crash",
+            time(2),
+        )
+        .is_err());
+    assert!(ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&run_id)
+        .unwrap()
+        .steps
+        .is_empty());
+    fixture_connection
+        .execute_batch("DROP TRIGGER qualification_driver_insert_refusal;")
+        .unwrap();
+    drop(store);
+
+    let restarted = ForemanStore::open(&path).unwrap();
+    let retained = restarted
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-restarted",
+            time(2),
+        )
+        .unwrap();
+    assert_eq!(retained.step_ordinal, 1);
+    assert_eq!(
+        ForemanStore::open_read_only(&path)
+            .unwrap()
+            .self_hosted_bootstrap(&run_id)
+            .unwrap()
+            .steps,
+        vec![retained]
+    );
+}
+
+#[test]
+fn append_only_triggers_and_content_mutation_refuse_before_next_step() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    let store = ForemanStore::open(&path).unwrap();
+    assert!(store.self_hosted_bootstrap(&run_id).is_err());
+    let first = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-1",
+            time(2),
+        )
+        .unwrap();
+    drop(store);
+
+    let fixture_connection = rusqlite::Connection::open(&path).unwrap();
+    assert!(fixture_connection
+        .execute(
+            "UPDATE self_hosted_driver_steps SET recorded_at = recorded_at
+             WHERE run_id = ?1 AND step_ordinal = 1",
+            [&run_id],
+        )
+        .is_err());
+
+    fixture_connection
+        .execute_batch("DROP TRIGGER self_hosted_driver_steps_no_update;")
+        .unwrap();
+    let mut substituted = first;
+    substituted.scheduler_process_occurrence_id = "scheduler-process-substituted".to_owned();
+    substituted.step_digest = placeholder();
+    substituted.seal().unwrap();
+    fixture_connection
+        .execute(
+            "UPDATE self_hosted_driver_steps SET raw_bytes = ?1
+             WHERE run_id = ?2 AND step_ordinal = 1",
+            rusqlite::params![canonical(&substituted), run_id],
+        )
+        .unwrap();
+    drop(fixture_connection);
+
+    assert!(ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&value.plan.run_id)
+        .is_err());
+    let writable = ForemanStore::open(&path).unwrap();
+    assert!(writable
+        .advance_self_hosted_driver(
+            &value.plan.run_id,
+            &value.plan.bootstrap_digest,
+            2,
+            "scheduler-process-2",
+            time(3),
+        )
+        .is_err());
+    let fixture_connection = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = fixture_connection
+        .query_row(
+            "SELECT COUNT(*) FROM self_hosted_driver_steps WHERE run_id = ?1",
+            [&value.plan.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+#[test]
+fn oversized_driver_history_refuses_at_metadata_preflight() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-1",
+            time(2),
+        )
+        .unwrap();
+    drop(store);
+
+    let fixture_connection = rusqlite::Connection::open(&path).unwrap();
+    fixture_connection
+        .execute_batch("DROP TRIGGER self_hosted_driver_steps_no_update;")
+        .unwrap();
+    fixture_connection
+        .execute(
+            "UPDATE self_hosted_driver_steps SET raw_bytes = zeroblob(?1)
+             WHERE run_id = ?2 AND step_ordinal = 1",
+            rusqlite::params![i64::from(16 * 1024 + 1), run_id],
+        )
+        .unwrap();
+    drop(fixture_connection);
+
+    let error = ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&value.plan.run_id)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ForemanError::InputTooLarge("self-hosted driver history")
+    ));
+}

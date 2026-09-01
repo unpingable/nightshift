@@ -3,7 +3,7 @@
 > **Track:** `nightshift-self-hosting`
 > **Codename:** `SECOND-WATCH`
 > **Canonical slug:** `nightshift-self-hosted-foreman-bootstrap-v1`
-> **Status:** **AUTHORIZED SUCCESSOR / PLANNED / NOT STARTED**
+> **Status:** **ACTIVE IMPLEMENTATION — accepted contract; bounded runtime/store checkpoint under qualification**
 > **Result classification:** none
 > **Filed:** 2026-08-30
 > **Codename collision search:** clear in local Nightshift source, local and remote branch names, and established remote heads at filing time.
@@ -23,8 +23,8 @@ decisions remain governed by existing Nightshift doctrine.
 
 ## Activation gate
 
-SECOND-WATCH remains **PLANNED / NOT STARTED** until each exact prerequisite is
-independently qualified and the relevant predecessor worktrees close cleanly:
+SECOND-WATCH activated after each exact prerequisite was
+independently qualified and the relevant predecessor worktrees closed cleanly:
 
 1. durable foreman;
 2. worker adapter;
@@ -247,6 +247,7 @@ admission/profile/policies, foreman store, dispatch history, receipts, Casework
 views, tests, skipped dimensions, and teardown census. A result may claim only
 local scheduling/custody independence demonstrated by the golden journey.
 
-Until every prerequisite qualifies and the campaign is actually admitted,
-SECOND-WATCH remains **PLANNED / NOT STARTED**, with classification **none**.
+The accepted bootstrap contract and bounded runtime/store checkpoint do not by
+themselves qualify the full golden journey. Until complete closeout,
+SECOND-WATCH remains **ACTIVE IMPLEMENTATION**, with no aggregate classification.
 

@@ -48,6 +48,9 @@ fn cli_seals_admission_exactly_and_exposes_no_approval_response() {
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("seal-admission"));
     assert!(help.contains("replay"));
+    assert!(help.contains("bootstrap-admit"));
+    assert!(help.contains("bootstrap-step"));
+    assert!(help.contains("bootstrap-status"));
     assert!(!help.contains("approve"));
 }
 
@@ -66,4 +69,40 @@ fn cli_read_command_refuses_absent_database_without_creating_files() {
         .unwrap()
         .next()
         .is_none());
+}
+#[test]
+fn bootstrap_cli_refuses_symlinked_input_before_database_creation() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("target.json");
+    let link = directory.path().join("input.json");
+    let database = directory.path().join("bootstrap.sqlite3");
+    std::fs::write(&target, b"{}").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_nightshift-foreman"))
+        .args(["bootstrap-admit", "--db"])
+        .arg(&database)
+        .args(["--bootstrap"])
+        .arg(&link)
+        .args(["--packet"])
+        .arg(&link)
+        .args(["--admission"])
+        .arg(&link)
+        .args(["--profile"])
+        .arg(&link)
+        .args(["--capacity-requirement"])
+        .arg(&link)
+        .args(["--capacity-policy"])
+        .arg(&link)
+        .args(["--availability-requirement"])
+        .arg(&link)
+        .args(["--availability-policy"])
+        .arg(&link)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!database.exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot open bounded input"));
 }

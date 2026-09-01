@@ -1,13 +1,18 @@
 use std::{
-    fs,
-    io::{self, Write as _},
+    fs::{self, OpenOptions},
+    io::{self, Read as _, Write as _},
+    os::unix::fs::OpenOptionsExt as _,
     path::PathBuf,
 };
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use nightshift_foreman::{ExecutionProfileV2, ForemanAdmissionV1, ForemanStore};
+use nightshift_foreman::{
+    ExecutionProfileV2, ForemanAdmissionV1, ForemanStore, SelfHostedBootstrapInputsV1,
+};
+
+const MAXIMUM_BOOTSTRAP_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(
@@ -40,6 +45,46 @@ enum Command {
         profile: PathBuf,
         #[arg(long)]
         evaluated_at: String,
+    },
+    BootstrapAdmit {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        bootstrap: PathBuf,
+        #[arg(long)]
+        packet: PathBuf,
+        #[arg(long)]
+        admission: PathBuf,
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        capacity_requirement: PathBuf,
+        #[arg(long)]
+        capacity_policy: PathBuf,
+        #[arg(long)]
+        availability_requirement: PathBuf,
+        #[arg(long)]
+        availability_policy: PathBuf,
+    },
+    BootstrapStep {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        bootstrap_digest: String,
+        #[arg(long)]
+        expected_step_ordinal: u32,
+        #[arg(long)]
+        scheduler_process_occurrence_id: String,
+        #[arg(long)]
+        recorded_at: String,
+    },
+    BootstrapStatus {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        run_id: String,
     },
     Run {
         #[arg(long)]
@@ -158,6 +203,61 @@ fn main() -> Result<()> {
             )?;
             print_json(&serde_json::json!({"run_id": run_id}))?;
         }
+        Command::BootstrapAdmit {
+            db,
+            bootstrap,
+            packet,
+            admission,
+            profile,
+            capacity_requirement,
+            capacity_policy,
+            availability_requirement,
+            availability_policy,
+        } => {
+            let bootstrap_bytes = read_bounded_existing(&bootstrap)?;
+            let packet_bytes = read_bounded_existing(&packet)?;
+            let admission_bytes = read_bounded_existing(&admission)?;
+            let profile_bytes = read_bounded_existing(&profile)?;
+            let capacity_requirement_bytes = read_bounded_existing(&capacity_requirement)?;
+            let capacity_policy_bytes = read_bounded_existing(&capacity_policy)?;
+            let availability_requirement_bytes = read_bounded_existing(&availability_requirement)?;
+            let availability_policy_bytes = read_bounded_existing(&availability_policy)?;
+            let run_id = ForemanStore::admit_self_hosted_at_path(
+                db,
+                SelfHostedBootstrapInputsV1 {
+                    bootstrap_bytes: &bootstrap_bytes,
+                    packet_bytes: &packet_bytes,
+                    admission_bytes: &admission_bytes,
+                    profile_bytes: &profile_bytes,
+                    capacity_requirement_bytes: &capacity_requirement_bytes,
+                    capacity_policy_bytes: &capacity_policy_bytes,
+                    execution_availability_requirement_bytes: &availability_requirement_bytes,
+                    execution_availability_policy_bytes: &availability_policy_bytes,
+                },
+            )?;
+            print_json(&serde_json::json!({"run_id": run_id}))?;
+        }
+        Command::BootstrapStep {
+            db,
+            run_id,
+            bootstrap_digest,
+            expected_step_ordinal,
+            scheduler_process_occurrence_id,
+            recorded_at,
+        } => {
+            let store = ForemanStore::open(db)?;
+            let step = store.advance_self_hosted_driver(
+                &run_id,
+                &bootstrap_digest,
+                expected_step_ordinal,
+                &scheduler_process_occurrence_id,
+                instant(&recorded_at)?,
+            )?;
+            print_json(&step)?;
+        }
+        Command::BootstrapStatus { db, run_id } => {
+            print_json(&ForemanStore::open_read_only(db)?.self_hosted_bootstrap(&run_id)?)?;
+        }
         Command::Run {
             db,
             run_id,
@@ -232,6 +332,40 @@ fn instant(value: &str) -> Result<DateTime<Utc>> {
 
 fn read(path: &PathBuf) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("cannot read {}", path.display()))
+}
+
+fn read_bounded_existing(path: &PathBuf) -> Result<Vec<u8>> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("cannot open bounded input {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("cannot inspect bounded input {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "bounded input is not a regular file: {}",
+        path.display()
+    );
+    anyhow::ensure!(
+        metadata.len() > 0 && metadata.len() <= MAXIMUM_BOOTSTRAP_INPUT_BYTES,
+        "bounded input size is outside 1..={MAXIMUM_BOOTSTRAP_INPUT_BYTES}: {}",
+        path.display()
+    );
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::io::Read::by_ref(&mut file)
+        .take(MAXIMUM_BOOTSTRAP_INPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read bounded input {}", path.display()))?;
+    anyhow::ensure!(
+        bytes.len() as u64 == metadata.len() && bytes.len() as u64 <= MAXIMUM_BOOTSTRAP_INPUT_BYTES,
+        "bounded input changed during acquisition: {}",
+        path.display()
+    );
+    Ok(bytes)
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {

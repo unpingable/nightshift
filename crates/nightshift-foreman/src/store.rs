@@ -31,9 +31,11 @@ use crate::{
     LiveRunProjectionV1, NotStartedReceiptV1, ParkedResourceLockPolicyV1,
     ProviderAdmissionDispositionV1, ProviderDeferralHistoryEntryV1, ProviderDispatchOccurrenceV1,
     ProviderExecutionIdentityV1, ProviderMechanismStateV1, ReceiptRepositoryV1, Scheduler,
-    SchedulerStateV1, TerminalReceiptV1, WorkerBriefV2, WorkerStartRequestV2, WorkerStartRequestV3,
-    MAXIMUM_CAPACITY_HISTORY_BYTES, MAXIMUM_PREDECESSOR_RECEIPTS, MAXIMUM_WORKER_BRIEF_BYTES,
-    PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2,
+    SchedulerStateV1, SelfHostedDriverDispositionV1, SelfHostedForemanBootstrapV1,
+    SelfHostedForemanDriverStepV1, TerminalReceiptV1, WorkerBriefV2, WorkerStartRequestV2,
+    WorkerStartRequestV3, MAXIMUM_CAPACITY_HISTORY_BYTES, MAXIMUM_PREDECESSOR_RECEIPTS,
+    MAXIMUM_WORKER_BRIEF_BYTES, PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1,
+    SELF_HOSTED_FOREMAN_DRIVER_STEP_SCHEMA_V1, WORKER_BRIEF_BASIS_SCHEMA_V2,
     WORKER_START_REQUEST_SCHEMA_V2, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 
@@ -41,6 +43,8 @@ const INTERNAL_EVENT_SCHEMA: &str = "nightshift.foreman-journal-event/v1";
 const BRIEF_DIGEST_DOMAIN: &[u8] = b"nightshift.worker-brief.digest/v2\0";
 const RAW_DIGEST_DOMAIN: &[u8] = b"nightshift.foreman-retained-raw.digest/v1\0";
 const MAXIMUM_CAPACITY_RECORD_BYTES: usize = 1024 * 1024;
+const MAXIMUM_SELF_HOSTED_DRIVER_STEP_BYTES: usize = 16 * 1024;
+const MAXIMUM_SELF_HOSTED_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 const MAXIMUM_EXECUTION_AVAILABILITY_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
 const MAXIMUM_EXECUTION_AVAILABILITY_ROWS: usize = 16_384;
 
@@ -106,6 +110,39 @@ pub struct RunMechanismRequirementsV1<'a> {
     pub capacity_requirement_bytes: Option<&'a [u8]>,
     pub execution_availability_requirement_bytes: Option<&'a [u8]>,
     pub execution_availability_policy_bytes: Option<&'a [u8]>,
+}
+
+pub struct SelfHostedBootstrapInputsV1<'a> {
+    pub bootstrap_bytes: &'a [u8],
+    pub packet_bytes: &'a [u8],
+    pub admission_bytes: &'a [u8],
+    pub profile_bytes: &'a [u8],
+    pub capacity_requirement_bytes: &'a [u8],
+    pub capacity_policy_bytes: &'a [u8],
+    pub execution_availability_requirement_bytes: &'a [u8],
+    pub execution_availability_policy_bytes: &'a [u8],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ReadOnlySelfHostedBootstrapV1 {
+    pub bootstrap: SelfHostedForemanBootstrapV1,
+    pub bootstrap_bytes: Vec<u8>,
+    pub capacity_policy_bytes: Vec<u8>,
+    pub steps: Vec<SelfHostedForemanDriverStepV1>,
+    pub step_bytes: Vec<Vec<u8>>,
+}
+
+#[derive(Default)]
+struct ValidatedRunMechanisms {
+    capacity_requirement: Option<(ForemanCapacityRequirementV1, Vec<u8>)>,
+    execution_availability: Option<ValidatedExecutionAvailabilityConfiguration>,
+    self_hosted: Option<ValidatedSelfHostedBootstrap>,
+}
+
+struct ValidatedSelfHostedBootstrap {
+    bootstrap: SelfHostedForemanBootstrapV1,
+    bootstrap_bytes: Vec<u8>,
+    capacity_policy_bytes: Vec<u8>,
 }
 
 /// Exact records produced by one atomic provider-dispatch opening.
@@ -855,8 +892,7 @@ impl ForemanStore {
             admission_bytes,
             profile_bytes,
             evaluated_at,
-            None,
-            None,
+            ValidatedRunMechanisms::default(),
         )
     }
 
@@ -874,8 +910,10 @@ impl ForemanStore {
             admission_bytes,
             profile_bytes,
             evaluated_at,
-            Some((requirement, capacity_requirement_bytes.to_vec())),
-            None,
+            ValidatedRunMechanisms {
+                capacity_requirement: Some((requirement, capacity_requirement_bytes.to_vec())),
+                ..ValidatedRunMechanisms::default()
+            },
         )
     }
 
@@ -895,8 +933,10 @@ impl ForemanStore {
             admission_bytes,
             profile_bytes,
             evaluated_at,
-            None,
-            Some(configuration),
+            ValidatedRunMechanisms {
+                execution_availability: Some(configuration),
+                ..ValidatedRunMechanisms::default()
+            },
         )
     }
 
@@ -938,8 +978,80 @@ impl ForemanStore {
             admission_bytes,
             profile_bytes,
             evaluated_at,
-            capacity_requirement,
-            execution_availability,
+            ValidatedRunMechanisms {
+                capacity_requirement,
+                execution_availability,
+                self_hosted: None,
+            },
+        )
+    }
+
+    /// Validate the complete canonical bootstrap graph before the database path
+    /// is opened or initialized, then retain bootstrap and run custody in one
+    /// immediate transaction.
+    pub fn admit_self_hosted_at_path(
+        path: impl AsRef<Path>,
+        inputs: SelfHostedBootstrapInputsV1<'_>,
+    ) -> Result<String, ForemanError> {
+        for (field, bytes) in [
+            ("bootstrap plan", inputs.bootstrap_bytes),
+            ("bootstrap packet", inputs.packet_bytes),
+            ("bootstrap admission", inputs.admission_bytes),
+            ("bootstrap profile", inputs.profile_bytes),
+            (
+                "bootstrap capacity requirement",
+                inputs.capacity_requirement_bytes,
+            ),
+            ("bootstrap capacity policy", inputs.capacity_policy_bytes),
+            (
+                "bootstrap availability requirement",
+                inputs.execution_availability_requirement_bytes,
+            ),
+            (
+                "bootstrap availability policy",
+                inputs.execution_availability_policy_bytes,
+            ),
+        ] {
+            if bytes.is_empty() || bytes.len() > MAXIMUM_WORKER_BRIEF_BYTES {
+                return Err(ForemanError::InputTooLarge(field));
+            }
+        }
+        let bootstrap = SelfHostedForemanBootstrapV1::from_slice(inputs.bootstrap_bytes)?;
+        bootstrap.validate_graph(
+            inputs.packet_bytes,
+            inputs.admission_bytes,
+            inputs.profile_bytes,
+            inputs.capacity_requirement_bytes,
+            inputs.capacity_policy_bytes,
+            inputs.execution_availability_requirement_bytes,
+            inputs.execution_availability_policy_bytes,
+        )?;
+        let capacity_requirement =
+            validate_capacity_requirement_bytes(inputs.capacity_requirement_bytes)?;
+        let execution_availability = validate_execution_availability_configuration(
+            inputs.execution_availability_requirement_bytes,
+            inputs.execution_availability_policy_bytes,
+        )?;
+        let run_admitted_at = ForemanAdmissionV1::from_slice(inputs.admission_bytes)?.admitted_at;
+        let validated = ValidatedSelfHostedBootstrap {
+            bootstrap,
+            bootstrap_bytes: inputs.bootstrap_bytes.to_vec(),
+            capacity_policy_bytes: inputs.capacity_policy_bytes.to_vec(),
+        };
+        let store = Self::open(path)?;
+        store.admit_internal(
+            inputs.packet_bytes,
+            inputs.admission_bytes,
+            inputs.profile_bytes,
+            run_admitted_at,
+            ValidatedRunMechanisms {
+                capacity_requirement: Some((
+                    capacity_requirement,
+                    inputs.capacity_requirement_bytes.to_vec(),
+                )),
+                execution_availability: Some(execution_availability),
+                self_hosted: Some(validated),
+            },
         )
     }
 
@@ -949,9 +1061,13 @@ impl ForemanStore {
         admission_bytes: &[u8],
         profile_bytes: &[u8],
         evaluated_at: DateTime<Utc>,
-        capacity_requirement: Option<(ForemanCapacityRequirementV1, Vec<u8>)>,
-        execution_availability: Option<ValidatedExecutionAvailabilityConfiguration>,
+        mechanisms: ValidatedRunMechanisms,
     ) -> Result<String, ForemanError> {
+        let ValidatedRunMechanisms {
+            capacity_requirement,
+            execution_availability,
+            self_hosted,
+        } = mechanisms;
         let packet = NightshiftPacketV1::from_slice(packet_bytes)
             .map_err(|error| ForemanError::Packet(error.to_string()))?;
         packet
@@ -1078,6 +1194,42 @@ impl ForemanStore {
                 profile.maximum_event_bytes,
             )?;
         }
+        if let Some(custody) = self_hosted {
+            if custody.bootstrap.run_id != admission.run_id
+                || custody.bootstrap.packet_digest != packet.packet_digest
+                || custody.bootstrap.admission_digest != admission.admission_digest
+                || custody.bootstrap.profile_digest != profile.profile_digest
+            {
+                return Err(ForemanError::IdentityMismatch(
+                    "self-hosted bootstrap admission",
+                ));
+            }
+            let deadline_at = custody
+                .bootstrap
+                .evaluated_at
+                .checked_add_signed(chrono::Duration::seconds(i64::from(
+                    custody.bootstrap.maximum_wall_seconds,
+                )))
+                .ok_or_else(|| {
+                    ForemanError::Transition("self-hosted deadline overflow".to_owned())
+                })?;
+            transaction.execute(
+                "INSERT INTO self_hosted_bootstraps
+                 (run_id, bootstrap_digest, bootstrap_occurrence_id, bootstrap_bytes,
+                  capacity_policy_bytes, admitted_at, deadline_at, maximum_driver_steps)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    admission.run_id,
+                    custody.bootstrap.bootstrap_digest,
+                    custody.bootstrap.bootstrap_occurrence_id,
+                    custody.bootstrap_bytes,
+                    custody.capacity_policy_bytes,
+                    custody.bootstrap.evaluated_at.to_rfc3339(),
+                    deadline_at.to_rfc3339(),
+                    custody.bootstrap.maximum_driver_steps,
+                ],
+            )?;
+        }
         load_execution_availability_history(
             &transaction,
             &admission.run_id,
@@ -1095,6 +1247,152 @@ impl ForemanStore {
         let projection = load_projection(&transaction, run_id)?;
         transaction.commit()?;
         Ok(projection)
+    }
+
+    pub fn self_hosted_bootstrap(
+        &self,
+        run_id: &str,
+    ) -> Result<ReadOnlySelfHostedBootstrapV1, ForemanError> {
+        if !matches!(self.access, StoreAccess::ReadOnly { .. }) {
+            return Err(ForemanError::ReadOnlyStore(
+                "self-hosted bootstrap projection requires an explicitly read-only store"
+                    .to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let custody = load_self_hosted_bootstrap(&transaction, run_id)?;
+        transaction.commit()?;
+        Ok(custody)
+    }
+
+    /// Atomically retain one deterministic observation of the durable scheduler.
+    ///
+    /// Callers name the expected ordinal; concurrent writers for the same
+    /// ordinal converge on the first exact retained record. The record itself
+    /// authorizes no dispatch or effect.
+    pub fn advance_self_hosted_driver(
+        &self,
+        run_id: &str,
+        bootstrap_digest: &str,
+        expected_step_ordinal: u32,
+        scheduler_process_occurrence_id: &str,
+        recorded_at: DateTime<Utc>,
+    ) -> Result<SelfHostedForemanDriverStepV1, ForemanError> {
+        validate_local_occurrence_id(
+            scheduler_process_occurrence_id,
+            "scheduler_process_occurrence_id",
+        )?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let custody = load_self_hosted_bootstrap(&transaction, run_id)?;
+        if custody.bootstrap.bootstrap_digest != bootstrap_digest {
+            return Err(ForemanError::IdentityMismatch("bootstrap_digest"));
+        }
+        if let Some(existing) = custody
+            .steps
+            .iter()
+            .find(|step| step.step_ordinal == expected_step_ordinal)
+        {
+            transaction.commit()?;
+            return Ok(existing.clone());
+        }
+        let next_ordinal = u32::try_from(custody.steps.len() + 1)
+            .map_err(|_| ForemanError::Transition("driver step ordinal overflow".to_owned()))?;
+        if expected_step_ordinal != next_ordinal
+            || expected_step_ordinal > custody.bootstrap.maximum_driver_steps
+            || recorded_at < custody.bootstrap.evaluated_at
+        {
+            return Err(ForemanError::Transition(
+                "driver step ordinal, bound, or time is not admissible".to_owned(),
+            ));
+        }
+        let deadline_at = custody
+            .bootstrap
+            .evaluated_at
+            .checked_add_signed(chrono::Duration::seconds(i64::from(
+                custody.bootstrap.maximum_wall_seconds,
+            )))
+            .ok_or_else(|| ForemanError::Transition("driver deadline overflow".to_owned()))?;
+        let projection = load_projection(&transaction, run_id)?;
+        let projection_bytes = serde_jcs::to_vec(&projection)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        let disposition = if projection
+            .work_items
+            .iter()
+            .all(|item| item.scheduler_state.is_explicit_terminal())
+        {
+            SelfHostedDriverDispositionV1::AllItemsExplicitTerminal
+        } else if recorded_at >= deadline_at
+            || expected_step_ordinal == custody.bootstrap.maximum_driver_steps
+        {
+            SelfHostedDriverDispositionV1::BoundReached
+        } else if projection.work_items.iter().any(|item| {
+            matches!(
+                item.scheduler_state,
+                SchedulerStateV1::ReadyEntryEvaluation | SchedulerStateV1::WaitingResource
+            )
+        }) {
+            SelfHostedDriverDispositionV1::ReadyWorkPresent
+        } else {
+            SelfHostedDriverDispositionV1::WaitingForExactOwnerEvidence
+        };
+        let mut step = SelfHostedForemanDriverStepV1 {
+            schema: SELF_HOSTED_FOREMAN_DRIVER_STEP_SCHEMA_V1.to_owned(),
+            step_digest: placeholder_digest(),
+            bootstrap_digest: custody.bootstrap.bootstrap_digest,
+            bootstrap_occurrence_id: custody.bootstrap.bootstrap_occurrence_id,
+            run_id: run_id.to_owned(),
+            step_ordinal: expected_step_ordinal,
+            scheduler_process_occurrence_id: scheduler_process_occurrence_id.to_owned(),
+            observed_projection_digest: domain_digest(
+                b"nightshift.self-hosted-foreman-observed-projection.digest/v1\0",
+                &projection_bytes,
+            ),
+            disposition,
+            recorded_at,
+            worker_dispatch_authorized: false,
+            approval_response_authorized: false,
+            protected_effect_authorized: false,
+            semantic_retry_authorized: false,
+            aggregate_result_created: false,
+        };
+        step.seal()?;
+        let raw = serde_jcs::to_vec(&step)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?;
+        if raw.is_empty() || raw.len() > MAXIMUM_SELF_HOSTED_DRIVER_STEP_BYTES {
+            return Err(ForemanError::InputTooLarge("self-hosted driver step"));
+        }
+        let retained_bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(raw_bytes)), 0)
+             FROM self_hosted_driver_steps WHERE run_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        let retained_bytes = usize::try_from(retained_bytes).map_err(|_| {
+            ForemanError::ReadOnlyStore("self-hosted history length is invalid".to_owned())
+        })?;
+        if retained_bytes
+            .checked_add(raw.len())
+            .is_none_or(|total| total > MAXIMUM_SELF_HOSTED_HISTORY_BYTES)
+        {
+            return Err(ForemanError::InputTooLarge("self-hosted driver history"));
+        }
+        transaction.execute(
+            "INSERT INTO self_hosted_driver_steps
+             (run_id, step_ordinal, step_digest, scheduler_process_occurrence_id,
+              recorded_at, raw_bytes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                run_id,
+                step.step_ordinal,
+                step.step_digest,
+                step.scheduler_process_occurrence_id,
+                step.recorded_at.to_rfc3339(),
+                raw,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(step)
     }
 
     pub fn worker_brief(&self, run_id: &str, work_item_id: &str) -> Result<Vec<u8>, ForemanError> {
@@ -2706,6 +3004,219 @@ impl ForemanStore {
     }
 }
 
+fn load_self_hosted_bootstrap(
+    connection: &Connection,
+    run_id: &str,
+) -> Result<ReadOnlySelfHostedBootstrapV1, ForemanError> {
+    let table_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_schema
+            WHERE type = 'table' AND name = 'self_hosted_bootstraps'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Err(ForemanError::ReadOnlyStore(
+            "store has no self-hosted bootstrap custody table".to_owned(),
+        ));
+    }
+    let bootstrap_lengths: Option<(i64, i64)> = connection
+        .query_row(
+            "SELECT length(bootstrap_bytes), length(capacity_policy_bytes)
+             FROM self_hosted_bootstraps WHERE run_id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (bootstrap_length, capacity_policy_length) = bootstrap_lengths.ok_or_else(|| {
+        ForemanError::Transition("run has no self-hosted bootstrap custody".to_owned())
+    })?;
+    if bootstrap_length <= 0
+        || capacity_policy_length <= 0
+        || usize::try_from(bootstrap_length)
+            .ok()
+            .is_none_or(|size| size > MAXIMUM_WORKER_BRIEF_BYTES)
+        || usize::try_from(capacity_policy_length)
+            .ok()
+            .is_none_or(|size| size > MAXIMUM_WORKER_BRIEF_BYTES)
+    {
+        return Err(ForemanError::InputTooLarge("self-hosted bootstrap custody"));
+    }
+    let (step_count, maximum_step_length, total_step_length): (i64, i64, i64) = connection
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(length(raw_bytes)), 0),
+                    COALESCE(SUM(length(raw_bytes)), 0)
+             FROM self_hosted_driver_steps WHERE run_id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    if !(0..=1_000_000).contains(&step_count)
+        || maximum_step_length < 0
+        || total_step_length < 0
+        || usize::try_from(maximum_step_length)
+            .ok()
+            .is_none_or(|size| size > MAXIMUM_SELF_HOSTED_DRIVER_STEP_BYTES)
+        || usize::try_from(total_step_length)
+            .ok()
+            .is_none_or(|size| size > MAXIMUM_SELF_HOSTED_HISTORY_BYTES)
+    {
+        return Err(ForemanError::InputTooLarge("self-hosted driver history"));
+    }
+    let row: (String, String, Vec<u8>, Vec<u8>, String, String, u32) = connection
+        .query_row(
+            "SELECT bootstrap_digest, bootstrap_occurrence_id, bootstrap_bytes,
+                    capacity_policy_bytes, admitted_at, deadline_at, maximum_driver_steps
+             FROM self_hosted_bootstraps WHERE run_id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| {
+            ForemanError::Transition("run has no self-hosted bootstrap custody".to_owned())
+        })?;
+    let bootstrap = SelfHostedForemanBootstrapV1::from_slice(&row.2)?;
+    let deadline = bootstrap
+        .evaluated_at
+        .checked_add_signed(chrono::Duration::seconds(i64::from(
+            bootstrap.maximum_wall_seconds,
+        )))
+        .ok_or_else(|| ForemanError::ReadOnlyStore("bootstrap deadline overflow".to_owned()))?;
+    if bootstrap.run_id != run_id
+        || bootstrap.bootstrap_digest != row.0
+        || bootstrap.bootstrap_occurrence_id != row.1
+        || bootstrap.evaluated_at.to_rfc3339() != row.4
+        || deadline.to_rfc3339() != row.5
+        || bootstrap.maximum_driver_steps != row.6
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "bootstrap custody columns disagree with exact record".to_owned(),
+        ));
+    }
+    let (packet_bytes, admission_bytes, profile_bytes): (Vec<u8>, Vec<u8>, Vec<u8>) = connection
+        .query_row(
+            "SELECT packet_bytes, admission_bytes, profile_bytes FROM runs WHERE run_id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    let packet = NightshiftPacketV1::from_slice(&packet_bytes)
+        .map_err(|error| ForemanError::Packet(error.to_string()))?;
+    packet
+        .validate_integrity()
+        .map_err(|error| ForemanError::Packet(error.to_string()))?;
+    let admission = ForemanAdmissionV1::from_slice(&admission_bytes)?;
+    admission.validate()?;
+    let profile = ExecutionProfileV2::from_slice(&profile_bytes)?;
+    profile.validate()?;
+    validate_capacity_history_size(
+        connection,
+        run_id,
+        profile.maximum_event_bytes,
+        packet.work_items.len().saturating_add(1),
+    )?;
+    validate_execution_availability_history_size(
+        connection,
+        run_id,
+        profile.maximum_event_bytes,
+        false,
+    )?;
+    let mut statement = connection.prepare(
+        "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
+                raw_bytes, raw_digest
+         FROM events WHERE run_id = ?1 ORDER BY sequence ASC",
+    )?;
+    let events = statement
+        .query_map([run_id], |row| {
+            Ok(ReadOnlyEventRowV1 {
+                sequence: row.get(0)?,
+                event_id: row.get(1)?,
+                work_item_id: row.get(2)?,
+                attempt_id: row.get(3)?,
+                kind: row.get(4)?,
+                recorded_at: row.get(5)?,
+                raw_bytes: row.get(6)?,
+                raw_digest: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let capacity_history =
+        validate_capacity_history(connection, &events, &packet, &admission, &profile)?;
+    let capacity_requirement = capacity_history.requirement.ok_or_else(|| {
+        ForemanError::ReadOnlyStore("bootstrap capacity requirement is absent".to_owned())
+    })?;
+    let availability_history = validate_execution_availability_history_rows(
+        connection, &events, &packet, &admission, &profile,
+    )?
+    .ok_or_else(|| {
+        ForemanError::ReadOnlyStore("bootstrap availability configuration is absent".to_owned())
+    })?;
+    bootstrap.validate_graph(
+        &packet_bytes,
+        &admission_bytes,
+        &profile_bytes,
+        &capacity_requirement.requirement_bytes,
+        &row.3,
+        &availability_history.requirement_bytes,
+        &availability_history.policy_bytes,
+    )?;
+    let mut steps = Vec::new();
+    let mut step_bytes = Vec::new();
+    let mut statement = connection.prepare(
+        "SELECT step_ordinal, step_digest, scheduler_process_occurrence_id,
+                recorded_at, raw_bytes
+         FROM self_hosted_driver_steps WHERE run_id = ?1 ORDER BY step_ordinal",
+    )?;
+    let rows = statement.query_map([run_id], |row| {
+        Ok((
+            row.get::<_, u32>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Vec<u8>>(4)?,
+        ))
+    })?;
+    for (index, candidate) in rows.enumerate() {
+        let candidate = candidate?;
+        let step = SelfHostedForemanDriverStepV1::from_slice(&candidate.4)?;
+        let expected_ordinal = u32::try_from(index + 1)
+            .map_err(|_| ForemanError::ReadOnlyStore("driver ordinal overflow".to_owned()))?;
+        if step.run_id != run_id
+            || step.bootstrap_digest != bootstrap.bootstrap_digest
+            || step.bootstrap_occurrence_id != bootstrap.bootstrap_occurrence_id
+            || step.step_ordinal != expected_ordinal
+            || step.step_ordinal != candidate.0
+            || step.step_digest != candidate.1
+            || step.scheduler_process_occurrence_id != candidate.2
+            || step.recorded_at.to_rfc3339() != candidate.3
+            || step.recorded_at < bootstrap.evaluated_at
+            || step.step_ordinal > bootstrap.maximum_driver_steps
+        {
+            return Err(ForemanError::ReadOnlyStore(
+                "driver step columns or bootstrap binding disagree".to_owned(),
+            ));
+        }
+        steps.push(step);
+        step_bytes.push(candidate.4);
+    }
+    Ok(ReadOnlySelfHostedBootstrapV1 {
+        bootstrap,
+        bootstrap_bytes: row.2,
+        capacity_policy_bytes: row.3,
+        steps,
+        step_bytes,
+    })
+}
+
 fn validate_read_only_event_row(
     row: &ReadOnlyEventRowV1,
     expected_run_id: &str,
@@ -3390,6 +3901,37 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
             raw_digest TEXT NOT NULL,
             raw_bytes BLOB NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS self_hosted_bootstraps (
+            run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+            bootstrap_digest TEXT NOT NULL UNIQUE,
+            bootstrap_occurrence_id TEXT NOT NULL UNIQUE,
+            bootstrap_bytes BLOB NOT NULL,
+            capacity_policy_bytes BLOB NOT NULL,
+            admitted_at TEXT NOT NULL,
+            deadline_at TEXT NOT NULL,
+            maximum_driver_steps INTEGER NOT NULL CHECK (maximum_driver_steps > 0)
+        );
+        CREATE TABLE IF NOT EXISTS self_hosted_driver_steps (
+            run_id TEXT NOT NULL REFERENCES self_hosted_bootstraps(run_id),
+            step_ordinal INTEGER NOT NULL CHECK (step_ordinal > 0),
+            step_digest TEXT NOT NULL UNIQUE,
+            scheduler_process_occurrence_id TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            raw_bytes BLOB NOT NULL,
+            PRIMARY KEY (run_id, step_ordinal)
+        );
+        CREATE TRIGGER IF NOT EXISTS self_hosted_bootstraps_no_update
+            BEFORE UPDATE ON self_hosted_bootstraps
+            BEGIN SELECT RAISE(ABORT, 'self-hosted bootstrap custody is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS self_hosted_bootstraps_no_delete
+            BEFORE DELETE ON self_hosted_bootstraps
+            BEGIN SELECT RAISE(ABORT, 'self-hosted bootstrap custody is append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS self_hosted_driver_steps_no_update
+            BEFORE UPDATE ON self_hosted_driver_steps
+            BEGIN SELECT RAISE(ABORT, 'self-hosted driver steps are append-only'); END;
+        CREATE TRIGGER IF NOT EXISTS self_hosted_driver_steps_no_delete
+            BEFORE DELETE ON self_hosted_driver_steps
+            BEGIN SELECT RAISE(ABORT, 'self-hosted driver steps are append-only'); END;
         CREATE TRIGGER IF NOT EXISTS runs_no_update BEFORE UPDATE ON runs
             BEGIN SELECT RAISE(ABORT, 'runs are append-only'); END;
         CREATE TRIGGER IF NOT EXISTS runs_no_delete BEFORE DELETE ON runs

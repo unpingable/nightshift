@@ -167,5 +167,70 @@ class SelfHostedBootstrapSchemaTests(unittest.TestCase):
         self.assert_refused(changed)
 
 
+def driver_step_specimen():
+    return {
+        "schema": "nightshift.self-hosted-foreman-driver-step/v1",
+        "step_digest": D,
+        "bootstrap_digest": D,
+        "bootstrap_occurrence_id": "bootstrap-second-watch-1",
+        "run_id": "second-watch-run",
+        "step_ordinal": 1,
+        "scheduler_process_occurrence_id": "scheduler-process-1",
+        "observed_projection_digest": D,
+        "disposition": "READY_WORK_PRESENT",
+        "recorded_at": "2026-08-31T12:00:02Z",
+        "worker_dispatch_authorized": False,
+        "approval_response_authorized": False,
+        "protected_effect_authorized": False,
+        "semantic_retry_authorized": False,
+        "aggregate_result_created": False,
+    }
+
+
+class SelfHostedDriverStepSchemaTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = (
+            ROOT
+            / "schemas"
+            / "nightshift.self-hosted-foreman-driver-step.v1.schema.json"
+        )
+        cls.schema = json.loads(path.read_bytes())
+        Draft202012Validator.check_schema(cls.schema)
+        cls.validator = Draft202012Validator(
+            cls.schema, format_checker=FormatChecker()
+        )
+
+    def assert_refused(self, value):
+        with self.assertRaises(ValidationError):
+            self.validator.validate(value)
+
+    def test_exact_closed_non_authorizing_step_validates(self):
+        self.validator.validate(driver_step_specimen())
+        changed = driver_step_specimen()
+        changed["dispatch"] = True
+        self.assert_refused(changed)
+        for field in (
+            "worker_dispatch_authorized",
+            "approval_response_authorized",
+            "protected_effect_authorized",
+            "semantic_retry_authorized",
+            "aggregate_result_created",
+        ):
+            changed = driver_step_specimen()
+            changed[field] = True
+            self.assert_refused(changed)
+
+    def test_digest_time_ordinal_and_disposition_bounds_refuse(self):
+        for field, value in (
+            ("step_digest", "sha256:" + "A" * 64),
+            ("recorded_at", "2026-08-31T08:00:02-04:00"),
+            ("step_ordinal", 0),
+            ("step_ordinal", 1000001),
+            ("disposition", "RETRY"),
+        ):
+            changed = driver_step_specimen()
+            changed[field] = value
+            self.assert_refused(changed)
 if __name__ == "__main__":
     unittest.main()

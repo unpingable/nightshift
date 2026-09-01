@@ -3,12 +3,15 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_file="${NIGHTSHIFT_SECOND_WATCH_BOOTSTRAP_SOURCE:-$root/crates/nightshift-foreman/src/bootstrap.rs}"
+store_file="$root/crates/nightshift-foreman/src/store.rs"
+cli_file="$root/crates/nightshift-foreman/src/bin/nightshift_foreman.rs"
+driver_schema="$root/schemas/nightshift.self-hosted-foreman-driver-step.v1.schema.json"
 schema="$root/schemas/nightshift.self-hosted-foreman-bootstrap.v1.schema.json"
 architecture="$root/docs/architecture/SELF_HOSTED_FOREMAN_BOOTSTRAP_V1.md"
 topology="$root/qualification/nightshift-self-hosted-foreman-bootstrap-v1-20260831/PRE-MUTATION-TOPOLOGY.md"
 schema_test="$root/tests/test_self_hosted_bootstrap_schema.py"
 
-for required in "$source_file" "$schema" "$architecture" "$topology" "$schema_test"; do
+for required in "$source_file" "$store_file" "$cli_file" "$schema" "$driver_schema" "$architecture" "$topology" "$schema_test"; do
   if [[ ! -f "$required" ]]; then
     echo "SECOND-WATCH boundary: missing contract artifact"
     exit 1
@@ -48,15 +51,50 @@ for needle in "${required_source[@]}"; do
   fi
 done
 
-if rg -q 'std::process|Command::new|TcpListener|TcpStream|reqwest|hyper::|tokio::' "$source_file"; then
-  echo "SECOND-WATCH boundary: contract module gained process, network, or listener machinery"
+required_store=(
+  'pub fn admit_self_hosted_at_path'
+  'pub fn self_hosted_bootstrap'
+  'pub fn advance_self_hosted_driver'
+  'CREATE TABLE IF NOT EXISTS self_hosted_bootstraps'
+  'CREATE TABLE IF NOT EXISTS self_hosted_driver_steps'
+  'self_hosted_bootstraps_no_update'
+  'self_hosted_bootstraps_no_delete'
+  'self_hosted_driver_steps_no_update'
+  'self_hosted_driver_steps_no_delete'
+  'worker_dispatch_authorized: false'
+  'approval_response_authorized: false'
+  'protected_effect_authorized: false'
+  'semantic_retry_authorized: false'
+  'aggregate_result_created: false'
+)
+
+for needle in "${required_store[@]}"; do
+  if ! rg -Fq -- "$needle" "$store_file"; then
+    echo "SECOND-WATCH boundary: missing append-only runtime law $needle"
+    exit 1
+  fi
+done
+
+required_cli=(
+  'BootstrapAdmit'
+  'BootstrapStep'
+  'BootstrapStatus'
+  'O_NOFOLLOW'
+  'read_bounded_existing'
+)
+
+for needle in "${required_cli[@]}"; do
+  if ! rg -Fq -- "$needle" "$cli_file"; then
+    echo "SECOND-WATCH boundary: missing bounded CLI law $needle"
+    exit 1
+  fi
+done
+
+if rg -q 'std::process|Command::new|TcpListener|TcpStream|reqwest|hyper::|tokio::' "$source_file" "$store_file" "$cli_file"; then
+  echo "SECOND-WATCH boundary: runtime stage gained process, network, or listener machinery"
   exit 1
 fi
 
-if rg -q 'SelfHostedForemanBootstrap|SELF_HOSTED_FOREMAN_BOOTSTRAP' "$root/crates/nightshift-foreman/src/store.rs" "$root/crates/nightshift-foreman/src/bin/nightshift_foreman.rs"; then
-  echo "SECOND-WATCH boundary: runtime/store activated before contract audit"
-  exit 1
-fi
 
 if [[ "${1:-}" == "--self-test-inject" ]]; then
   fixture="$(mktemp -d)"
@@ -88,4 +126,4 @@ if [[ "${1:-}" == "--self-test-inject" ]]; then
 fi
 
 python3 "$schema_test"
-echo "SECOND-WATCH boundary: contract, schema, and held-runtime checks passed"
+echo "SECOND-WATCH boundary: contract, schema, append-only store, and bounded CLI checks passed"
