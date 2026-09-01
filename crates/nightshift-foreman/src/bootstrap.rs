@@ -95,7 +95,14 @@ impl SelfHostedForemanBootstrapV1 {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|error| ContractError::Json(error.to_string()))?;
         canonical_timestamp(&value, "evaluated_at")?;
-        serde_json::from_value(value).map_err(|error| ContractError::Json(error.to_string()))
+        let record: Self = serde_json::from_value(value)
+            .map_err(|error| ContractError::Json(error.to_string()))?;
+        if serde_jcs::to_vec(&record).map_err(|error| ContractError::Json(error.to_string()))?
+            != bytes
+        {
+            return Err(ContractError::InvalidField("bootstrap canonical bytes"));
+        }
+        Ok(record)
     }
 
     pub fn seal(&mut self) -> Result<(), ContractError> {
@@ -245,24 +252,47 @@ impl SelfHostedForemanBootstrapV1 {
         packet
             .validate_at(self.evaluated_at)
             .map_err(|_| ContractError::InvalidField("bootstrap packet"))?;
+        canonical_bytes("bootstrap packet bytes", &packet, packet_bytes)?;
         let admission = ForemanAdmissionV1::from_slice(admission_bytes)?;
         admission.validate_at(self.evaluated_at)?;
+        canonical_bytes("bootstrap admission bytes", &admission, admission_bytes)?;
         let profile = ExecutionProfileV2::from_slice(profile_bytes)?;
         profile.validate()?;
+        canonical_bytes("bootstrap profile bytes", &profile, profile_bytes)?;
         let capacity_requirement =
             ForemanCapacityRequirementV1::from_slice(capacity_requirement_bytes)?;
         capacity_requirement.validate()?;
+        canonical_bytes(
+            "bootstrap capacity requirement bytes",
+            &capacity_requirement,
+            capacity_requirement_bytes,
+        )?;
         let capacity_policy: CapacityPolicyV1 = serde_json::from_slice(capacity_policy_bytes)
             .map_err(|error| ContractError::Json(error.to_string()))?;
         capacity_policy
             .validate()
             .map_err(|_| ContractError::InvalidField("bootstrap capacity policy"))?;
+        canonical_bytes(
+            "bootstrap capacity policy bytes",
+            &capacity_policy,
+            capacity_policy_bytes,
+        )?;
         let availability_requirement =
             ForemanExecutionAvailabilityRequirementV1::from_slice(availability_requirement_bytes)?;
         availability_requirement.validate()?;
+        canonical_bytes(
+            "bootstrap availability requirement bytes",
+            &availability_requirement,
+            availability_requirement_bytes,
+        )?;
         let availability_policy =
             ExecutionAvailabilityPolicyV1::from_slice(availability_policy_bytes)?;
         availability_policy.validate()?;
+        canonical_bytes(
+            "bootstrap availability policy bytes",
+            &availability_policy,
+            availability_policy_bytes,
+        )?;
 
         if self.packet_id != packet.packet_id
             || self.packet_digest != packet.packet_digest
@@ -293,6 +323,7 @@ impl SelfHostedForemanBootstrapV1 {
             || availability_requirement.run_id != self.run_id
             || availability_requirement.policy_id != availability_policy.policy_id
             || availability_requirement.policy_digest != availability_policy.policy_digest
+            || availability_requirement.admitted_at != admission.admitted_at
         {
             return Err(ContractError::InvalidField("bootstrap mechanism graph"));
         }
@@ -307,6 +338,21 @@ impl SelfHostedForemanBootstrapV1 {
             .keys()
             .map(String::as_str)
             .collect();
+        let profile_model_classes: BTreeSet<&str> = profile
+            .work_items
+            .values()
+            .map(|work| work.provider_model_class.as_str())
+            .collect();
+        let admitted_model_classes: BTreeSet<&str> = admission
+            .allowed_provider_model_classes
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let capacity_model_classes: BTreeSet<&str> = capacity_requirement
+            .model_cost_classes
+            .keys()
+            .map(String::as_str)
+            .collect();
         let runnable = packet
             .work_items
             .iter()
@@ -316,6 +362,8 @@ impl SelfHostedForemanBootstrapV1 {
             || runnable != usize::from(self.initially_runnable_lane_count)
             || packet_items != profile_items
             || packet_items != availability_items
+            || profile_model_classes != admitted_model_classes
+            || profile_model_classes != capacity_model_classes
             || !packet_items.contains(self.presentation_only_question_work_item_id.as_str())
             || packet
                 .work_items
@@ -354,13 +402,27 @@ impl SelfHostedForemanBootstrapV1 {
                     .contains_key(&work.provider_model_class)
                 || availability_requirement.work_item_model_selections[&item.id]
                     .iter()
-                    .any(|selection| selection.model_class != work.provider_model_class)
+                    .any(|selection| {
+                        selection.provider_id != capacity_requirement.provider_id
+                            || selection.model_class != work.provider_model_class
+                    })
             {
                 return Err(ContractError::InvalidField("bootstrap model graph"));
             }
         }
         Ok(())
     }
+}
+
+fn canonical_bytes<T: Serialize>(
+    field: &'static str,
+    record: &T,
+    raw: &[u8],
+) -> Result<(), ContractError> {
+    if serde_jcs::to_vec(record).map_err(|error| ContractError::Json(error.to_string()))? != raw {
+        return Err(ContractError::InvalidField(field));
+    }
+    Ok(())
 }
 
 fn digest_without<T: Serialize>(

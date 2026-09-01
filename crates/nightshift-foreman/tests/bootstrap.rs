@@ -450,6 +450,41 @@ fn graph_substitution_and_topology_cases_fail_closed() {
     recursive.packet.work_items[0].campaign.canonical_slug = SECOND_WATCH_CANONICAL_SLUG.to_owned();
     recursive.packet.seal().unwrap();
     assert!(recursive.validate().is_err());
+
+    let mut wrong_provider = fixture();
+    for selections in wrong_provider
+        .availability_requirement
+        .work_item_model_selections
+        .values_mut()
+    {
+        for selection in selections {
+            selection.provider_id = "substituted-provider".to_owned();
+        }
+    }
+    wrong_provider.availability_requirement.seal().unwrap();
+    wrong_provider
+        .plan
+        .execution_availability_requirement_digest = wrong_provider
+        .availability_requirement
+        .requirement_digest
+        .clone();
+    wrong_provider.plan.seal().unwrap();
+    assert!(wrong_provider.validate().is_err());
+
+    let mut wrong_admission_time = fixture();
+    wrong_admission_time.availability_requirement.admitted_at = time(2);
+    wrong_admission_time
+        .availability_requirement
+        .seal()
+        .unwrap();
+    wrong_admission_time
+        .plan
+        .execution_availability_requirement_digest = wrong_admission_time
+        .availability_requirement
+        .requirement_digest
+        .clone();
+    wrong_admission_time.plan.seal().unwrap();
+    assert!(wrong_admission_time.validate().is_err());
 }
 
 #[test]
@@ -461,4 +496,22 @@ fn noncanonical_time_and_unknown_fields_refuse() {
     json = serde_json::to_value(&value.plan).unwrap();
     json["approve"] = serde_json::json!(true);
     assert!(SelfHostedForemanBootstrapV1::from_slice(&serde_json::to_vec(&json).unwrap()).is_err());
+
+    let mut noncanonical_plan = canonical(&value.plan);
+    noncanonical_plan.push(b'\n');
+    assert!(SelfHostedForemanBootstrapV1::from_slice(&noncanonical_plan).is_err());
+
+    let noncanonical_packet = serde_json::to_vec_pretty(&value.packet).unwrap();
+    assert!(value
+        .plan
+        .validate_graph(
+            &noncanonical_packet,
+            &canonical(&value.admission),
+            &canonical(&value.profile),
+            &canonical(&value.capacity_requirement),
+            &canonical(&value.capacity_policy),
+            &canonical(&value.availability_requirement),
+            &canonical(&value.availability_policy),
+        )
+        .is_err());
 }
