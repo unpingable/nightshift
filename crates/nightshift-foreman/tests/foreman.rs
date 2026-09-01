@@ -3989,6 +3989,42 @@ fn holding_setup_with_policy(
 }
 
 fn holding_snapshot(name: &str) -> Value {
+    if name == "waiting" {
+        let mut snapshot: Value = serde_json::from_slice(include_bytes!(
+            "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-approval-interrupted.snapshot.v1.json"
+        ))
+        .unwrap();
+        let execution = snapshot["provider_execution_identity"].clone();
+        let mut wire = serde_json::to_vec(&json!({
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-holding-1",
+                "turnId": "turn-holding-1"
+            }
+        }))
+        .unwrap();
+        wire.push(b'\n');
+        let approval = &mut snapshot["records"][3];
+        approval["kind"] = json!("WAITING_APPROVAL");
+        approval["method"] = json!("item/commandExecution/requestApproval");
+        approval["raw"] = json!({
+            "representation": "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+            "byte_length": wire.len(),
+            "sha256": format!("sha256:{:x}", Sha256::digest(&wire)),
+            "encoding": "hex",
+            "bytes_hex": hex::encode(&wire),
+        });
+        approval["normalized"] = json!({
+            "approval_response_sent": false,
+            "protected_effect_absent": true,
+            "provider_execution_identity": execution,
+        });
+        snapshot["records"].as_array_mut().unwrap().truncate(4);
+        snapshot["acquisition_cut"] = Value::Null;
+        snapshot["admission_disposition"] = json!("EXECUTION_ADMITTED");
+        snapshot["mechanism_state"] = json!("WAITING_APPROVAL");
+        return snapshot;
+    }
     let bytes: &[u8] = match name {
         "parked" => include_bytes!(
             "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-parked-not-admitted.snapshot.v1.json"
@@ -5252,7 +5288,7 @@ fn holding_failed_initial_dispatch_rolls_back_attempt_and_lock_then_restart_reco
 
 #[test]
 fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch() {
-    let (_directory, path, store, packet, _admission, _profile, policy, requirement) =
+    let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
         holding_setup();
     let (attempt, opened) = holding_open_initial(&store);
     let approval = holding_record(
@@ -5260,13 +5296,13 @@ fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch()
         &requirement,
         &policy,
         &opened,
-        "approval",
+        "waiting",
         holding_time("2026-08-31T12:01:02Z"),
         None,
     );
     assert_eq!(
         approval.mechanism_state,
-        ProviderMechanismStateV1::PostAdmissionInterrupted
+        ProviderMechanismStateV1::WaitingApproval
     );
     assert!(!approval.approval_response_sent);
     assert!(approval.protected_effect_absent);
@@ -5283,8 +5319,8 @@ fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch()
             holding_time("2026-08-31T12:01:20Z"),
         )
         .is_err());
-    let execution = approval.provider_execution.clone().unwrap();
-    store
+    let execution = approval.provider_execution.as_ref().unwrap();
+    assert!(store
         .resume_provider_execution(
             "run-holding-store",
             "work-a",
@@ -5292,35 +5328,10 @@ fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch()
             "resume-approval",
             &approval.disposition_digest,
             "adapter-process-resume-approval",
-            &execution,
+            execution,
             holding_time("2026-08-31T12:01:20Z"),
         )
-        .unwrap();
-    let projection = store.projection("run-holding-store").unwrap();
-    assert_eq!(
-        projection
-            .work_items
-            .iter()
-            .find(|item| item.work_item_id == "work-a")
-            .unwrap()
-            .scheduler_state,
-        SchedulerStateV1::Dispatching
-    );
-    let mut waiting = holding_worker_started_event(
-        &packet,
-        &attempt,
-        "holding-waiting-approval-after-exact-resume",
-    );
-    waiting.kind = AdapterEventKindV1::WaitingApproval;
-    waiting.provider_identity = Some(execution.provider_id.clone());
-    waiting.model_identity = Some(execution.model_id.clone());
-    waiting.session_identity = Some(execution.app_server_session_identity.clone());
-    waiting.thread_identity = Some(execution.thread_id.clone());
-    waiting.turn_identity = Some(execution.turn_id.clone());
-    waiting.seal().unwrap();
-    store
-        .accept_adapter_event(&holding_canonical(&waiting))
-        .unwrap();
+        .is_err());
     let projection = store.projection("run-holding-store").unwrap();
     assert_eq!(
         projection
@@ -6012,6 +6023,107 @@ fn holding_worker_started_event(
     event
 }
 
+fn holding_adapter_event_for_kind(
+    packet: &NightshiftPacketV1,
+    attempt: &WorkerStartRequestV2,
+    event_id: &str,
+    kind: AdapterEventKindV1,
+) -> AdapterEventV1 {
+    let is_question = matches!(&kind, AdapterEventKindV1::HumanQuestion);
+    let mut event = holding_worker_started_event(packet, attempt, event_id);
+    event.kind = kind;
+    event.message = Some("qualification event must not override owner state".to_owned());
+    event.human_question = is_question.then(|| HumanQuestionV1 {
+        question_id: format!("question-{event_id}"),
+        question: "Which exact owner disposition permits this transition?".to_owned(),
+        exhausted_evidence: "No such owner disposition is retained.".to_owned(),
+        safe_default: "Do not mutate the HOLDING lane.".to_owned(),
+        consequences: "The exact provider mechanism state is preserved.".to_owned(),
+        resume_point: "Resume only through an exact owner transition.".to_owned(),
+    });
+    event.seal().unwrap();
+    event
+}
+
+fn holding_event_count(path: &Path) -> u64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn holding_every_adapter_event_kind_refuses_before_and_against_owner_state_without_mutation() {
+    for stage in [
+        "before-disposition",
+        "waiting-approval",
+        "provider-completed",
+    ] {
+        let (_directory, path, store, packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        match stage {
+            "before-disposition" => {}
+            "waiting-approval" => {
+                holding_record(
+                    &store,
+                    &requirement,
+                    &policy,
+                    &opened,
+                    "waiting",
+                    holding_time("2026-08-31T12:01:02Z"),
+                    None,
+                );
+            }
+            "provider-completed" => {
+                holding_record(
+                    &store,
+                    &requirement,
+                    &policy,
+                    &opened,
+                    "completed",
+                    holding_time("2026-08-31T12:01:02Z"),
+                    None,
+                );
+            }
+            _ => unreachable!(),
+        }
+        let expected_projection = store.projection("run-holding-store").unwrap();
+        let expected_event_count = holding_event_count(&path);
+        for (ordinal, kind) in [
+            AdapterEventKindV1::AdapterAccepted,
+            AdapterEventKindV1::ProviderIdentity,
+            AdapterEventKindV1::WorkerStarted,
+            AdapterEventKindV1::Checkpoint,
+            AdapterEventKindV1::WaitingApproval,
+            AdapterEventKindV1::HumanQuestion,
+            AdapterEventKindV1::ProviderCompletionObservation,
+            AdapterEventKindV1::AdapterDiagnostic,
+            AdapterEventKindV1::MechanismIndeterminate,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let event = holding_adapter_event_for_kind(
+                &packet,
+                &attempt,
+                &format!("holding-{stage}-{ordinal}"),
+                kind,
+            );
+            assert!(matches!(
+                store.accept_adapter_event(&holding_canonical(&event)),
+                Err(ForemanError::Transition(message))
+                    if message.contains("only through exact owner dispositions")
+            ));
+            assert_eq!(holding_event_count(&path), expected_event_count);
+            assert_eq!(
+                store.projection("run-holding-store").unwrap(),
+                expected_projection
+            );
+        }
+    }
+}
+
 fn holding_terminal_receipt(
     packet: &NightshiftPacketV1,
     attempt: &WorkerStartRequestV2,
@@ -6209,9 +6321,11 @@ fn holding_exact_completion_recovers_after_capacity_and_refuses_model_substituti
     worker_started.thread_identity = Some(execution.thread_id.clone());
     worker_started.turn_identity = Some(execution.turn_id.clone());
     worker_started.seal().unwrap();
-    store
+    let before_event = store.projection("run-holding-store").unwrap();
+    assert!(store
         .accept_adapter_event(&holding_canonical(&worker_started))
-        .unwrap();
+        .is_err());
+    assert_eq!(store.projection("run-holding-store").unwrap(), before_event);
     let receipt = holding_terminal_receipt(&packet, &attempt, Some(execution));
     let mut substituted = receipt.clone();
     substituted.model_identity = "gpt-5.6-substituted".to_owned();

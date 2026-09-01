@@ -412,6 +412,15 @@ resume and resource-transition ordering, exact V3 graph binding, and the accepte
 graph for every retained occurrence. Query-only snapshots expose these exact
 facts but perform no scheduling transition.
 
+For an availability-required attempt, the generic worker-adapter event surface
+cannot change scheduler state. Every `AdapterEventV1` kind is refused before a
+provider disposition and after one is retained. `WAITING_APPROVAL` is accepted
+only from the exact owner disposition; post-admission continuation uses the
+exact same-execution resume transition, and `PROVIDER_COMPLETED` can close only
+through the exact identity-bound terminal receipt. The legacy generic event
+surface remains available only to runs that did not admit the HOLDING
+requirement.
+
 ## Indeterminate and reconciliation law
 
 Indeterminate admission is monotonic until exact reconciliation:

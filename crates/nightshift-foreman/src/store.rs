@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::{
     contract::{ContractError, TeardownDeclarationV1},
     scheduler::{AcceptedOutcomeV1, ReplayEvent, ReplayKind},
-    validate_execution_availability_graph, AdapterEventKindV1, AdapterEventV1, CapacityCostClassV1,
+    validate_execution_availability_graph, AdapterEventV1, CapacityCostClassV1,
     DeferredProviderDispatchV1, ExecutionAvailabilityObservationV1, ExecutionAvailabilityPolicyV1,
     ExecutionProfileV2, ForemanAdmissionV1, ForemanCapacityAdmissionV1,
     ForemanCapacityRequirementV1, ForemanExecutionAvailabilityRequirementV1, HumanQuestionV1,
@@ -5397,73 +5397,16 @@ fn validate_holding_adapter_event_transition(
     connection: &Connection,
     event: &AdapterEventV1,
 ) -> Result<(), ForemanError> {
-    let Some(state) = current_holding_attempt_state(
+    if current_holding_attempt_state(
         connection,
         &event.run_id,
         &event.work_item_id,
         &event.attempt_id,
     )?
-    else {
-        return Ok(());
-    };
-    let Some(disposition) = state.disposition else {
-        if matches!(event.kind, AdapterEventKindV1::WorkerStarted) {
-            return Err(ForemanError::Transition(
-                "worker-started requires exact admitted provider execution".to_owned(),
-            ));
-        }
-        return Ok(());
-    };
-    if matches!(
-        disposition.mechanism_state,
-        ProviderMechanismStateV1::ParkedNotAdmitted
-            | ProviderMechanismStateV1::AdmissionIndeterminate
-            | ProviderMechanismStateV1::WaitingApproval
-    ) || (disposition.mechanism_state == ProviderMechanismStateV1::PostAdmissionInterrupted
-        && !state.resumed_current_disposition)
+    .is_some()
     {
         return Err(ForemanError::Transition(
-            "adapter event is not admissible in the exact HOLDING state".to_owned(),
-        ));
-    }
-    if let Some(execution) = &disposition.provider_execution {
-        for (field, observed, expected) in [
-            (
-                "provider_identity",
-                event.provider_identity.as_deref(),
-                execution.provider_id.as_str(),
-            ),
-            (
-                "model_identity",
-                event.model_identity.as_deref(),
-                execution.model_id.as_str(),
-            ),
-            (
-                "session_identity",
-                event.session_identity.as_deref(),
-                execution.app_server_session_identity.as_str(),
-            ),
-            (
-                "thread_identity",
-                event.thread_identity.as_deref(),
-                execution.thread_id.as_str(),
-            ),
-            (
-                "turn_identity",
-                event.turn_identity.as_deref(),
-                execution.turn_id.as_str(),
-            ),
-        ] {
-            if observed.is_some_and(|value| value != expected)
-                || (matches!(event.kind, AdapterEventKindV1::WorkerStarted)
-                    && observed != Some(expected))
-            {
-                return Err(ForemanError::IdentityMismatch(field));
-            }
-        }
-    } else if matches!(event.kind, AdapterEventKindV1::WorkerStarted) {
-        return Err(ForemanError::Transition(
-            "worker-started requires exact admitted provider execution".to_owned(),
+            "HOLDING mechanism state is accepted only through exact owner dispositions".to_owned(),
         ));
     }
     Ok(())
