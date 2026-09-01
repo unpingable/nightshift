@@ -21,15 +21,20 @@ use nightshift_foreman::{
     WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
 };
 use nightshift_foreman::{
-    DeferredProviderDispatchV1, DeferredWakeBasisV1, ExactMapperSnapshotV1,
+    DeferredProviderDispatchV1, DeferredWakeBasisV1, DeterministicProviderAdmissionEvidenceV1,
+    DeterministicProviderAdmissionOutcomeV1, ExactAvailabilityEvidenceV1, ExactMapperSnapshotV1,
     ExecutionAvailabilityObservationV1, ExecutionAvailabilityPolicyV1,
     ExecutionAvailabilityStateV1, ForemanExecutionAvailabilityRequirementV1,
     ParkedResourceLockPolicyV1, ProviderAdmissionDispositionKindV1, ProviderAdmissionDispositionV1,
     ProviderAdmissionOwnerPinsV1, ProviderDispatchOccurrenceV1, ProviderDispositionEvidenceV1,
     ProviderExecutionIdentityV1, ProviderMechanismStateV1, ProviderModelSelectionV1,
     RunMechanismRequirementsV1, WorkerStartRequestV3, DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1,
+    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
     EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1, EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1,
-    FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1,
+    FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, HOLDING_QUALIFICATION_EXECUTABLE_ID,
+    HOLDING_QUALIFICATION_EXECUTABLE_SHA256, HOLDING_QUALIFICATION_PRODUCER_ID,
+    HOLDING_QUALIFICATION_PRODUCER_VERSION, PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1,
+    PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2,
 };
 use nightshift_provider_capacity::{
     decide_capacity, AdmissionDisposition as CapacityAdmissionDisposition, CapacityDecisionV1,
@@ -1636,6 +1641,14 @@ fn checked_in_contract_schemas_are_closed_json_documents() {
         include_bytes!("../../../schemas/nightshift.foreman-execution-profile.v2.schema.json")
             .as_slice(),
         include_bytes!("../../../schemas/nightshift.worker-adapter.v2.schema.json").as_slice(),
+        include_bytes!(
+            "../../../schemas/nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../schemas/nightshift.provider-admission-disposition.v2.schema.json"
+        )
+        .as_slice(),
     ] {
         let schema: Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
@@ -4254,6 +4267,251 @@ fn holding_record(
         .unwrap()
 }
 
+fn holding_qualification_records(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    opened: &nightshift_foreman::OpenedProviderDispatchV1,
+    outcome: DeterministicProviderAdmissionOutcomeV1,
+    response_created: bool,
+) -> (
+    ProviderAdmissionDispositionV1,
+    ExecutionAvailabilityObservationV1,
+) {
+    let observed_at = holding_time("2026-08-31T12:01:01Z");
+    let received_at = holding_time("2026-08-31T12:01:02Z");
+    let retry_after = matches!(
+        outcome,
+        DeterministicProviderAdmissionOutcomeV1::RateLimited
+            | DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable
+    )
+    .then(|| holding_time("2026-08-31T12:01:07Z"));
+    let non_admission_proven = matches!(
+        outcome,
+        DeterministicProviderAdmissionOutcomeV1::RateLimited
+            | DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable
+            | DeterministicProviderAdmissionOutcomeV1::AuthenticationRefused
+    );
+    let raw = holding_canonical(&json!({
+        "outcome": outcome,
+        "response_created": response_created,
+        "non_admission_proven": non_admission_proven,
+        "retry_after": retry_after,
+        "observed_at": observed_at,
+    }));
+    let mut evidence = DeterministicProviderAdmissionEvidenceV1 {
+        schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        evidence_digest: holding_placeholder(),
+        producer_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        producer_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        executable_id: HOLDING_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+        executable_sha256: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_request_occurrence_id: "qualification-request-store-1".to_owned(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        outcome,
+        response_created,
+        non_admission_proven,
+        retry_after,
+        observed_at,
+        received_at,
+        raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
+            "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+            &raw,
+        )
+        .unwrap(),
+        authority_effect: "QUALIFICATION_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    evidence.seal().unwrap();
+    let evidence_bytes = holding_canonical(&evidence);
+    let (kind, mechanism, state) = match outcome {
+        DeterministicProviderAdmissionOutcomeV1::RateLimited => (
+            ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+            ExecutionAvailabilityStateV1::RateLimited,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable => (
+            ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+            ExecutionAvailabilityStateV1::ProviderUnavailable,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::AuthenticationRefused => (
+            ProviderAdmissionDispositionKindV1::AuthenticationRefused,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            ExecutionAvailabilityStateV1::AuthenticationRefused,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::TransportError => (
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            ExecutionAvailabilityStateV1::TransportError,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::ProtocolError => (
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            ExecutionAvailabilityStateV1::ProtocolError,
+        ),
+    };
+    let mut disposition = ProviderAdmissionDispositionV1 {
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2.to_owned(),
+        disposition_digest: holding_placeholder(),
+        dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: requirement.policy_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: requirement.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        provider_request_occurrence_id: evidence.provider_request_occurrence_id.clone(),
+        adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
+        app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+        thread_id: "qualification-thread-store-1".to_owned(),
+        turn_id: "qualification-turn-store-1".to_owned(),
+        disposition: kind,
+        mechanism_state: mechanism,
+        received_at,
+        response_created,
+        will_retry: false,
+        acquisition_complete: true,
+        provider_retry_after: retry_after,
+        provider_execution: None,
+        mapper_snapshot_schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        mapper_snapshot_digest: evidence.evidence_digest.clone(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_qualification_evidence_bytes(&evidence_bytes)
+            .unwrap(),
+        approval_response_sent: false,
+        protected_effect_absent: true,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    disposition.seal().unwrap();
+    let mut observation = ExecutionAvailabilityObservationV1 {
+        schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        observation_digest: holding_placeholder(),
+        provider_id: disposition.provider_id.clone(),
+        model_id: disposition.model_id.clone(),
+        model_class: opened.dispatch.selection.model_class.clone(),
+        observed_at,
+        received_at,
+        expires_at: received_at + Duration::seconds(60),
+        state,
+        source_identity: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        source_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        provider_retry_after: retry_after,
+        exact_evidence: Some(evidence.raw_evidence),
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    observation.seal().unwrap();
+    (disposition, observation)
+}
+
+#[test]
+fn holding_qualification_owner_uses_common_store_transition_for_closed_outcomes() {
+    for (outcome, response_created, expected_state) in [
+        (
+            DeterministicProviderAdmissionOutcomeV1::RateLimited,
+            false,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable,
+            false,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::AuthenticationRefused,
+            false,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::TransportError,
+            false,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::TransportError,
+            true,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::ProtocolError,
+            false,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+        ),
+    ] {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        let (disposition, observation) =
+            holding_qualification_records(&requirement, &opened, outcome, response_created);
+        let deferred = disposition
+            .permits_automatic_park()
+            .then(|| holding_deferred(&requirement, &policy, &opened, &disposition));
+        let disposition_bytes = holding_canonical(&disposition);
+        let observation_bytes = holding_canonical(&observation);
+        let deferred_bytes = deferred.as_ref().map(holding_canonical);
+        let accepted = store
+            .record_provider_disposition(
+                &disposition.run_id,
+                &disposition.work_item_id,
+                &disposition.work_attempt_id,
+                ProviderDispositionEvidenceV1 {
+                    observation_bytes: &observation_bytes,
+                    disposition_bytes: &disposition_bytes,
+                    deferred_bytes: deferred_bytes.as_deref(),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(accepted.mechanism_state, expected_state);
+        let query = ForemanStore::open_read_only(&path).unwrap();
+        let history = query
+            .read_only_run_snapshot(&disposition.run_id)
+            .unwrap()
+            .execution_availability
+            .unwrap();
+        assert_eq!(history.dispositions, vec![accepted]);
+        assert_eq!(history.observations, vec![observation]);
+        assert_eq!(history.deferred.len(), usize::from(deferred.is_some()));
+        drop(query);
+        if deferred.is_some() {
+            let next = store
+                .wake_provider_dispatch(
+                    "run-holding-store",
+                    "work-a",
+                    &attempt.attempt_id,
+                    "qualification-wake-1",
+                    "dispatch-store-2",
+                    "adapter-process-store-2",
+                    "session-store-2",
+                    1,
+                    holding_time("2026-08-31T12:01:07Z"),
+                )
+                .unwrap();
+            let completed = holding_record(
+                &store,
+                &requirement,
+                &policy,
+                &next,
+                "completed",
+                holding_time("2026-08-31T12:01:09Z"),
+                None,
+            );
+            assert_eq!(
+                completed.mechanism_state,
+                ProviderMechanismStateV1::ProviderCompleted
+            );
+        }
+        assert_holding_generic_transitions_refuse_without_mutation(
+            &path,
+            &store,
+            &attempt,
+            "qualification owner state cannot use legacy transition",
+        );
+    }
+}
+
 #[test]
 fn holding_store_parks_restarts_wakes_falls_back_and_allows_independent_lane() {
     let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
@@ -4994,7 +5252,7 @@ fn holding_failed_initial_dispatch_rolls_back_attempt_and_lock_then_restart_reco
 
 #[test]
 fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch() {
-    let (_directory, _path, store, _packet, _admission, _profile, policy, requirement) =
+    let (_directory, path, store, packet, _admission, _profile, policy, requirement) =
         holding_setup();
     let (attempt, opened) = holding_open_initial(&store);
     let approval = holding_record(
@@ -5047,6 +5305,37 @@ fn holding_unanswered_approval_preserves_exact_interruption_without_redispatch()
             .unwrap()
             .scheduler_state,
         SchedulerStateV1::Dispatching
+    );
+    let mut waiting = holding_worker_started_event(
+        &packet,
+        &attempt,
+        "holding-waiting-approval-after-exact-resume",
+    );
+    waiting.kind = AdapterEventKindV1::WaitingApproval;
+    waiting.provider_identity = Some(execution.provider_id.clone());
+    waiting.model_identity = Some(execution.model_id.clone());
+    waiting.session_identity = Some(execution.app_server_session_identity.clone());
+    waiting.thread_identity = Some(execution.thread_id.clone());
+    waiting.turn_identity = Some(execution.turn_id.clone());
+    waiting.seal().unwrap();
+    store
+        .accept_adapter_event(&holding_canonical(&waiting))
+        .unwrap();
+    let projection = store.projection("run-holding-store").unwrap();
+    assert_eq!(
+        projection
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "work-a")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::WaitingApproval
+    );
+    assert_holding_generic_transitions_refuse_without_mutation(
+        &path,
+        &store,
+        &attempt,
+        "waiting approval",
     );
 }
 
@@ -5747,6 +6036,65 @@ fn holding_terminal_receipt(
     receipt
 }
 
+fn assert_holding_generic_transitions_refuse_without_mutation(
+    path: &Path,
+    store: &ForemanStore,
+    attempt: &WorkerStartRequestV2,
+    reason: &str,
+) {
+    let before = fs::read(path).unwrap();
+    assert!(store
+        .record_dispatch_requested(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            holding_time("2026-08-31T12:01:30Z"),
+        )
+        .is_err());
+    assert!(store
+        .record_resume_requested(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            holding_time("2026-08-31T12:01:30Z"),
+        )
+        .is_err());
+    assert!(store
+        .record_terminal_refusal(
+            "run-holding-store",
+            "work-a",
+            &attempt.attempt_id,
+            reason,
+            holding_time("2026-08-31T12:01:30Z"),
+        )
+        .is_err());
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn holding_all_mechanism_states_refuse_every_generic_transition_without_mutation() {
+    for snapshot_name in ["parked", "indeterminate", "interrupted", "completed"] {
+        let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
+            holding_setup();
+        let (attempt, opened) = holding_open_initial(&store);
+        holding_record(
+            &store,
+            &requirement,
+            &policy,
+            &opened,
+            snapshot_name,
+            holding_time("2026-08-31T12:01:02Z"),
+            None,
+        );
+        assert_holding_generic_transitions_refuse_without_mutation(
+            &path,
+            &store,
+            &attempt,
+            snapshot_name,
+        );
+    }
+}
+
 #[test]
 fn holding_parked_and_indeterminate_refuse_legacy_event_and_terminal_mutators_atomically() {
     for (ordinal, snapshot_name) in ["parked", "indeterminate"].into_iter().enumerate() {
@@ -5875,6 +6223,23 @@ fn holding_exact_completion_recovers_after_capacity_and_refuses_model_substituti
     store
         .accept_terminal_receipt(&holding_canonical(&receipt))
         .unwrap();
+    assert_eq!(
+        store
+            .projection("run-holding-store")
+            .unwrap()
+            .work_items
+            .iter()
+            .find(|item| item.work_item_id == "work-a")
+            .unwrap()
+            .scheduler_state,
+        SchedulerStateV1::TerminalReceiptAccepted
+    );
+    assert_holding_generic_transitions_refuse_without_mutation(
+        &path,
+        &store,
+        &attempt,
+        "terminal HOLDING attempt",
+    );
     drop(store);
     let snapshot = read_only_run_snapshot(&path, "run-holding-store").unwrap();
     assert_eq!(snapshot.terminal_receipts.len(), 1);
@@ -5935,10 +6300,52 @@ fn holding_metadata_anchor_and_table_presence_preflight_before_provider_blob_mat
             )
             .unwrap();
         drop(connection);
+        let result = read_only_run_snapshot(&path, "run-holding-store");
+        assert!(
+            matches!(
+                &result,
+                Err(ForemanError::ReadOnlyStore(message))
+                    if message.contains("metadata-first custody tables")
+            ),
+            "unexpected disposition: {result:?}"
+        );
+    }
+
+    {
+        let (_directory, path, store, _packet, _admission, profile, _policy, _requirement) =
+            holding_setup();
+        let (_attempt, _opened) = holding_open_initial(&store);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER events_no_update;
+                 DROP TRIGGER execution_availability_metadata_no_delete;
+                 DROP TRIGGER execution_availability_anchors_no_delete;
+                 DROP TRIGGER run_mechanism_requirements_no_delete;
+                 DELETE FROM execution_availability_event_metadata;
+                 DELETE FROM execution_availability_event_anchors;
+                 DELETE FROM run_mechanism_requirements;
+                 UPDATE events SET kind = 'internal'
+                 WHERE kind IN (
+                     'execution_availability_requirement', 'provider_dispatch',
+                     'provider_disposition', 'provider_wake', 'provider_resume',
+                     'provider_resources_released', 'provider_resources_reacquired'
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE events SET raw_bytes = zeroblob(?1)
+                 WHERE event_id = 'provider-dispatch-dispatch-store-1'",
+                [profile.maximum_event_bytes + 1],
+            )
+            .unwrap();
+        drop(connection);
         assert!(matches!(
             read_only_run_snapshot(&path, "run-holding-store"),
             Err(ForemanError::ReadOnlyStore(message))
-                if message.contains("missing metadata-first custody tables")
+                if message.contains("missing exact marker")
         ));
     }
 

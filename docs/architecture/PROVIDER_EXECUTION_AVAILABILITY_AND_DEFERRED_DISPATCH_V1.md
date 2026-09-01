@@ -116,8 +116,24 @@ remains FUEL-owned; `usageLimitExceeded`/rate-limited, provider-unavailable/
 server-overload ambiguity, authentication-refused, transport, protocol, and
 unknown records retain their distinct raw/observation categories. Under the
 current owner they stop or remain admission-indeterminate and cannot redispatch,
-fall back, or auto-park. A future provider-neutral safe refusal would require
-its own exact qualified owner contract.
+fall back, or auto-park.
+
+HOLDING also owns one additive qualification-only deterministic adapter
+contract. Its exact source artifact is
+`qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/deterministic-fake-adapter-v1.py`
+with SHA-256
+`e8a310d46cb40b0aef6399a8da6c97ac99f0fc5eab6a78c5e7007600d5cbfa82`.
+The closed record binds producer and source-artifact identity, work attempt,
+dispatch, provider request, provider, model, stable typed outcome,
+`response_created`, explicit non-admission proof, retry-after, observed and
+received times, exact source bytes, and a domain-separated digest. It has no
+production/default adapter registration, provider profile, network operation,
+listener, or service. Its explicit non-admission `RATE_LIMITED` and
+`PROVIDER_UNAVAILABLE` outcomes exercise the ordinary provider-neutral
+park/wake path under policy. `AUTHENTICATION_REFUSED` stops without automatic
+retry. `TRANSPORT_ERROR` and `PROTOCOL_ERROR`, including possible-admission
+cuts, remain indeterminate and cannot redispatch. These qualification meanings
+do not widen or reinterpret the separately accepted Codex/Switchyard path.
 
 The pinned Codex and Switchyard subjects qualified these meanings with a
 deterministic mock provider only. They do not qualify a real provider lifecycle,
@@ -155,7 +171,9 @@ The implementation adds closed, domain-separated records:
 - `nightshift.foreman-execution-availability-requirement/v1`;
 - `nightshift.worker-start-request/v3`;
 - `nightshift.provider-dispatch-occurrence/v1`;
-- `nightshift.provider-admission-disposition/v1`; and
+- `nightshift.provider-admission-disposition/v1`;
+- `nightshift.holding-deterministic-provider-admission-evidence/v1` plus the
+  qualification-only `nightshift.provider-admission-disposition/v2`; and
 - `nightshift.deferred-provider-dispatch/v1`.
 
 The HOLDING-only start V3 retains the complete canonical start V2 predecessor
@@ -228,7 +246,11 @@ The mechanism store enforces a distinct cumulative 16 MiB journal-history
 ceiling for execution-availability rows. Each availability append also creates
 an immutable metadata row binding run, sequence, event identity, closed event kind, and byte length; an independent
 immutable anchor binds the same run, sequence, and event identity, and a
-run-level marker records that HOLDING history is required. Query-only and
+run-level marker records that HOLDING history is required. Independently, the
+immutable admitted `runs.execution_availability_required` value anchors that
+requirement outside the marker, metadata, and anchor tables. A required run
+therefore cannot become legacy through deletion or relabeling of the auxiliary
+custody rows. Query-only and
 mutating reopen compare the complete metadata, anchor, and event row sets, then
 query count and `length(raw_bytes)`, refuse
 empty or per-event-oversized rows, and checked-add the cumulative length before
@@ -289,8 +311,11 @@ category actionable. With the accepted Codex/Switchyard V1 owner, only
 `NOT_ADMITTED_MODEL_AT_CAPACITY` permits automatic parking. The unavailable,
 rate/usage-limit, authentication, quota, transport, protocol, coarse, and
 unknown paths retain independent testimony but do not authorize automatic
-parking or redispatch under this campaign. `QUOTA_EXHAUSTED_FUEL_OWNED` is not
-constructed from execution-availability evidence.
+parking or redispatch through that owner. The separate campaign-owned
+qualification fixture permits unavailable/rate parking only when its exact
+closed evidence explicitly proves non-admission. Authentication still stops;
+transport/protocol remain indeterminate. `QUOTA_EXHAUSTED_FUEL_OWNED` is not
+constructed from execution-availability evidence in either path.
 
 `WAITING_APPROVAL` is a post-admission worker mechanism state, not an
 availability disposition. It never answers an approval or permits redispatch.
@@ -410,6 +435,16 @@ the twenty roadmap cases, exact schema/runtime parity, restart at both parked
 boundaries, duplicate wake, concurrent writers, identity substitution,
 cumulative bounds, same-attempt continuity, policy-bounded fallback,
 independent lane progress, and no semantic retry.
+
+The fake-adapter matrix is mechanism-valid rather than an enum-only test: its
+six closed outcome rows enter the same `record_provider_disposition` graph,
+journal, query-only replay, resource-release, wake, and legacy-transition stop
+laws as accepted mapper evidence. Exact rate-limited and provider-unavailable
+non-admission cases park, wake, and then reach a separately exact admitted
+completion. Authentication, pre-created transport, possible-admission
+transport, and protocol cases remain no-redispatch states. Independent FUEL
+fixtures retain abundant and UNKNOWN quota decisions separately; the fake
+owner never creates quota evidence.
 
 Exact mapper parity is qualified from the accepted Switchyard owner itself,
 not inferred from five terminal examples. The qualification harness runs the

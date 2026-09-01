@@ -12,10 +12,17 @@ check_mechanism() {
   rg -q 'validate_execution_availability_history_size' "$candidate" || return 1
   rg -q 'execution_availability_event_anchors' "$candidate" || return 1
   rg -q 'run_mechanism_requirements' "$candidate" || return 1
+  rg -q 'execution_availability_required INTEGER NOT NULL DEFAULT 0' "$candidate" || return 1
   rg -q 'provider-resources-released-\{disposition_digest\}' "$candidate" || return 1
   rg -q 'provider-resources-reacquired-\{wake_occurrence_id\}' "$candidate" || return 1
   rg -q 'prepare_provider_attempt' "$candidate" || return 1
   rg -q 'matches!\(self, Self::NotAdmittedModelAtCapacity\)' "$tree/execution_availability.rs" || return 1
+  rg -q 'HOLDING_QUALIFICATION_EXECUTABLE_SHA256' "$tree/execution_availability.rs" || return 1
+  test -f "$root/schemas/nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json" || return 1
+  test -f "$root/schemas/nightshift.provider-admission-disposition.v2.schema.json" || return 1
+  if rg -n 'holding-pattern-deterministic-fake-adapter' "$root/crates/nightshiftd" >/dev/null; then
+    return 1
+  fi
   rg -q 'availability-required run refuses legacy V2 start path' "$candidate" || return 1
   rg -q 'TransactionBehavior::Immediate' "$candidate" || return 1
   if rg -n 'std::process::Command|TcpListener|UdpSocket|thread::sleep|send_approval|respond_approval|approval_response_authorized:\s*true|automatic_semantic_retry:\s*true' "$tree" >/dev/null; then

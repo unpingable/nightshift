@@ -720,8 +720,9 @@ impl ForemanStore {
         transaction.execute(
             "INSERT INTO runs
              (run_id, packet_digest, admission_digest, profile_digest, packet_bytes,
-              admission_bytes, profile_bytes, admitted_at, expires_at, maximum_concurrent_workers)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              admission_bytes, profile_bytes, admitted_at, expires_at, maximum_concurrent_workers,
+              execution_availability_required)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 admission.run_id,
                 packet.packet_digest,
@@ -733,6 +734,7 @@ impl ForemanStore {
                 admission.admitted_at.to_rfc3339(),
                 admission.expires_at.to_rfc3339(),
                 admission.maximum_concurrent_workers,
+                execution_availability.is_some(),
             ],
         )?;
         for item in &packet.work_items {
@@ -1301,7 +1303,7 @@ impl ForemanStore {
             predecessor_disposition_digest,
             profile.maximum_event_bytes,
         )?;
-        if accepted.disposition.disposition.permits_automatic_park()
+        if accepted.disposition.permits_automatic_park()
             && history.policy.parked_resource_lock_policy
                 == ParkedResourceLockPolicyV1::ReleaseAndReacquire
         {
@@ -1765,7 +1767,7 @@ impl ForemanStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
         validate_complete_execution_availability_history(&transaction, run_id)?;
-        refuse_closed_holding_legacy_transition(&transaction, run_id, work_item_id, attempt_id)?;
+        refuse_holding_legacy_transition(&transaction, run_id, work_item_id, attempt_id)?;
         append_internal(
             &transaction,
             &InternalEvent {
@@ -1991,7 +1993,7 @@ impl ForemanStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         exact_active_attempt(&transaction, run_id, work_item_id, attempt_id)?;
         validate_complete_execution_availability_history(&transaction, run_id)?;
-        refuse_closed_holding_legacy_transition(&transaction, run_id, work_item_id, attempt_id)?;
+        refuse_holding_legacy_transition(&transaction, run_id, work_item_id, attempt_id)?;
         append_internal(
             &transaction,
             &InternalEvent {
@@ -2214,6 +2216,7 @@ impl ForemanStore {
             &transaction,
             run_id,
             profile.maximum_event_bytes,
+            false,
         )?;
         let events = {
             let mut statement = transaction.prepare(
@@ -3047,7 +3050,9 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
             profile_bytes BLOB NOT NULL,
             admitted_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
-            maximum_concurrent_workers INTEGER NOT NULL
+            maximum_concurrent_workers INTEGER NOT NULL,
+            execution_availability_required INTEGER NOT NULL DEFAULT 0
+                CHECK (execution_availability_required IN (0, 1))
         );
         CREATE TABLE IF NOT EXISTS work_items (
             run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -3156,6 +3161,19 @@ fn initialize(connection: &Connection) -> Result<(), ForemanError> {
         CREATE TRIGGER IF NOT EXISTS final_snapshots_no_delete BEFORE DELETE ON final_snapshots
             BEGIN SELECT RAISE(ABORT, 'final snapshots are append-only'); END;",
     )?;
+    let mut columns = connection.prepare("PRAGMA table_info(runs)")?;
+    let has_execution_availability_anchor = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "execution_availability_required");
+    drop(columns);
+    if !has_execution_availability_anchor {
+        connection.execute(
+            "ALTER TABLE runs ADD COLUMN execution_availability_required INTEGER NOT NULL DEFAULT 0 CHECK (execution_availability_required IN (0, 1))",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -3981,6 +3999,7 @@ fn append_execution_availability_bounded(
         transaction,
         &event.run_id,
         maximum_event_bytes,
+        kind == "execution_availability_requirement",
     )?;
     if retained_count
         .checked_add(1)
@@ -4158,6 +4177,7 @@ fn validate_execution_availability_history_size(
     connection: &Connection,
     run_id: &str,
     maximum_event_bytes: u64,
+    allow_initial_requirement_append: bool,
 ) -> Result<(u64, usize), ForemanError> {
     let table_exists = |name: &str| -> Result<bool, ForemanError> {
         Ok(connection.query_row(
@@ -4166,20 +4186,34 @@ fn validate_execution_availability_history_size(
             |row| row.get(0),
         )?)
     };
+    let mut run_columns = connection.prepare("PRAGMA table_info(runs)")?;
+    let has_run_anchor = run_columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "execution_availability_required");
+    drop(run_columns);
+    let availability_required = if has_run_anchor {
+        connection.query_row(
+            "SELECT execution_availability_required FROM runs WHERE run_id = ?1",
+            [run_id],
+            |row| row.get::<_, bool>(0),
+        )?
+    } else {
+        false
+    };
     let metadata_exists = table_exists("execution_availability_event_metadata")?;
     let anchors_exist = table_exists("execution_availability_event_anchors")?;
     let marker_exists = table_exists("run_mechanism_requirements")?;
-    let availability_required = if marker_exists {
+    let marker_count: usize = if marker_exists {
         connection.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM run_mechanism_requirements
-                 WHERE run_id = ?1 AND execution_availability_required = 1
-             )",
+            "SELECT count(*) FROM run_mechanism_requirements
+             WHERE run_id = ?1 AND execution_availability_required = 1",
             [run_id],
             |row| row.get(0),
         )?
     } else {
-        false
+        0
     };
     let provider_row_count: usize = connection.query_row(
         "SELECT count(*) FROM events
@@ -4191,9 +4225,29 @@ fn validate_execution_availability_history_size(
         [run_id],
         |row| row.get(0),
     )?;
-    if availability_required && (!metadata_exists || !anchors_exist) {
+    if !has_run_anchor
+        && (provider_row_count != 0 || marker_count != 0 || metadata_exists != anchors_exist)
+    {
         return Err(ForemanError::ReadOnlyStore(
-            "availability-required run is missing metadata-first custody tables".to_owned(),
+            "HOLDING history lacks immutable run-level requirement anchor".to_owned(),
+        ));
+    }
+    if availability_required
+        && (!metadata_exists || !anchors_exist || !marker_exists || marker_count != 1)
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "availability-required run is missing exact marker or metadata-first custody tables"
+                .to_owned(),
+        ));
+    }
+    if !availability_required && marker_count != 0 {
+        return Err(ForemanError::ReadOnlyStore(
+            "run-level HOLDING requirement and marker disagree".to_owned(),
+        ));
+    }
+    if availability_required && provider_row_count == 0 && !allow_initial_requirement_append {
+        return Err(ForemanError::ReadOnlyStore(
+            "availability-required run has no retained provider history".to_owned(),
         ));
     }
     if !metadata_exists || !anchors_exist {
@@ -4316,7 +4370,12 @@ fn load_execution_availability_history(
     admission: &ForemanAdmissionV1,
     profile: &ExecutionProfileV2,
 ) -> Result<Option<ReadOnlyExecutionAvailabilityHistoryV1>, ForemanError> {
-    validate_execution_availability_history_size(connection, run_id, profile.maximum_event_bytes)?;
+    validate_execution_availability_history_size(
+        connection,
+        run_id,
+        profile.maximum_event_bytes,
+        false,
+    )?;
     let mut statement = connection.prepare(
         "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
                 raw_bytes, raw_digest
@@ -5136,7 +5195,12 @@ fn load_projection(
         profile.maximum_event_bytes,
         packet.work_items.len().saturating_add(1),
     )?;
-    validate_execution_availability_history_size(connection, run_id, profile.maximum_event_bytes)?;
+    validate_execution_availability_history_size(
+        connection,
+        run_id,
+        profile.maximum_event_bytes,
+        false,
+    )?;
     let mut statement = connection.prepare(
         "SELECT sequence, event_id, work_item_id, attempt_id, kind, recorded_at,
                 raw_bytes, raw_digest
@@ -5315,24 +5379,15 @@ fn current_holding_attempt_state(
     }))
 }
 
-fn refuse_closed_holding_legacy_transition(
+fn refuse_holding_legacy_transition(
     connection: &Connection,
     run_id: &str,
     work_item_id: &str,
     attempt_id: &str,
 ) -> Result<(), ForemanError> {
-    if current_holding_attempt_state(connection, run_id, work_item_id, attempt_id)?
-        .and_then(|state| state.disposition)
-        .is_some_and(|disposition| {
-            matches!(
-                disposition.mechanism_state,
-                ProviderMechanismStateV1::ParkedNotAdmitted
-                    | ProviderMechanismStateV1::AdmissionIndeterminate
-            )
-        })
-    {
+    if current_holding_attempt_state(connection, run_id, work_item_id, attempt_id)?.is_some() {
         return Err(ForemanError::Transition(
-            "HOLDING state requires exact wake or reconciliation transition".to_owned(),
+            "HOLDING attempt requires an exact mechanism-owned transition".to_owned(),
         ));
     }
     Ok(())

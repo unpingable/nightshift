@@ -469,6 +469,8 @@ fn disposition_candidate_from_exact_snapshot(
         "PARKED_NOT_ADMITTED" => ProviderMechanismStateV1::ParkedNotAdmitted,
         "ADMISSION_INDETERMINATE" => ProviderMechanismStateV1::AdmissionIndeterminate,
         "POST_ADMISSION_INTERRUPTED" => ProviderMechanismStateV1::PostAdmissionInterrupted,
+        "WAITING_APPROVAL" => ProviderMechanismStateV1::WaitingApproval,
+        "EXECUTION_ADMITTED" => ProviderMechanismStateV1::ExecutionAdmitted,
         "PROVIDER_COMPLETED" => ProviderMechanismStateV1::ProviderCompleted,
         value => panic!("unexpected fixture mechanism state {value}"),
     };
@@ -1273,6 +1275,64 @@ fn client_request_response_pairing_is_exact() {
 }
 
 #[test]
+fn strict_ordered_owner_snapshot_reaches_true_waiting_approval_before_cut() {
+    let corpus: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-owner-terminal-corpus.v1.json"
+    ))
+    .unwrap();
+    let mut snapshot = corpus["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| {
+            candidate["snapshot_digest"]
+                == "sha256:2d00630ea45c82c95211def651886e6307aa9b2e5a1dabd1cae74658a2b2d7d7"
+        })
+        .unwrap()
+        .clone();
+    snapshot["records"].as_array_mut().unwrap().truncate(4);
+    assert_eq!(snapshot["records"][3]["kind"], "WAITING_APPROVAL");
+    assert_eq!(snapshot["records"][3]["acquisition_kind"], "SERVER_REQUEST");
+    snapshot["acquisition_cut"] = Value::Null;
+    snapshot["mechanism_state"] = json!("WAITING_APPROVAL");
+    snapshot = reseal_mapper_snapshot(snapshot);
+
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    let raw = canonical(&snapshot);
+    let disposition = disposition_from_exact_snapshot(
+        &requirement,
+        &dispatch,
+        &raw,
+        time("2026-08-31T12:01:02Z"),
+    );
+    assert_eq!(
+        disposition.mechanism_state,
+        ProviderMechanismStateV1::WaitingApproval
+    );
+    assert_eq!(
+        disposition.disposition,
+        ProviderAdmissionDispositionKindV1::ExecutionAdmitted
+    );
+    assert!(disposition.provider_execution.is_some());
+    assert!(!disposition.acquisition_complete);
+    assert!(!disposition.approval_response_sent);
+    assert!(disposition.protected_effect_absent);
+    let observation = observation_for_disposition(&disposition);
+    validate_execution_availability_graph(
+        &requirement,
+        &policy,
+        &dispatch,
+        &observation,
+        &disposition,
+        &[],
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
 fn only_exact_model_capacity_disposition_permits_automatic_park() {
     let cases = [
         (
@@ -1992,4 +2052,259 @@ fn exact_owner_approval_method_reaches_waiting_and_raw_identity_substitution_ref
     substituted.mapper_snapshot_digest = snapshot["snapshot_digest"].as_str().unwrap().to_owned();
     substituted.mapper_snapshot = ExactMapperSnapshotV1::from_bytes(&canonical(&snapshot)).unwrap();
     substituted.seal().unwrap_err();
+}
+
+fn qualification_disposition(
+    requirement: &ForemanExecutionAvailabilityRequirementV1,
+    dispatch: &ProviderDispatchOccurrenceV1,
+    outcome: DeterministicProviderAdmissionOutcomeV1,
+    response_created: bool,
+) -> (
+    DeterministicProviderAdmissionEvidenceV1,
+    ProviderAdmissionDispositionV1,
+    ExecutionAvailabilityObservationV1,
+) {
+    let received_at = time("2026-08-31T12:01:02Z");
+    let observed_at = time("2026-08-31T12:01:01Z");
+    let retry_after = matches!(
+        outcome,
+        DeterministicProviderAdmissionOutcomeV1::RateLimited
+            | DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable
+    )
+    .then(|| time("2026-08-31T12:01:07Z"));
+    let non_admission_proven = matches!(
+        outcome,
+        DeterministicProviderAdmissionOutcomeV1::RateLimited
+            | DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable
+            | DeterministicProviderAdmissionOutcomeV1::AuthenticationRefused
+    );
+    let raw = canonical(&json!({
+        "outcome": outcome,
+        "response_created": response_created,
+        "non_admission_proven": non_admission_proven,
+        "retry_after": retry_after,
+        "observed_at": observed_at,
+    }));
+    let mut evidence = DeterministicProviderAdmissionEvidenceV1 {
+        schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        evidence_digest: placeholder(),
+        producer_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        producer_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        executable_id: HOLDING_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+        executable_sha256: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+        work_attempt_id: dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: dispatch.dispatch_occurrence_id.clone(),
+        provider_request_occurrence_id: "qualification-request-1".to_owned(),
+        provider_id: dispatch.selection.provider_id.clone(),
+        model_id: dispatch.selection.model_id.clone(),
+        outcome,
+        response_created,
+        non_admission_proven,
+        retry_after,
+        observed_at,
+        received_at,
+        raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
+            "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+            &raw,
+        )
+        .unwrap(),
+        authority_effect: "QUALIFICATION_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    evidence.seal().unwrap();
+    let evidence_bytes = canonical(&evidence);
+    let (kind, mechanism, state) = match outcome {
+        DeterministicProviderAdmissionOutcomeV1::RateLimited => (
+            ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+            ExecutionAvailabilityStateV1::RateLimited,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable => (
+            ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+            ExecutionAvailabilityStateV1::ProviderUnavailable,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::AuthenticationRefused => (
+            ProviderAdmissionDispositionKindV1::AuthenticationRefused,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            ExecutionAvailabilityStateV1::AuthenticationRefused,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::TransportError => (
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            ExecutionAvailabilityStateV1::TransportError,
+        ),
+        DeterministicProviderAdmissionOutcomeV1::ProtocolError => (
+            ProviderAdmissionDispositionKindV1::AdmissionIndeterminate,
+            ProviderMechanismStateV1::AdmissionIndeterminate,
+            ExecutionAvailabilityStateV1::ProtocolError,
+        ),
+    };
+    let mut disposition = ProviderAdmissionDispositionV1 {
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2.to_owned(),
+        disposition_digest: placeholder(),
+        dispatch_digest: dispatch.dispatch_digest.clone(),
+        requirement_digest: requirement.requirement_digest.clone(),
+        policy_digest: requirement.policy_digest.clone(),
+        packet_digest: requirement.packet_digest.clone(),
+        run_id: requirement.run_id.clone(),
+        work_item_id: dispatch.work_item_id.clone(),
+        work_attempt_id: dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: dispatch.dispatch_occurrence_id.clone(),
+        provider_id: dispatch.selection.provider_id.clone(),
+        model_id: dispatch.selection.model_id.clone(),
+        provider_request_occurrence_id: evidence.provider_request_occurrence_id.clone(),
+        adapter_process_occurrence_id: dispatch.adapter_process_occurrence_id.clone(),
+        app_server_session_identity: dispatch.app_server_session_identity.clone(),
+        thread_id: "qualification-thread-1".to_owned(),
+        turn_id: "qualification-turn-1".to_owned(),
+        disposition: kind,
+        mechanism_state: mechanism,
+        received_at,
+        response_created,
+        will_retry: false,
+        acquisition_complete: true,
+        provider_retry_after: retry_after,
+        provider_execution: None,
+        mapper_snapshot_schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        mapper_snapshot_digest: evidence.evidence_digest.clone(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_qualification_evidence_bytes(&evidence_bytes)
+            .unwrap(),
+        approval_response_sent: false,
+        protected_effect_absent: true,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    disposition.seal().unwrap();
+    let mut observation = ExecutionAvailabilityObservationV1 {
+        schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        observation_digest: placeholder(),
+        provider_id: dispatch.selection.provider_id.clone(),
+        model_id: dispatch.selection.model_id.clone(),
+        model_class: dispatch.selection.model_class.clone(),
+        observed_at,
+        received_at,
+        expires_at: time("2026-08-31T12:02:02Z"),
+        state,
+        source_identity: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        source_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        provider_retry_after: retry_after,
+        exact_evidence: Some(evidence.raw_evidence.clone()),
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    observation.seal().unwrap();
+    (evidence, disposition, observation)
+}
+
+#[test]
+fn qualification_only_owner_closes_outcomes_and_substitutions() {
+    let executable = include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/deterministic-fake-adapter-v1.py"
+    );
+    assert_eq!(
+        format!("sha256:{:x}", Sha256::digest(executable)),
+        HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+    );
+    for schema_bytes in [
+        include_bytes!(
+            "../../../schemas/nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../schemas/nightshift.provider-admission-disposition.v2.schema.json"
+        )
+        .as_slice(),
+    ] {
+        let schema: Value = serde_json::from_slice(schema_bytes).unwrap();
+        assert_eq!(schema["additionalProperties"], false);
+    }
+    let policy = policy();
+    let requirement = requirement(&policy);
+    let dispatch = dispatch(&requirement);
+    for (outcome, response_created) in [
+        (DeterministicProviderAdmissionOutcomeV1::RateLimited, false),
+        (
+            DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable,
+            false,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::AuthenticationRefused,
+            false,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::TransportError,
+            false,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::TransportError,
+            true,
+        ),
+        (
+            DeterministicProviderAdmissionOutcomeV1::ProtocolError,
+            false,
+        ),
+    ] {
+        let (evidence, disposition, observation) =
+            qualification_disposition(&requirement, &dispatch, outcome, response_created);
+        evidence.validate().unwrap();
+        disposition.validate().unwrap();
+        if disposition.permits_automatic_park() {
+            let mut deferred = DeferredProviderDispatchV1 {
+                schema: DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1.to_owned(),
+                deferred_dispatch_digest: placeholder(),
+                requirement_digest: requirement.requirement_digest.clone(),
+                policy_digest: policy.policy_digest.clone(),
+                disposition_digest: disposition.disposition_digest.clone(),
+                packet_digest: requirement.packet_digest.clone(),
+                run_id: requirement.run_id.clone(),
+                work_item_id: dispatch.work_item_id.clone(),
+                work_attempt_id: dispatch.work_attempt_id.clone(),
+                last_dispatch_occurrence_id: dispatch.dispatch_occurrence_id.clone(),
+                provider_id: dispatch.selection.provider_id.clone(),
+                model_id: dispatch.selection.model_id.clone(),
+                selected_model_ordinal: 0,
+                remaining_model_ordinals: vec![1],
+                refusal_received_at: disposition.received_at,
+                wake_basis: DeferredWakeBasisV1::ProviderRetryAfter,
+                backoff_ordinal: 0,
+                backoff_seconds: 5,
+                provider_retry_after: disposition.provider_retry_after,
+                wake_at: disposition.provider_retry_after.unwrap(),
+                parked_resource_lock_policy: policy.parked_resource_lock_policy,
+                provider_capacity_released: true,
+                semantic_retry: false,
+                authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+            };
+            deferred.seal().unwrap();
+            validate_execution_availability_graph(
+                &requirement,
+                &policy,
+                &dispatch,
+                &observation,
+                &disposition,
+                &[],
+                Some(&deferred),
+            )
+            .unwrap();
+        } else {
+            validate_execution_availability_graph(
+                &requirement,
+                &policy,
+                &dispatch,
+                &observation,
+                &disposition,
+                &[],
+                None,
+            )
+            .unwrap();
+        }
+
+        let mut substituted = evidence.clone();
+        substituted.dispatch_occurrence_id = "dispatch-substituted".to_owned();
+        substituted.seal().unwrap();
+        let bytes = canonical(&substituted);
+        let mut split = disposition.clone();
+        split.mapper_snapshot_digest = substituted.evidence_digest.clone();
+        split.mapper_snapshot =
+            ExactMapperSnapshotV1::from_qualification_evidence_bytes(&bytes).unwrap();
+        split.seal().unwrap_err();
+    }
 }

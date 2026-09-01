@@ -14,6 +14,8 @@ NAMES = [
     "nightshift.foreman-execution-availability-requirement.v1.schema.json",
     "nightshift.provider-dispatch-occurrence.v1.schema.json",
     "nightshift.provider-admission-disposition.v1.schema.json",
+    "nightshift.provider-admission-disposition.v2.schema.json",
+    "nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json",
     "nightshift.deferred-provider-dispatch.v1.schema.json",
 ]
 SWITCHYARD_SCHEMA = "vendor/switchyard.codex-provider-admission.v1.schema.json"
@@ -200,6 +202,53 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
                 "EXACT_ACQUIRED_FRAME_BYTES_INCLUDING_LINE_TERMINATOR",
             },
         )
+
+    def test_qualification_owner_schema_is_closed_and_executable_identity_is_exact(self):
+        schema = load(
+            "nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json"
+        )
+        value = {
+            "schema": "nightshift.holding-deterministic-provider-admission-evidence/v1",
+            "evidence_digest": D,
+            "producer_id": "nightshift:holding-pattern-deterministic-fake-adapter",
+            "producer_version": "v1",
+            "executable_id": "campaign:holding-pattern:deterministic-fake-adapter:v1",
+            "executable_sha256": "sha256:e8a310d46cb40b0aef6399a8da6c97ac99f0fc5eab6a78c5e7007600d5cbfa82",
+            "work_attempt_id": "attempt-1",
+            "dispatch_occurrence_id": "dispatch-1",
+            "provider_request_occurrence_id": "request-1",
+            "provider_id": "fixture-provider",
+            "model_id": "fixture-model",
+            "outcome": "RATE_LIMITED",
+            "response_created": False,
+            "non_admission_proven": True,
+            "retry_after": "2026-08-31T12:01:07Z",
+            "observed_at": "2026-08-31T12:01:01Z",
+            "received_at": "2026-08-31T12:01:02Z",
+            "raw_evidence": {
+                "representation": "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+                "byte_length": 2,
+                "sha256": D,
+                "encoding": "hex",
+                "bytes_hex": "7b7d",
+            },
+            "authority_effect": "QUALIFICATION_MECHANISM_EVIDENCE_ONLY",
+        }
+        validator = Draft202012Validator(schema, format_checker=FormatChecker())
+        validator.validate(value)
+        for field, replacement in (
+            ("producer_id", "switchyard:provider-admission"),
+            ("executable_sha256", D),
+            ("outcome", "MODEL_AT_CAPACITY"),
+        ):
+            changed = copy.deepcopy(value)
+            changed[field] = replacement
+            with self.assertRaises(ValidationError):
+                validator.validate(changed)
+        changed = copy.deepcopy(value)
+        changed["unknown"] = True
+        with self.assertRaises(ValidationError):
+            validator.validate(changed)
 
 
 if __name__ == "__main__":
