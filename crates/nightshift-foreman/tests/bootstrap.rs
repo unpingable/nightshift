@@ -361,6 +361,31 @@ fn reseal_adapter_graph(value: &mut Fixture, adapter: AdapterRegistrationV2) {
     value.plan.seal().unwrap();
 }
 
+fn reseal_admission_graph(value: &mut Fixture) {
+    value.admission.seal().unwrap();
+
+    value.profile.admission_digest = value.admission.admission_digest.clone();
+    value.profile.seal().unwrap();
+
+    value.capacity_requirement.admission_digest = value.admission.admission_digest.clone();
+    value.capacity_requirement.profile_digest = value.profile.profile_digest.clone();
+    value.capacity_requirement.seal().unwrap();
+
+    value.availability_requirement.admission_digest = value.admission.admission_digest.clone();
+    value.availability_requirement.profile_digest = value.profile.profile_digest.clone();
+    value.availability_requirement.seal().unwrap();
+
+    value.plan.admission_digest = value.admission.admission_digest.clone();
+    value.plan.profile_digest = value.profile.profile_digest.clone();
+    value.plan.capacity_requirement_digest = value
+        .capacity_requirement
+        .capacity_requirement_digest
+        .clone();
+    value.plan.execution_availability_requirement_digest =
+        value.availability_requirement.requirement_digest.clone();
+    value.plan.seal().unwrap();
+}
+
 fn fixture() -> Fixture {
     let packet = packet();
     let admission = admission(&packet);
@@ -941,4 +966,243 @@ fn oversized_driver_history_refuses_at_metadata_preflight() {
         error,
         ForemanError::InputTooLarge("self-hosted driver history")
     ));
+}
+#[test]
+fn packet_budget_caps_admission_concurrency_before_store_creation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("invalid-concurrency.sqlite3");
+    let mut value = fixture();
+    assert_eq!(
+        value
+            .packet
+            .worker_budget
+            .maximum_concurrent_mutating_workers,
+        2
+    );
+    value.admission.maximum_concurrent_workers = 3;
+    reseal_admission_graph(&mut value);
+    value.admission.validate().unwrap();
+    value.profile.validate().unwrap();
+    value.capacity_requirement.validate().unwrap();
+    value.availability_requirement.validate().unwrap();
+    assert!(value.validate().is_err());
+
+    let bytes = fixture_inputs(&value);
+    assert!(ForemanStore::admit_self_hosted_at_path(
+        &path,
+        SelfHostedBootstrapInputsV1 {
+            bootstrap_bytes: &bytes[0],
+            packet_bytes: &bytes[1],
+            admission_bytes: &bytes[2],
+            profile_bytes: &bytes[3],
+            capacity_requirement_bytes: &bytes[4],
+            capacity_policy_bytes: &bytes[5],
+            execution_availability_requirement_bytes: &bytes[6],
+            execution_availability_policy_bytes: &bytes[7],
+        },
+    )
+    .is_err());
+    assert!(!path.exists());
+}
+
+#[test]
+fn self_hosted_query_reopens_every_authoritative_run_column() {
+    let substitutions = [
+        format!(
+            "UPDATE runs SET packet_digest = 'sha256:{}' WHERE run_id = 'second-watch-run'",
+            "f".repeat(64)
+        ),
+        "UPDATE runs SET admitted_at = '2026-08-31T12:00:01Z'
+         WHERE run_id = 'second-watch-run'"
+            .to_owned(),
+        "UPDATE runs SET maximum_concurrent_workers = 1
+         WHERE run_id = 'second-watch-run'"
+            .to_owned(),
+    ];
+    for statement in substitutions {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("foreman.sqlite3");
+        let value = fixture();
+        let run_id = admit_fixture(&path, &value);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER runs_no_update;")
+            .unwrap();
+        connection.execute(&statement, []).unwrap();
+        drop(connection);
+
+        assert!(ForemanStore::open_read_only(&path)
+            .unwrap()
+            .self_hosted_bootstrap(&run_id)
+            .is_err());
+    }
+}
+
+#[test]
+fn driver_time_is_nondecreasing_in_mutation_restart_and_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    let store = ForemanStore::open(&path).unwrap();
+    let first = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "scheduler-process-1",
+            time(3),
+        )
+        .unwrap();
+    assert!(store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            2,
+            "scheduler-process-time-inversion",
+            time(2),
+        )
+        .is_err());
+    let second = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            2,
+            "scheduler-process-2",
+            time(4),
+        )
+        .unwrap();
+    drop(store);
+
+    let reopened = ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&run_id)
+        .unwrap();
+    assert_eq!(reopened.steps, vec![first, second.clone()]);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER self_hosted_driver_steps_no_update;")
+        .unwrap();
+    let mut substituted = second;
+    substituted.recorded_at = time(2);
+    substituted.step_digest = placeholder();
+    substituted.seal().unwrap();
+    connection
+        .execute(
+            "UPDATE self_hosted_driver_steps
+             SET step_digest = ?1, recorded_at = ?2, raw_bytes = ?3
+             WHERE run_id = ?4 AND step_ordinal = 2",
+            rusqlite::params![
+                substituted.step_digest,
+                substituted.recorded_at.to_rfc3339(),
+                canonical(&substituted),
+                run_id
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(ForemanStore::open_read_only(&path)
+        .unwrap()
+        .self_hosted_bootstrap(&value.plan.run_id)
+        .is_err());
+    assert!(ForemanStore::open(&path)
+        .unwrap()
+        .advance_self_hosted_driver(
+            &value.plan.run_id,
+            &value.plan.bootstrap_digest,
+            3,
+            "scheduler-process-after-inversion",
+            time(5),
+        )
+        .is_err());
+}
+
+#[test]
+fn driver_terminal_dispositions_close_append_and_replay() {
+    let bound_directory = tempfile::tempdir().unwrap();
+    let bound_path = bound_directory.path().join("bound.sqlite3");
+    let mut bounded = fixture();
+    bounded.plan.maximum_wall_seconds = 1;
+    bounded.plan.seal().unwrap();
+    let bound_run_id = admit_fixture(&bound_path, &bounded);
+    let bound_store = ForemanStore::open(&bound_path).unwrap();
+    let bound = bound_store
+        .advance_self_hosted_driver(
+            &bound_run_id,
+            &bounded.plan.bootstrap_digest,
+            1,
+            "scheduler-process-bound",
+            time(2),
+        )
+        .unwrap();
+    assert_eq!(
+        bound.disposition,
+        SelfHostedDriverDispositionV1::BoundReached
+    );
+    assert!(bound_store
+        .advance_self_hosted_driver(
+            &bound_run_id,
+            &bounded.plan.bootstrap_digest,
+            2,
+            "scheduler-process-after-bound",
+            time(3),
+        )
+        .is_err());
+    drop(bound_store);
+    assert_eq!(
+        ForemanStore::open_read_only(&bound_path)
+            .unwrap()
+            .self_hosted_bootstrap(&bound_run_id)
+            .unwrap()
+            .steps,
+        vec![bound]
+    );
+
+    let terminal_directory = tempfile::tempdir().unwrap();
+    let terminal_path = terminal_directory.path().join("terminal.sqlite3");
+    let terminal_fixture = fixture();
+    let terminal_run_id = admit_fixture(&terminal_path, &terminal_fixture);
+    let terminal_store = ForemanStore::open(&terminal_path).unwrap();
+    let mut first = terminal_store
+        .advance_self_hosted_driver(
+            &terminal_run_id,
+            &terminal_fixture.plan.bootstrap_digest,
+            1,
+            "scheduler-process-1",
+            time(2),
+        )
+        .unwrap();
+    terminal_store
+        .advance_self_hosted_driver(
+            &terminal_run_id,
+            &terminal_fixture.plan.bootstrap_digest,
+            2,
+            "scheduler-process-2",
+            time(3),
+        )
+        .unwrap();
+    drop(terminal_store);
+
+    first.disposition = SelfHostedDriverDispositionV1::AllItemsExplicitTerminal;
+    first.step_digest = placeholder();
+    first.seal().unwrap();
+    let connection = rusqlite::Connection::open(&terminal_path).unwrap();
+    connection
+        .execute_batch("DROP TRIGGER self_hosted_driver_steps_no_update;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE self_hosted_driver_steps
+             SET step_digest = ?1, raw_bytes = ?2
+             WHERE run_id = ?3 AND step_ordinal = 1",
+            rusqlite::params![first.step_digest, canonical(&first), terminal_run_id],
+        )
+        .unwrap();
+    drop(connection);
+    assert!(ForemanStore::open_read_only(&terminal_path)
+        .unwrap()
+        .self_hosted_bootstrap(&terminal_fixture.plan.run_id)
+        .is_err());
 }

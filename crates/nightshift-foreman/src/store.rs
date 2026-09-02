@@ -1297,11 +1297,21 @@ impl ForemanStore {
             transaction.commit()?;
             return Ok(existing.clone());
         }
+        let prior_step = custody.steps.last();
+        let terminal_closed = prior_step.is_some_and(|step| {
+            matches!(
+                step.disposition,
+                SelfHostedDriverDispositionV1::BoundReached
+                    | SelfHostedDriverDispositionV1::AllItemsExplicitTerminal
+            )
+        });
         let next_ordinal = u32::try_from(custody.steps.len() + 1)
             .map_err(|_| ForemanError::Transition("driver step ordinal overflow".to_owned()))?;
         if expected_step_ordinal != next_ordinal
             || expected_step_ordinal > custody.bootstrap.maximum_driver_steps
             || recorded_at < custody.bootstrap.evaluated_at
+            || prior_step.is_some_and(|step| recorded_at < step.recorded_at)
+            || terminal_closed
         {
             return Err(ForemanError::Transition(
                 "driver step ordinal, bound, or time is not admissible".to_owned(),
@@ -3109,15 +3119,20 @@ fn load_self_hosted_bootstrap(
             [run_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-    let packet = NightshiftPacketV1::from_slice(&packet_bytes)
-        .map_err(|error| ForemanError::Packet(error.to_string()))?;
-    packet
-        .validate_integrity()
-        .map_err(|error| ForemanError::Packet(error.to_string()))?;
-    let admission = ForemanAdmissionV1::from_slice(&admission_bytes)?;
-    admission.validate()?;
-    let profile = ExecutionProfileV2::from_slice(&profile_bytes)?;
-    profile.validate()?;
+    let (packet, admission, profile, _) = load_contracts(connection, run_id)?;
+    if serde_jcs::to_vec(&packet).map_err(|error| ForemanError::Serialization(error.to_string()))?
+        != packet_bytes
+        || serde_jcs::to_vec(&admission)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != admission_bytes
+        || serde_jcs::to_vec(&profile)
+            .map_err(|error| ForemanError::Serialization(error.to_string()))?
+            != profile_bytes
+    {
+        return Err(ForemanError::ReadOnlyStore(
+            "self-hosted run contracts are not exact canonical row bytes".to_owned(),
+        ));
+    }
     validate_capacity_history_size(
         connection,
         run_id,
@@ -3171,6 +3186,8 @@ fn load_self_hosted_bootstrap(
     )?;
     let mut steps = Vec::new();
     let mut step_bytes = Vec::new();
+    let mut previous_recorded_at = None;
+    let mut terminal_closed = false;
     let mut statement = connection.prepare(
         "SELECT step_ordinal, step_digest, scheduler_process_occurrence_id,
                 recorded_at, raw_bytes
@@ -3190,7 +3207,9 @@ fn load_self_hosted_bootstrap(
         let step = SelfHostedForemanDriverStepV1::from_slice(&candidate.4)?;
         let expected_ordinal = u32::try_from(index + 1)
             .map_err(|_| ForemanError::ReadOnlyStore("driver ordinal overflow".to_owned()))?;
-        if step.run_id != run_id
+        if terminal_closed
+            || previous_recorded_at.is_some_and(|previous| step.recorded_at < previous)
+            || step.run_id != run_id
             || step.bootstrap_digest != bootstrap.bootstrap_digest
             || step.bootstrap_occurrence_id != bootstrap.bootstrap_occurrence_id
             || step.step_ordinal != expected_ordinal
@@ -3205,6 +3224,12 @@ fn load_self_hosted_bootstrap(
                 "driver step columns or bootstrap binding disagree".to_owned(),
             ));
         }
+        previous_recorded_at = Some(step.recorded_at);
+        terminal_closed = matches!(
+            &step.disposition,
+            SelfHostedDriverDispositionV1::BoundReached
+                | SelfHostedDriverDispositionV1::AllItemsExplicitTerminal
+        );
         steps.push(step);
         step_bytes.push(candidate.4);
     }

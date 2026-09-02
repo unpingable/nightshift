@@ -405,6 +405,8 @@ impl SelfHostedForemanBootstrapV1 {
             || !packet.worker_budget.recursive_worker_swarms_forbidden
             || packet.worker_budget.maximum_concurrent_mutating_workers < 2
             || admission.maximum_concurrent_workers < 2
+            || admission.maximum_concurrent_workers
+                > packet.worker_budget.maximum_concurrent_mutating_workers
         {
             return Err(ContractError::InvalidField("bootstrap packet topology"));
         }

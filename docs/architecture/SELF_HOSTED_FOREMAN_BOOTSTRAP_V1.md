@@ -79,6 +79,8 @@ The graph must establish:
   availability requirement;
 - at least two packet lanes have no dependencies and both packet and admission
   concurrency bounds permit two workers;
+- admission concurrency never exceeds the packet worker-budget concurrency
+  ceiling;
 - the named question work item exists;
 - recursive worker swarms are forbidden; and
 - no packet work item is itself the SECOND-WATCH campaign.
@@ -229,9 +231,11 @@ capacity-policy bytes. Two append-only tables retain:
   evaluation time, and deadline; and
 - canonical driver-step bytes in exact ordinal order.
 
-Update and delete triggers protect both tables. Query-only reopen revalidates the
-full bootstrap graph from the exact retained packet, admission, profile,
-requirements, and policies before returning typed or raw bootstrap custody.
+Update and delete triggers protect both tables. Query-only reopen first uses
+the existing contract owner loader to cross-bind every authoritative runs-row
+digest, canonical byte, admission time, expiry, and concurrency column. It then
+revalidates the full bootstrap graph from the exact retained packet, admission,
+profile, requirements, and policies before returning typed or raw custody.
 
 A driver step is an observation, not a dispatch. It binds the exact bootstrap,
 run, scheduler-process occurrence, ordinal, observed scheduler-projection
@@ -239,8 +243,10 @@ digest, time, and one closed disposition. Worker dispatch, approval response,
 protected effect, semantic retry, and aggregate-result fields are fixed false.
 An already-retained expected ordinal returns the exact winner record so
 concurrent writers converge; skipped ordinals and wrong bootstrap identities
-refuse. A failed append rolls back, and restart may retain that same unused
-ordinal.
+refuse. Driver timestamps never move backward. `BOUND_REACHED` and
+`ALL_ITEMS_EXPLICIT_TERMINAL` close the append history while exact
+duplicate-ordinal reopen remains idempotent.
+A failed append rolls back, and restart may retain that same unused ordinal.
 
 This checkpoint does not yet invoke the deterministic fake adapter or complete
 the self-hosted golden journey. It starts no provider, subprocess, listener,
