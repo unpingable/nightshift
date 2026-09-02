@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, path::Path};
 
 use chrono::{DateTime, Utc};
 use nightshift_foreman::{
-    read_only_run_snapshot, ExecutionProfileV2, ForemanAdmissionV1, ReadOnlyRunSnapshotV1,
+    read_only_run_snapshot, ExecutionProfileV2, ForemanAdmissionV1, HumanQuestionV1,
+    NotStartedReceiptV1, ReadOnlyRunSnapshotV1, TerminalReceiptV1,
 };
 use nightshiftd::packet::NightshiftPacketV1;
 use serde::Serialize;
@@ -163,6 +164,28 @@ fn project(
         } else {
             None
         };
+        let mut human_questions = mechanism.human_questions.clone();
+        if let Some(receipt) = accepted_receipt {
+            for question in accepted_receipt_questions(receipt)? {
+                if let Some(existing) = human_questions
+                    .iter()
+                    .find(|existing| existing.question_id == question.question_id)
+                {
+                    if existing != &question {
+                        return Err(LiveCaseworkError::Identity(
+                            "live question identity disagreement",
+                        ));
+                    }
+                } else {
+                    human_questions.push(question);
+                }
+            }
+        }
+        if human_questions.len() > 1024 {
+            return Err(LiveCaseworkError::Contract(
+                "live question collection exceeds bound".to_owned(),
+            ));
+        }
         work_items.push(LiveWorkItemV1 {
             work_item_id: intent.id.clone(),
             track: intent.track.clone(),
@@ -187,8 +210,7 @@ fn project(
             queue_identity: mechanism.queue_identity.clone(),
             last_event_sequence: mechanism.last_event_sequence,
             last_event_digest: mechanism.last_event_digest.clone(),
-            human_questions: mechanism
-                .human_questions
+            human_questions: human_questions
                 .iter()
                 .map(|question| LiveQuestionV1 {
                     navigation_id: question_navigation_id(
@@ -430,6 +452,57 @@ fn projection_digest<T: Serialize>(projection: &T) -> Result<String, LiveCasewor
     hasher.update(CASEWORK_LIVE_RUN_DIGEST_DOMAIN_V1);
     hasher.update(canonical);
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn accepted_receipt_questions(
+    receipt: &nightshift_foreman::ReadOnlyTerminalReceiptRowV1,
+) -> Result<Vec<HumanQuestionV1>, LiveCaseworkError> {
+    let questions = match receipt.receipt_kind.as_str() {
+        "terminal" => {
+            let parsed = TerminalReceiptV1::from_slice(&receipt.raw_bytes)
+                .map_err(|error| LiveCaseworkError::Contract(error.to_string()))?;
+            parsed
+                .validate()
+                .map_err(|error| LiveCaseworkError::Contract(error.to_string()))?;
+            if serde_jcs::to_vec(&parsed)
+                .map_err(|error| LiveCaseworkError::Projection(error.to_string()))?
+                != receipt.raw_bytes
+                || parsed.receipt_digest != receipt.receipt_digest
+                || parsed.work_item_id != receipt.work_item_id
+                || Some(parsed.attempt_id.as_str()) != receipt.attempt_id.as_deref()
+            {
+                return Err(LiveCaseworkError::Identity(
+                    "accepted terminal receipt question custody",
+                ));
+            }
+            parsed.human_questions
+        }
+        "not_started" => {
+            let parsed = NotStartedReceiptV1::from_slice(&receipt.raw_bytes)
+                .map_err(|error| LiveCaseworkError::Contract(error.to_string()))?;
+            parsed
+                .validate()
+                .map_err(|error| LiveCaseworkError::Contract(error.to_string()))?;
+            if serde_jcs::to_vec(&parsed)
+                .map_err(|error| LiveCaseworkError::Projection(error.to_string()))?
+                != receipt.raw_bytes
+                || parsed.receipt_digest != receipt.receipt_digest
+                || parsed.work_item_id != receipt.work_item_id
+                || receipt.attempt_id.is_some()
+            {
+                return Err(LiveCaseworkError::Identity(
+                    "accepted not-started receipt question custody",
+                ));
+            }
+            parsed.human_questions
+        }
+        _ => {
+            return Err(LiveCaseworkError::Contract(
+                "accepted receipt kind is not closed".to_owned(),
+            ))
+        }
+    };
+    Ok(questions)
 }
 
 #[cfg(test)]

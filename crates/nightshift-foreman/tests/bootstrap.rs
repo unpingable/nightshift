@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Duration, TimeZone as _, Utc};
 use nightshift_foreman::*;
 use nightshift_provider_capacity::{
-    CapacityPolicyV1, Confidence, WindowType, CAPACITY_POLICY_SCHEMA_V1,
+    decide_capacity, CapacityObservationV1, CapacityPolicyV1, CapacityWindow, Confidence,
+    ObservationDisposition, ObservationEvidence, SourceClass, WindowType,
+    CAPACITY_OBSERVATION_SCHEMA_V1, CAPACITY_POLICY_SCHEMA_V1,
 };
 use nightshiftd::packet::{
     AuthoringIdentityV1, CampaignIdentityV1, CanonicalizationV1, ExactWorkRefV1,
@@ -13,6 +15,8 @@ use nightshiftd::packet::{
     NIGHTSHIFT_PACKET_SCHEMA_V1,
 };
 use serde::Serialize;
+use serde_json::{json, Value};
+use sha2::{Digest as _, Sha256};
 
 fn time(second: u32) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 31, 12, 0, second).unwrap()
@@ -207,7 +211,7 @@ fn profile(
         budget_policy_ref: capacity_policy.policy_id.clone(),
         log_custody_root: "/tmp/second-watch-fixture/log".to_owned(),
         receipt_custody_root: "/tmp/second-watch-fixture/receipts".to_owned(),
-        maximum_event_bytes: 65_536,
+        maximum_event_bytes: 1024 * 1024,
         maximum_receipt_bytes: 131_072,
         adapter_timeout_seconds: 60,
         closeout_policy: "ALL_EXPLICIT_TERMINAL_OR_NOT_STARTED".to_owned(),
@@ -1205,4 +1209,771 @@ fn driver_terminal_dispositions_close_append_and_replay() {
         .unwrap()
         .self_hosted_bootstrap(&terminal_fixture.plan.run_id)
         .is_err());
+}
+
+fn golden_capacity_bundle(value: &Fixture, work_item_id: &str, at: DateTime<Utc>) -> [Vec<u8>; 4] {
+    let mut observation = CapacityObservationV1 {
+        schema: CAPACITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        provider_id: value.capacity_requirement.provider_id.clone(),
+        account_profile_locator: "second-watch-qualification-profile".to_owned(),
+        model_family: None,
+        observed_at: at - Duration::seconds(1),
+        expires_at: at + Duration::minutes(10),
+        source_class: SourceClass::Observed,
+        confidence: Confidence::High,
+        disposition: ObservationDisposition::Usable,
+        unknown_reasons: vec![],
+        windows: vec![
+            CapacityWindow {
+                window_id: "five-hour".to_owned(),
+                window_type: WindowType::FiveHour,
+                remaining_fraction: Some(0.9),
+                remaining_units: None,
+                resets_at: Some(at + Duration::hours(1)),
+            },
+            CapacityWindow {
+                window_id: "weekly".to_owned(),
+                window_type: WindowType::Weekly,
+                remaining_fraction: Some(0.9),
+                remaining_units: None,
+                resets_at: Some(at + Duration::days(1)),
+            },
+        ],
+        evidence: ObservationEvidence {
+            probe_id: format!("second-watch-fuel-{work_item_id}"),
+            protocol_method: "qualification/read".to_owned(),
+            protocol_version: Some("qualification/v1".to_owned()),
+            executable_path: Some("/qualification/fuel-observer".to_owned()),
+            executable_digest: Some(format!("sha256:{}", "1".repeat(64))),
+            raw_source_digest: format!("sha256:{}", "2".repeat(64)),
+        },
+        observation_digest: String::new(),
+    };
+    observation.observation_digest = observation.compute_digest().unwrap();
+    let decision = decide_capacity(&observation, &value.capacity_policy, at).unwrap();
+    let mut admission = ForemanCapacityAdmissionV1 {
+        schema: FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1.to_owned(),
+        capacity_admission_digest: placeholder(),
+        packet_digest: value.packet.packet_digest.clone(),
+        admission_digest: value.admission.admission_digest.clone(),
+        profile_digest: value.profile.profile_digest.clone(),
+        capacity_requirement_digest: value
+            .capacity_requirement
+            .capacity_requirement_digest
+            .clone(),
+        run_id: value.admission.run_id.clone(),
+        work_item_id: work_item_id.to_owned(),
+        adapter_id: value.profile.work_items[work_item_id].adapter_id.clone(),
+        provider_id: observation.provider_id.clone(),
+        packet_model_class: value
+            .packet
+            .work_items
+            .iter()
+            .find(|work| work.id == work_item_id)
+            .unwrap()
+            .model_routing
+            .class
+            .clone(),
+        profile_model_class: value.profile.work_items[work_item_id]
+            .provider_model_class
+            .clone(),
+        cost_class: CapacityCostClassV1::Cheap,
+        policy_id: value.capacity_policy.policy_id.clone(),
+        observation_digest: observation.observation_digest.clone(),
+        policy_digest: value.capacity_policy.policy_digest.clone(),
+        decision_digest: decision.decision_digest.clone(),
+        evaluated_at: at,
+        speculative_requested: false,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    admission.seal().unwrap();
+    [
+        canonical(&admission),
+        canonical(&observation),
+        canonical(&value.capacity_policy),
+        canonical(&decision),
+    ]
+}
+
+fn golden_prepare(
+    store: &ForemanStore,
+    value: &Fixture,
+    work_item_id: &str,
+    dispatch_occurrence_id: &str,
+    adapter_process_occurrence_id: &str,
+    session_identity: &str,
+    at: DateTime<Utc>,
+) -> OpenedProviderDispatchV1 {
+    let capacity = golden_capacity_bundle(value, work_item_id, at);
+    store
+        .prepare_provider_attempt_with_capacity(
+            &value.plan.run_id,
+            work_item_id,
+            CapacityAdmissionEvidenceV1 {
+                admission_bytes: &capacity[0],
+                observation_bytes: &capacity[1],
+                policy_bytes: &capacity[2],
+                decision_bytes: &capacity[3],
+            },
+            dispatch_occurrence_id,
+            adapter_process_occurrence_id,
+            session_identity,
+            0,
+            at,
+        )
+        .unwrap()
+}
+
+fn golden_record_unavailable(
+    store: &ForemanStore,
+    value: &Fixture,
+    opened: &OpenedProviderDispatchV1,
+    received_at: DateTime<Utc>,
+) -> ProviderAdmissionDispositionV1 {
+    let observed_at = received_at - Duration::seconds(1);
+    let retry_after = received_at + Duration::seconds(5);
+    let raw = canonical(&json!({
+        "outcome": "PROVIDER_UNAVAILABLE",
+        "response_created": false,
+        "non_admission_proven": true,
+        "retry_after": retry_after,
+        "observed_at": observed_at,
+    }));
+    let mut evidence = DeterministicProviderAdmissionEvidenceV1 {
+        schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        evidence_digest: placeholder(),
+        producer_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        producer_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        executable_id: HOLDING_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+        executable_sha256: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_request_occurrence_id: format!(
+            "qualification-request-{}",
+            opened.dispatch.dispatch_occurrence_id
+        ),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        outcome: DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable,
+        response_created: false,
+        non_admission_proven: true,
+        retry_after: Some(retry_after),
+        observed_at,
+        received_at,
+        raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
+            "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+            &raw,
+        )
+        .unwrap(),
+        authority_effect: "QUALIFICATION_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    evidence.seal().unwrap();
+    let evidence_bytes = canonical(&evidence);
+    let mut disposition = ProviderAdmissionDispositionV1 {
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2.to_owned(),
+        disposition_digest: placeholder(),
+        dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+        requirement_digest: value.availability_requirement.requirement_digest.clone(),
+        policy_digest: value.availability_policy.policy_digest.clone(),
+        packet_digest: value.packet.packet_digest.clone(),
+        run_id: value.admission.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        provider_request_occurrence_id: evidence.provider_request_occurrence_id.clone(),
+        adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
+        app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+        thread_id: format!("thread-{}", opened.dispatch.dispatch_occurrence_id),
+        turn_id: format!("turn-{}", opened.dispatch.dispatch_occurrence_id),
+        disposition: ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable,
+        mechanism_state: ProviderMechanismStateV1::ParkedNotAdmitted,
+        received_at,
+        response_created: false,
+        will_retry: false,
+        acquisition_complete: true,
+        provider_retry_after: Some(retry_after),
+        provider_execution: None,
+        mapper_snapshot_schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        mapper_snapshot_digest: evidence.evidence_digest.clone(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_qualification_evidence_bytes(&evidence_bytes)
+            .unwrap(),
+        approval_response_sent: false,
+        protected_effect_absent: true,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    disposition.seal().unwrap();
+    let mut observation = ExecutionAvailabilityObservationV1 {
+        schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        observation_digest: placeholder(),
+        provider_id: disposition.provider_id.clone(),
+        model_id: disposition.model_id.clone(),
+        model_class: opened.dispatch.selection.model_class.clone(),
+        observed_at,
+        received_at,
+        expires_at: received_at + Duration::minutes(1),
+        state: ExecutionAvailabilityStateV1::ProviderUnavailable,
+        source_identity: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        source_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        provider_retry_after: Some(retry_after),
+        exact_evidence: Some(evidence.raw_evidence),
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    observation.seal().unwrap();
+    let mut deferred = DeferredProviderDispatchV1 {
+        schema: DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1.to_owned(),
+        deferred_dispatch_digest: placeholder(),
+        requirement_digest: value.availability_requirement.requirement_digest.clone(),
+        policy_digest: value.availability_policy.policy_digest.clone(),
+        disposition_digest: disposition.disposition_digest.clone(),
+        packet_digest: value.packet.packet_digest.clone(),
+        run_id: value.admission.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        last_dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        selected_model_ordinal: opened.dispatch.selected_model_ordinal,
+        remaining_model_ordinals: vec![],
+        refusal_received_at: disposition.received_at,
+        wake_basis: DeferredWakeBasisV1::ProviderRetryAfter,
+        backoff_ordinal: opened.dispatch.dispatch_ordinal - 1,
+        backoff_seconds: 5,
+        provider_retry_after: Some(retry_after),
+        wake_at: retry_after,
+        parked_resource_lock_policy: value.availability_policy.parked_resource_lock_policy,
+        provider_capacity_released: true,
+        semantic_retry: false,
+        authority_effect: "LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY".to_owned(),
+    };
+    deferred.seal().unwrap();
+    let observation_bytes = canonical(&observation);
+    let disposition_bytes = canonical(&disposition);
+    let deferred_bytes = canonical(&deferred);
+    store
+        .record_provider_disposition(
+            &value.admission.run_id,
+            &opened.dispatch.work_item_id,
+            &opened.dispatch.work_attempt_id,
+            ProviderDispositionEvidenceV1 {
+                observation_bytes: &observation_bytes,
+                disposition_bytes: &disposition_bytes,
+                deferred_bytes: Some(&deferred_bytes),
+            },
+            None,
+        )
+        .unwrap()
+}
+
+fn golden_replace_strings(value: &mut Value, replacements: &[(&str, &str)]) {
+    match value {
+        Value::String(text) => {
+            if let Some((_, replacement)) =
+                replacements.iter().find(|(candidate, _)| text == candidate)
+            {
+                *text = (*replacement).to_owned();
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                golden_replace_strings(value, replacements);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                golden_replace_strings(value, replacements);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn golden_seal_value(mut value: Value, field: &str, domain: &[u8]) -> Value {
+    value[field] = Value::String(placeholder());
+    let mut basis = value.clone();
+    basis.as_object_mut().unwrap().remove(field);
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    digest.update(canonical(&basis));
+    value[field] = Value::String(format!("sha256:{:x}", digest.finalize()));
+    value
+}
+
+fn golden_completed_snapshot(opened: &OpenedProviderDispatchV1) -> Vec<u8> {
+    let mut snapshot: Value = serde_json::from_slice(include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
+    ))
+    .unwrap();
+    let thread_id = format!("thread-{}", opened.dispatch.dispatch_occurrence_id);
+    let turn_id = format!("turn-{}", opened.dispatch.dispatch_occurrence_id);
+    let replacements = [
+        (
+            "attempt-holding-1",
+            opened.dispatch.work_attempt_id.as_str(),
+        ),
+        (
+            "dispatch-holding-1",
+            opened.dispatch.dispatch_occurrence_id.as_str(),
+        ),
+        (
+            "adapter-process-holding-1",
+            opened.dispatch.adapter_process_occurrence_id.as_str(),
+        ),
+        (
+            "fixture-estate-holding-1",
+            opened.dispatch.app_server_session_identity.as_str(),
+        ),
+        ("gpt-5.6-sol", opened.dispatch.selection.model_id.as_str()),
+        ("openai", opened.dispatch.selection.provider_id.as_str()),
+        ("thread-holding-1", thread_id.as_str()),
+        ("turn-holding-1", turn_id.as_str()),
+        (
+            "tests/fake_app_server.py",
+            HOLDING_QUALIFICATION_EXECUTABLE_ID,
+        ),
+        (
+            "sha256:cafa673ac58f60029fd6c1de229b4f57d9f42ba918b7ecb2a3bfb20cb2b41a31",
+            HOLDING_QUALIFICATION_EXECUTABLE_SHA256,
+        ),
+    ];
+    golden_replace_strings(&mut snapshot, &replacements);
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        if !record["raw"].is_null() {
+            let bytes = hex::decode(record["raw"]["bytes_hex"].as_str().unwrap()).unwrap();
+            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+            golden_replace_strings(&mut wire, &replacements);
+            let mut exact = serde_json::to_vec(&wire).unwrap();
+            exact.push(b'\n');
+            record["raw"] = json!({
+                "representation": "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
+                "byte_length": exact.len(),
+                "sha256": format!("sha256:{:x}", Sha256::digest(&exact)),
+                "encoding": "hex",
+                "bytes_hex": hex::encode(exact),
+            });
+        }
+    }
+    snapshot["binding"] = golden_seal_value(
+        snapshot["binding"].clone(),
+        "binding_digest",
+        b"switchyard.codex-provider-admission-binding.digest/v1\0",
+    );
+    let binding_digest = snapshot["binding"]["binding_digest"].clone();
+    for record in snapshot["records"].as_array_mut().unwrap() {
+        record["binding_digest"] = binding_digest.clone();
+        *record = golden_seal_value(
+            record.clone(),
+            "evidence_digest",
+            b"switchyard.codex-provider-admission-evidence.digest/v1\0",
+        );
+    }
+    snapshot = golden_seal_value(
+        snapshot,
+        "snapshot_digest",
+        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
+    );
+    canonical(&snapshot)
+}
+
+fn golden_record_completed(
+    store: &ForemanStore,
+    value: &Fixture,
+    opened: &OpenedProviderDispatchV1,
+    received_at: DateTime<Utc>,
+) -> ProviderAdmissionDispositionV1 {
+    let snapshot_bytes = golden_completed_snapshot(opened);
+    let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
+    let identity = &snapshot["provider_execution_identity"];
+    let execution = ProviderExecutionIdentityV1 {
+        provider_id: identity["provider"].as_str().unwrap().to_owned(),
+        model_id: identity["model"].as_str().unwrap().to_owned(),
+        app_server_session_identity: identity["app_server_session_identity"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        thread_id: identity["thread_id"].as_str().unwrap().to_owned(),
+        turn_id: identity["turn_id"].as_str().unwrap().to_owned(),
+        first_response_id: identity["first_response_id"].as_str().unwrap().to_owned(),
+    };
+    let source = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["kind"] == "PROVIDER_EXECUTION_STEP")
+        .unwrap();
+    let observed_at = DateTime::<Utc>::from_timestamp_millis(
+        source["normalized"]["observed_at_ms"].as_i64().unwrap(),
+    )
+    .unwrap();
+    let request_occurrence_id = snapshot["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|record| record["normalized"]["request_occurrence_id"].as_str())
+        .unwrap()
+        .to_owned();
+    let mut disposition = ProviderAdmissionDispositionV1 {
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1.to_owned(),
+        disposition_digest: placeholder(),
+        dispatch_digest: opened.dispatch.dispatch_digest.clone(),
+        requirement_digest: value.availability_requirement.requirement_digest.clone(),
+        policy_digest: value.availability_policy.policy_digest.clone(),
+        packet_digest: value.packet.packet_digest.clone(),
+        run_id: value.admission.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        provider_request_occurrence_id: request_occurrence_id,
+        adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
+        app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+        thread_id: execution.thread_id.clone(),
+        turn_id: execution.turn_id.clone(),
+        disposition: ProviderAdmissionDispositionKindV1::ExecutionAdmitted,
+        mechanism_state: ProviderMechanismStateV1::ProviderCompleted,
+        received_at,
+        response_created: true,
+        will_retry: false,
+        acquisition_complete: true,
+        provider_retry_after: None,
+        provider_execution: Some(execution),
+        mapper_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1".to_owned(),
+        mapper_snapshot_digest: snapshot["snapshot_digest"].as_str().unwrap().to_owned(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_bytes(&snapshot_bytes).unwrap(),
+        approval_response_sent: false,
+        protected_effect_absent: true,
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    disposition.seal().unwrap();
+    let raw: ExactAvailabilityEvidenceV1 = serde_json::from_value(source["raw"].clone()).unwrap();
+    let mut observation = ExecutionAvailabilityObservationV1 {
+        schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
+        observation_digest: placeholder(),
+        provider_id: disposition.provider_id.clone(),
+        model_id: disposition.model_id.clone(),
+        model_class: opened.dispatch.selection.model_class.clone(),
+        observed_at,
+        received_at,
+        expires_at: received_at + Duration::minutes(1),
+        state: ExecutionAvailabilityStateV1::Available,
+        source_identity: "switchyard:provider-admission".to_owned(),
+        source_version: "v1".to_owned(),
+        provider_retry_after: None,
+        exact_evidence: Some(raw),
+        authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    observation.seal().unwrap();
+    let observation_bytes = canonical(&observation);
+    let disposition_bytes = canonical(&disposition);
+    store
+        .record_provider_disposition(
+            &value.admission.run_id,
+            &opened.dispatch.work_item_id,
+            &opened.dispatch.work_attempt_id,
+            ProviderDispositionEvidenceV1 {
+                observation_bytes: &observation_bytes,
+                disposition_bytes: &disposition_bytes,
+                deferred_bytes: None,
+            },
+            None,
+        )
+        .unwrap()
+}
+
+fn golden_terminal(
+    value: &Fixture,
+    opened: &OpenedProviderDispatchV1,
+    disposition: &ProviderAdmissionDispositionV1,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    human_questions: Vec<HumanQuestionV1>,
+) -> TerminalReceiptV1 {
+    let execution = disposition.provider_execution.as_ref().unwrap();
+    let mut receipt = TerminalReceiptV1 {
+        schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.to_owned(),
+        receipt_digest: placeholder(),
+        packet_digest: value.packet.packet_digest.clone(),
+        run_id: value.admission.run_id.clone(),
+        work_item_id: opened.dispatch.work_item_id.clone(),
+        attempt_id: opened.dispatch.work_attempt_id.clone(),
+        adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        adapter_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        provider_identity: execution.provider_id.clone(),
+        model_identity: execution.model_id.clone(),
+        session_identity: Some(execution.app_server_session_identity.clone()),
+        thread_identity: Some(execution.thread_id.clone()),
+        turn_identity: Some(execution.turn_id.clone()),
+        queue_identity: None,
+        started_at,
+        ended_at,
+        state: if human_questions.is_empty() {
+            "QUALIFICATION-COMPLETE-EXACT".to_owned()
+        } else {
+            "BLOCKED-HUMAN-EXACT".to_owned()
+        },
+        result_classification: if human_questions.is_empty() {
+            "SECOND-WATCH-DETERMINISTIC-FIXTURE".to_owned()
+        } else {
+            "SECOND-WATCH-PRESENTATION-ONLY-QUESTION".to_owned()
+        },
+        repositories: vec![ReceiptRepositoryV1 {
+            repository: "nightshift".to_owned(),
+            branch: "campaign/second-watch-fixture".to_owned(),
+            head: "f".repeat(40),
+            push_status: "sole-local qualification fixture".to_owned(),
+        }],
+        tests: vec!["bounded deterministic fake journey".to_owned()],
+        evidence: vec!["exact FUEL and HOLDING graph retained".to_owned()],
+        live_or_production_mutations: vec![],
+        remaining_trigger: if human_questions.is_empty() {
+            "none".to_owned()
+        } else {
+            "explicit successor authority".to_owned()
+        },
+        next_lawful_action: "inspect exact retained receipt".to_owned(),
+        human_questions,
+        teardown: TeardownDeclarationV1 {
+            live_runtime: "none".to_owned(),
+            secrets: "none".to_owned(),
+            teardown: "temporary directory removed by fixture owner".to_owned(),
+        },
+        extensions: BTreeMap::new(),
+    };
+    receipt.seal().unwrap();
+    receipt
+}
+
+#[test]
+fn second_watch_self_hosted_golden_journey_is_restartable_and_query_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("foreman.sqlite3");
+    let value = fixture();
+    let run_id = admit_fixture(&path, &value);
+    let store = ForemanStore::open(&path).unwrap();
+
+    let first_step = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            1,
+            "second-watch-scheduler-process-1",
+            time(2),
+        )
+        .unwrap();
+    assert_eq!(
+        first_step.disposition,
+        SelfHostedDriverDispositionV1::ReadyWorkPresent
+    );
+
+    let lane_a = golden_prepare(
+        &store,
+        &value,
+        "lane-a",
+        "second-watch-dispatch-a-1",
+        "second-watch-process-a-1",
+        "second-watch-session-a-1",
+        time(3),
+    );
+    let lane_b = golden_prepare(
+        &store,
+        &value,
+        "lane-b",
+        "second-watch-dispatch-b-1",
+        "second-watch-process-b-1",
+        "second-watch-session-b-1",
+        time(4),
+    );
+    assert_ne!(
+        lane_a.dispatch.work_attempt_id,
+        lane_b.dispatch.work_attempt_id
+    );
+    let parked = golden_record_unavailable(&store, &value, &lane_a, time(5));
+    assert_eq!(
+        parked.mechanism_state,
+        ProviderMechanismStateV1::ParkedNotAdmitted
+    );
+    assert!(!parked.response_created);
+    assert!(parked.provider_execution.is_none());
+
+    let completed_b = golden_record_completed(&store, &value, &lane_b, time(6));
+    let receipt_b = golden_terminal(&value, &lane_b, &completed_b, time(4), time(7), vec![]);
+    store
+        .accept_terminal_receipt(&canonical(&receipt_b))
+        .unwrap();
+    drop(store);
+
+    let store = ForemanStore::open(&path).unwrap();
+    let second_step = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            2,
+            "second-watch-scheduler-process-restarted",
+            time(8),
+        )
+        .unwrap();
+    assert_eq!(second_step.step_ordinal, 2);
+
+    let woken_a = store
+        .wake_provider_dispatch(
+            &run_id,
+            "lane-a",
+            &lane_a.dispatch.work_attempt_id,
+            "second-watch-wake-a-1",
+            "second-watch-dispatch-a-2",
+            "second-watch-process-a-2",
+            "second-watch-session-a-2",
+            0,
+            parked.provider_retry_after.unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        woken_a.dispatch.work_attempt_id,
+        lane_a.dispatch.work_attempt_id
+    );
+    assert_ne!(
+        woken_a.dispatch.dispatch_occurrence_id,
+        lane_a.dispatch.dispatch_occurrence_id
+    );
+    let completed_a = golden_record_completed(&store, &value, &woken_a, time(11));
+    let receipt_a = golden_terminal(&value, &woken_a, &completed_a, time(10), time(12), vec![]);
+    store
+        .accept_terminal_receipt(&canonical(&receipt_a))
+        .unwrap();
+
+    let question_lane = golden_prepare(
+        &store,
+        &value,
+        "question",
+        "second-watch-dispatch-question-1",
+        "second-watch-process-question-1",
+        "second-watch-session-question-1",
+        time(13),
+    );
+    let completed_question = golden_record_completed(&store, &value, &question_lane, time(14));
+    let question = HumanQuestionV1 {
+        question_id: "second-watch-presentation-only-question".to_owned(),
+        question: "Is protected target-effect authority present for this fixture lane?".to_owned(),
+        exhausted_evidence:
+            "The admitted bootstrap and deterministic fake carry no target-effect authority."
+                .to_owned(),
+        safe_default: "Do not perform a protected effect or answer an approval request.".to_owned(),
+        consequences:
+            "Only this lane retains the question; independent exact receipts remain unchanged."
+                .to_owned(),
+        resume_point: "Create a successor occurrence after exact external authority exists."
+            .to_owned(),
+    };
+    let question_receipt = golden_terminal(
+        &value,
+        &question_lane,
+        &completed_question,
+        time(13),
+        time(15),
+        vec![question.clone()],
+    );
+    store
+        .accept_terminal_receipt(&canonical(&question_receipt))
+        .unwrap();
+
+    let closeout = golden_prepare(
+        &store,
+        &value,
+        "closeout",
+        "second-watch-dispatch-closeout-1",
+        "second-watch-process-closeout-1",
+        "second-watch-session-closeout-1",
+        time(16),
+    );
+    let completed_closeout = golden_record_completed(&store, &value, &closeout, time(17));
+    let closeout_receipt = golden_terminal(
+        &value,
+        &closeout,
+        &completed_closeout,
+        time(16),
+        time(18),
+        vec![],
+    );
+    store
+        .accept_terminal_receipt(&canonical(&closeout_receipt))
+        .unwrap();
+
+    let final_step = store
+        .advance_self_hosted_driver(
+            &run_id,
+            &value.plan.bootstrap_digest,
+            3,
+            "second-watch-scheduler-process-restarted",
+            time(19),
+        )
+        .unwrap();
+    assert_eq!(
+        final_step.disposition,
+        SelfHostedDriverDispositionV1::AllItemsExplicitTerminal
+    );
+
+    let live = nightshift_casework::load_live_run_at(&path, &run_id, time(19)).unwrap();
+    assert_eq!(live.projection.work_items.len(), 4);
+    let questions: Vec<_> = live
+        .projection
+        .work_items
+        .iter()
+        .flat_map(|item| &item.human_questions)
+        .collect();
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].question_id, question.question_id);
+    assert_eq!(questions[0].question, question.question);
+    assert_eq!(questions[0].exhausted_evidence, question.exhausted_evidence);
+    assert_eq!(questions[0].safe_default, question.safe_default);
+    assert_eq!(questions[0].consequences, question.consequences);
+    assert_eq!(questions[0].resume_point, question.resume_point);
+    assert!(serde_json::to_value(&live.projection)
+        .unwrap()
+        .get("aggregate_result")
+        .is_none());
+
+    let final_receipts = store.close(&run_id, time(20)).unwrap();
+    let final_value: Value = serde_json::from_slice(&final_receipts).unwrap();
+    assert_eq!(final_value["schema"], "nightshift.run-receipts/v1");
+    assert_eq!(final_value["work_items"].as_array().unwrap().len(), 4);
+    drop(store);
+
+    let read_only = ForemanStore::open_read_only(&path).unwrap();
+    let bootstrap = read_only.self_hosted_bootstrap(&run_id).unwrap();
+    assert_eq!(bootstrap.steps, vec![first_step, second_step, final_step]);
+    let snapshot = read_only.read_only_run_snapshot(&run_id).unwrap();
+    assert_eq!(snapshot.capacity_admissions.len(), 4);
+    let execution = snapshot.execution_availability.unwrap();
+    assert_eq!(execution.dispatches.len(), 5);
+    assert_eq!(execution.dispositions.len(), 5);
+    assert_eq!(execution.deferred.len(), 1);
+    assert_eq!(execution.resource_transitions.len(), 2);
+    assert!(execution
+        .dispositions
+        .iter()
+        .all(|item| !item.approval_response_sent && item.protected_effect_absent));
+    assert!(execution.deferred.iter().all(|item| !item.semantic_retry));
+    drop(read_only);
+
+    let sealed = directory.path().join("sealed");
+    std::fs::create_dir(&sealed).unwrap();
+    std::fs::write(sealed.join("packet.v1.json"), canonical(&value.packet)).unwrap();
+    std::fs::write(sealed.join("run-receipts.v1.json"), &final_receipts).unwrap();
+    let sealed_case = nightshift_casework::load_run_at(&sealed, time(20)).unwrap();
+    assert_eq!(sealed_case.receipt_bytes, final_receipts);
+    assert_eq!(sealed_case.projection.work_items.len(), 4);
+    assert!(serde_json::to_value(&sealed_case.projection)
+        .unwrap()
+        .get("aggregate_result")
+        .is_none());
+
+    if let Some(output) = std::env::var_os("NIGHTSHIFT_SECOND_WATCH_GOLDEN_DIR") {
+        let output = std::path::PathBuf::from(output);
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("packet.v1.json"), canonical(&value.packet)).unwrap();
+        std::fs::write(output.join("run-receipts.v1.json"), &final_receipts).unwrap();
+        std::fs::copy(&path, output.join("foreman.sqlite3")).unwrap();
+    }
 }

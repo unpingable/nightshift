@@ -5,9 +5,12 @@ use nightshift_foreman::{
     AdapterRegistrationV2, ExecutionProfileV2, ForemanExecutionAvailabilityRequirementV1,
     ProviderAdmissionOwnerPinsV1, ProviderDispatchOccurrenceV1, ProviderModelSelectionV1,
     WorkItemExecutionV1, WorkerStartRequestV2, WorkerStartRequestV3,
+    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
     FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-    PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1, WORKER_START_REQUEST_SCHEMA_V2,
-    WORKER_START_REQUEST_SCHEMA_V3, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    HOLDING_QUALIFICATION_EXECUTABLE_SHA256, HOLDING_QUALIFICATION_PRODUCER_ID,
+    HOLDING_QUALIFICATION_PRODUCER_VERSION, PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1,
+    WORKER_START_REQUEST_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V3,
+    WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -333,4 +336,137 @@ fn v2_remains_valid_and_v3_is_recursively_closed() {
     let mut noncanonical = canonical(&request);
     noncanonical.push(b' ');
     assert!(WorkerStartRequestV3::from_slice(&noncanonical).is_err());
+}
+
+fn qualification_v3_graph() -> (
+    WorkerStartRequestV2,
+    ExecutionProfileV2,
+    ForemanExecutionAvailabilityRequirementV1,
+    WorkerStartRequestV3,
+) {
+    let mut predecessor = v2();
+    predecessor.adapter_id = HOLDING_QUALIFICATION_PRODUCER_ID.to_owned();
+    predecessor.adapter_version = HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    predecessor.adapter_protocol = DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned();
+    predecessor.seal().unwrap();
+
+    let mut profile = profile();
+    profile.adapters = BTreeMap::from([(
+        HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        AdapterRegistrationV2 {
+            adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+            protocol: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+            adapter_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+            executable_identity: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+            bounded_arguments: vec![],
+        },
+    )]);
+    profile.work_items.get_mut("WORK-A").unwrap().adapter_id =
+        HOLDING_QUALIFICATION_PRODUCER_ID.to_owned();
+    profile.seal().unwrap();
+
+    let mut requirement = requirement(&profile);
+    requirement.adapter_id = HOLDING_QUALIFICATION_PRODUCER_ID.to_owned();
+    requirement.adapter_protocol = DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned();
+    requirement.adapter_version = HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    requirement.adapter_executable_identity = HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned();
+    requirement.seal().unwrap();
+
+    let request = WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&predecessor),
+        &profile,
+        &requirement,
+        "dispatch-holding-qualification-1",
+        0,
+    )
+    .unwrap();
+    (predecessor, profile, requirement, request)
+}
+
+#[test]
+fn v3_qualification_branch_is_exactly_the_accepted_fake_tuple() {
+    let (predecessor, profile, requirement, request) = qualification_v3_graph();
+    assert_eq!(request.predecessor_v2().unwrap(), predecessor);
+    assert_eq!(
+        request.provider_admission_adapter_protocol,
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+    );
+    assert_eq!(
+        request.provider_admission_binding_schema,
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+    );
+    assert_eq!(
+        request.provider_admission_evidence_schema,
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+    );
+    assert_eq!(
+        request.provider_admission_snapshot_schema,
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+    );
+    request
+        .validate_dispatch_graph(&profile, &requirement, &dispatch(&request, &requirement))
+        .unwrap();
+
+    for substitute in [
+        |value: &mut WorkerStartRequestV3| value.adapter_id = "qualification-other".to_owned(),
+        |value: &mut WorkerStartRequestV3| value.adapter_version = "v2".to_owned(),
+        |value: &mut WorkerStartRequestV3| {
+            value.adapter_protocol = "qualification.other/v1".to_owned()
+        },
+        |value: &mut WorkerStartRequestV3| {
+            value.provider_admission_adapter_protocol = "qualification.other/v1".to_owned()
+        },
+        |value: &mut WorkerStartRequestV3| {
+            value.provider_admission_binding_schema = "qualification.other/v1".to_owned()
+        },
+        |value: &mut WorkerStartRequestV3| {
+            value.provider_admission_evidence_schema = "qualification.other/v1".to_owned()
+        },
+        |value: &mut WorkerStartRequestV3| {
+            value.provider_admission_snapshot_schema = "qualification.other/v1".to_owned()
+        },
+    ] {
+        let mut changed = request.clone();
+        substitute(&mut changed);
+        assert!(changed.seal().is_err());
+    }
+
+    let mut changed_profile = profile.clone();
+    changed_profile
+        .adapters
+        .get_mut(HOLDING_QUALIFICATION_PRODUCER_ID)
+        .unwrap()
+        .executable_identity = digest('e');
+    changed_profile.seal().unwrap();
+    let mut changed_requirement = requirement.clone();
+    changed_requirement.profile_digest = changed_profile.profile_digest.clone();
+    changed_requirement.adapter_executable_identity = digest('e');
+    changed_requirement.seal().unwrap();
+    assert!(WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&predecessor),
+        &changed_profile,
+        &changed_requirement,
+        "dispatch-holding-qualification-2",
+        0,
+    )
+    .is_err());
+
+    let mut changed_profile = profile;
+    changed_profile
+        .adapters
+        .get_mut(HOLDING_QUALIFICATION_PRODUCER_ID)
+        .unwrap()
+        .bounded_arguments = vec!["--not-empty".to_owned()];
+    changed_profile.seal().unwrap();
+    let mut changed_requirement = requirement;
+    changed_requirement.profile_digest = changed_profile.profile_digest.clone();
+    changed_requirement.seal().unwrap();
+    assert!(WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&predecessor),
+        &changed_profile,
+        &changed_requirement,
+        "dispatch-holding-qualification-3",
+        0,
+    )
+    .is_err());
 }

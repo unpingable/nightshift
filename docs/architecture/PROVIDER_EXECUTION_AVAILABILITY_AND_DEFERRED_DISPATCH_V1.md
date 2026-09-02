@@ -194,6 +194,18 @@ run/work/attempt/packet/adapter/brief, provider/model/class/ordinal, occurrence,
 and opening-time equality. The work-attempt and dispatch-occurrence identities
 must be distinct. Standalone structural V3 validation is not dispatch admission.
 
+V3 has two closed adapter branches. The ordinary branch remains exactly
+`switchyard.codex-app-server/v2` with its accepted binding, evidence, and
+snapshot schemas. The SECOND-WATCH qualification branch is available only when
+the profile, requirement, V2 predecessor, and V3 request all name the exact
+accepted HOLDING deterministic-fake adapter ID, protocol, version, executable
+SHA-256, and empty bounded arguments. In that branch the single closed
+`nightshift.holding-deterministic-provider-admission-evidence/v1` record is the
+qualification binding, evidence, and snapshot carrier. Mixed branches or any
+coherently resealed alternate tuple refuse before attempt or dispatch mutation.
+This branch grants no production activation and does not widen the ordinary
+Switchyard path.
+
 Every record uses RFC 8785 serialization and a distinct versioned digest
 domain. Exact raw evidence uses hex encoding, an
 explicit byte length, plain SHA-256, and a 16 KiB per-evidence ceiling. The

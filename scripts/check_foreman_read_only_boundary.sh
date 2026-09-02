@@ -46,7 +46,7 @@ if [[ "$bin_count" != "2" || "$source_bin_count" != "2" || -e "$root/crates/nigh
   exit 1
 fi
 
-if rg -n 'aggregate_result|aggregate_health' "$target" >/dev/null; then
+if rg -n 'aggregate_result([^_A-Za-z0-9]|$)|aggregate_health' "$target" >/dev/null; then
   echo "foreman boundary gate: aggregate result surface present"
   exit 1
 fi
@@ -66,6 +66,11 @@ if [[ "${1:-}" == "--self-test-inject" ]]; then
   perl -0pi -e 's/mode=ro/mode=rwc/g' "$query_fixture/src/store.rs"
   if check_query_only_tree "$query_fixture/src"; then
     echo "foreman query-only boundary negative control did not fail"
+    exit 1
+  fi
+  printf '\npub const aggregate_result: &str = "fixture";\n' >> "$fixture/src/lib.rs"
+  if ! rg -n 'aggregate_result([^_A-Za-z0-9]|$)|aggregate_health' "$fixture/src" >/dev/null; then
+    echo "foreman aggregate-result boundary negative control did not fail"
     exit 1
   fi
   echo "foreman boundary gate deterministic negative controls: passed"

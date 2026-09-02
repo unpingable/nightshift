@@ -23,7 +23,7 @@
     "dispatch_occurrence_id":{"$ref":"#/$defs/id"},
     "adapter_id":{"$ref":"#/$defs/id"},
     "adapter_version":{"$ref":"#/$defs/id"},
-    "adapter_protocol":{"const":"switchyard.codex-app-server/v2"},
+    "adapter_protocol":{"enum":["switchyard.codex-app-server/v2","nightshift.holding-deterministic-provider-admission-evidence/v1"]},
     "worker_brief_digest":{"$ref":"#/$defs/digest"},
     "workspace_identity":{"$ref":"#/$defs/id"},
     "provider_model_class":{"$ref":"#/$defs/id"},
@@ -36,10 +36,10 @@
     "model_id":{"$ref":"#/$defs/id"},
     "model_class":{"$ref":"#/$defs/id"},
     "selected_model_ordinal":{"type":"integer","minimum":0,"maximum":15},
-    "provider_admission_adapter_protocol":{"const":"switchyard.codex-app-server/v2"},
-    "provider_admission_binding_schema":{"const":"switchyard.codex-provider-admission-binding/v1"},
-    "provider_admission_evidence_schema":{"const":"switchyard.codex-provider-admission-evidence/v1"},
-    "provider_admission_snapshot_schema":{"const":"switchyard.codex-provider-admission-snapshot/v1"},
+    "provider_admission_adapter_protocol":{"enum":["switchyard.codex-app-server/v2","nightshift.holding-deterministic-provider-admission-evidence/v1"]},
+    "provider_admission_binding_schema":{"enum":["switchyard.codex-provider-admission-binding/v1","nightshift.holding-deterministic-provider-admission-evidence/v1"]},
+    "provider_admission_evidence_schema":{"enum":["switchyard.codex-provider-admission-evidence/v1","nightshift.holding-deterministic-provider-admission-evidence/v1"]},
+    "provider_admission_snapshot_schema":{"enum":["switchyard.codex-provider-admission-snapshot/v1","nightshift.holding-deterministic-provider-admission-evidence/v1"]},
     "codex_owner_head":{"const":"c36a8137638decf8b04a49611354a90f32c5a945"},
     "switchyard_owner_head":{"const":"2ba25db66d8b29dd215bd87e05f4ea794024b3b7"},
     "switchyard_schema_sha256":{"const":"sha256:131f1f6e0cf8cb0aea26ed225c584440c81ffedd443c68ace23adecbe493cf93"},
@@ -50,6 +50,26 @@
     "approval_response_authorized":{"const":false},
     "authority_effect":{"const":"LOCAL_AGENT_COMPUTE_SCHEDULING_ONLY"}
   },
+  "allOf":[
+    {"oneOf":[
+      {"properties":{
+        "adapter_protocol":{"const":"switchyard.codex-app-server/v2"},
+        "provider_admission_adapter_protocol":{"const":"switchyard.codex-app-server/v2"},
+        "provider_admission_binding_schema":{"const":"switchyard.codex-provider-admission-binding/v1"},
+        "provider_admission_evidence_schema":{"const":"switchyard.codex-provider-admission-evidence/v1"},
+        "provider_admission_snapshot_schema":{"const":"switchyard.codex-provider-admission-snapshot/v1"}
+      }},
+      {"properties":{
+        "adapter_id":{"const":"nightshift:holding-pattern-deterministic-fake-adapter"},
+        "adapter_version":{"const":"v1"},
+        "adapter_protocol":{"const":"nightshift.holding-deterministic-provider-admission-evidence/v1"},
+        "provider_admission_adapter_protocol":{"const":"nightshift.holding-deterministic-provider-admission-evidence/v1"},
+        "provider_admission_binding_schema":{"const":"nightshift.holding-deterministic-provider-admission-evidence/v1"},
+        "provider_admission_evidence_schema":{"const":"nightshift.holding-deterministic-provider-admission-evidence/v1"},
+        "provider_admission_snapshot_schema":{"const":"nightshift.holding-deterministic-provider-admission-evidence/v1"}
+      }}
+    ]}
+  ],
   "$defs":{
     "digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
     "id":{"type":"string","minLength":1,"maxLength":512,"pattern":"^[A-Za-z0-9._:/-]+$"}

@@ -75,20 +75,32 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
             "nightshift.worker-start-request/v2",
         )
         self.assertEqual(
-            self.schema["properties"]["provider_admission_adapter_protocol"]["const"],
-            "switchyard.codex-app-server/v2",
+            self.schema["properties"]["provider_admission_adapter_protocol"]["enum"],
+            [
+                "switchyard.codex-app-server/v2",
+                "nightshift.holding-deterministic-provider-admission-evidence/v1",
+            ],
         )
         self.assertEqual(
-            self.schema["properties"]["provider_admission_binding_schema"]["const"],
-            "switchyard.codex-provider-admission-binding/v1",
+            self.schema["properties"]["provider_admission_binding_schema"]["enum"],
+            [
+                "switchyard.codex-provider-admission-binding/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v1",
+            ],
         )
         self.assertEqual(
-            self.schema["properties"]["provider_admission_evidence_schema"]["const"],
-            "switchyard.codex-provider-admission-evidence/v1",
+            self.schema["properties"]["provider_admission_evidence_schema"]["enum"],
+            [
+                "switchyard.codex-provider-admission-evidence/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v1",
+            ],
         )
         self.assertEqual(
-            self.schema["properties"]["provider_admission_snapshot_schema"]["const"],
-            "switchyard.codex-provider-admission-snapshot/v1",
+            self.schema["properties"]["provider_admission_snapshot_schema"]["enum"],
+            [
+                "switchyard.codex-provider-admission-snapshot/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v1",
+            ],
         )
         v2_bundle = json.loads(
             (ROOT / "schemas/nightshift.worker-adapter.v2.schema.json").read_bytes()
@@ -133,6 +145,33 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
         changed["approve"] = True
         with self.assertRaises(ValidationError):
             self.validator.validate(changed)
+
+
+    def test_qualification_branch_is_closed_and_mixed_branch_refuses(self):
+        fake = copy.deepcopy(value())
+        fake["adapter_id"] = "nightshift:holding-pattern-deterministic-fake-adapter"
+        fake["adapter_version"] = "v1"
+        protocol = "nightshift.holding-deterministic-provider-admission-evidence/v1"
+        fake["adapter_protocol"] = protocol
+        fake["provider_admission_adapter_protocol"] = protocol
+        fake["provider_admission_binding_schema"] = protocol
+        fake["provider_admission_evidence_schema"] = protocol
+        fake["provider_admission_snapshot_schema"] = protocol
+        self.validator.validate(fake)
+
+        for field in (
+            "adapter_id",
+            "adapter_version",
+            "adapter_protocol",
+            "provider_admission_adapter_protocol",
+            "provider_admission_binding_schema",
+            "provider_admission_evidence_schema",
+            "provider_admission_snapshot_schema",
+        ):
+            changed = copy.deepcopy(fake)
+            changed[field] = value()[field]
+            with self.assertRaises(ValidationError):
+                self.validator.validate(changed)
 
 
 if __name__ == "__main__":

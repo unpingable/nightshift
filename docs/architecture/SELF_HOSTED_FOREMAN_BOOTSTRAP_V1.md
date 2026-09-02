@@ -41,6 +41,8 @@ The record pins:
 - exact HOLDING result and qualified subject;
 - exact durable roadmap, MIDNIGHT result, and SILICON result;
 - exact accepted Codex and Switchyard provider-admission owner subjects;
+- the exact accepted HOLDING deterministic-fake adapter tuple, used only by the
+  bounded qualification journey;
 - a fresh packet identity distinct from the sealed V2 packet;
 - exact foreman admission and execution profile;
 - exact capacity requirement and capacity policy;
@@ -261,3 +263,37 @@ production/default route.
 
 This checkpoint activates only append-only bootstrap custody and observation-only driver steps. Worker dispatch, wake, receipt collection, final closeout, and the full golden journey remain outside this first runtime freeze; no provider or timer is active. The contract checkpoint was independently
 accepted.
+
+
+## Deterministic self-hosted golden journey
+
+The successor qualification stage leaves the first checkpoint intact and adds
+one deterministic, campaign-owned journey over the same production owner APIs.
+The bootstrap fixture admits four work items: two independent entry lanes, one
+presentation-only question lane, and one dependent closeout lane. Every start
+atomically retains an exact FUEL capacity admission and HOLDING V3 dispatch.
+The first lane receives the exact qualification-fake PROVIDER_UNAVAILABLE
+non-admission record, parks without an execution identity, releases its
+resource claim, and later wakes as a fresh dispatch occurrence on the same work
+attempt. The second lane reaches its terminal receipt independently before the
+foreman store is closed and reopened. The woken lane, question lane, and
+closeout lane then consume deterministic exact owner snapshots bound to the
+accepted fake executable tuple and reach explicit terminal receipts.
+
+The question is retained only as presentation evidence in the accepted terminal
+receipt. No adapter event answers it and every receipt records no approval
+response, protected effect, live mutation, or semantic retry. Query-only
+Casework reopens accepted terminal and not-started receipt bytes, validates
+their canonical owner contracts, and merges exact receipt questions with any
+matching journal question. Same-ID disagreement refuses; an exact duplicate is
+not duplicated. Live and sealed Casework remain read-only and create no
+aggregate result.
+
+The journey records bounded driver observations before scheduling, after a
+process restart, and after complete terminality. It proves distinct attempts,
+dispatch occurrences, wake occurrence, adapter-process occurrences, sessions,
+and provider execution identities; exact resource release/reacquire custody;
+four independent FUEL admission records; one parked deferral; five dispatches
+and dispositions; final nightshift.run-receipts/v1; and byte-exact sealed
+Casework input. It starts no real provider, subprocess, listener, timer,
+service, browser, or production route.

@@ -735,6 +735,25 @@ impl WorkerStartRequestV3 {
         let selection = selections
             .get(usize::from(selected_model_ordinal))
             .ok_or(ContractError::InvalidField("V3 selected model ordinal"))?;
+        let qualification_fake = predecessor.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+            && predecessor.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
+            && predecessor.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1;
+        let (admission_protocol, binding_schema, evidence_schema, snapshot_schema) =
+            if qualification_fake {
+                (
+                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+                )
+            } else {
+                (
+                    "switchyard.codex-app-server/v2",
+                    "switchyard.codex-provider-admission-binding/v1",
+                    "switchyard.codex-provider-admission-evidence/v1",
+                    "switchyard.codex-provider-admission-snapshot/v1",
+                )
+            };
         let mut request = Self {
             schema: WORKER_START_REQUEST_SCHEMA_V3.to_owned(),
             request_digest: format!("sha256:{}", "0".repeat(64)),
@@ -765,13 +784,10 @@ impl WorkerStartRequestV3 {
             model_id: selection.model_id.clone(),
             model_class: selection.model_class.clone(),
             selected_model_ordinal,
-            provider_admission_adapter_protocol: "switchyard.codex-app-server/v2".to_owned(),
-            provider_admission_binding_schema: "switchyard.codex-provider-admission-binding/v1"
-                .to_owned(),
-            provider_admission_evidence_schema: "switchyard.codex-provider-admission-evidence/v1"
-                .to_owned(),
-            provider_admission_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1"
-                .to_owned(),
+            provider_admission_adapter_protocol: admission_protocol.to_owned(),
+            provider_admission_binding_schema: binding_schema.to_owned(),
+            provider_admission_evidence_schema: evidence_schema.to_owned(),
+            provider_admission_snapshot_schema: snapshot_schema.to_owned(),
             codex_owner_head: ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD.to_owned(),
             switchyard_owner_head: ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD.to_owned(),
             switchyard_schema_sha256: ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256
@@ -806,6 +822,15 @@ impl WorkerStartRequestV3 {
             .adapters
             .get(&execution.adapter_id)
             .ok_or(ContractError::InvalidField("V3 profile adapter"))?;
+        let qualification_adapter = self.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID;
+        if qualification_adapter
+            && (adapter.executable_identity != HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+                || !adapter.bounded_arguments.is_empty())
+        {
+            return Err(ContractError::InvalidField(
+                "V3 qualification adapter executable binding",
+            ));
+        }
         let selection = requirement
             .work_item_model_selections
             .get(&self.work_item_id)
@@ -981,6 +1006,21 @@ impl WorkerStartRequestV3 {
             id(field, value)?;
         }
         let predecessor = self.predecessor_v2()?;
+        let switchyard_binding = self.adapter_protocol == "switchyard.codex-app-server/v2"
+            && self.provider_admission_adapter_protocol == self.adapter_protocol
+            && self.provider_admission_binding_schema
+                == "switchyard.codex-provider-admission-binding/v1"
+            && self.provider_admission_evidence_schema
+                == "switchyard.codex-provider-admission-evidence/v1"
+            && self.provider_admission_snapshot_schema
+                == "switchyard.codex-provider-admission-snapshot/v1";
+        let qualification_binding = self.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+            && self.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
+            && self.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+            && self.provider_admission_adapter_protocol == self.adapter_protocol
+            && self.provider_admission_binding_schema == self.adapter_protocol
+            && self.provider_admission_evidence_schema == self.adapter_protocol
+            && self.provider_admission_snapshot_schema == self.adapter_protocol;
         if self.predecessor_schema != crate::WORKER_START_REQUEST_SCHEMA_V2
             || predecessor.schema != self.predecessor_schema
             || self.packet_digest != predecessor.packet_digest
@@ -1002,14 +1042,7 @@ impl WorkerStartRequestV3 {
             || self.expected_receipt_schema != predecessor.expected_receipt_schema
             || self.model_class != self.provider_model_class
             || self.selected_model_ordinal >= 16
-            || self.adapter_protocol != "switchyard.codex-app-server/v2"
-            || self.provider_admission_adapter_protocol != self.adapter_protocol
-            || self.provider_admission_binding_schema
-                != "switchyard.codex-provider-admission-binding/v1"
-            || self.provider_admission_evidence_schema
-                != "switchyard.codex-provider-admission-evidence/v1"
-            || self.provider_admission_snapshot_schema
-                != "switchyard.codex-provider-admission-snapshot/v1"
+            || !(switchyard_binding || qualification_binding)
             || self.codex_owner_head != ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD
             || self.switchyard_owner_head != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD
             || self.switchyard_schema_sha256 != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256
