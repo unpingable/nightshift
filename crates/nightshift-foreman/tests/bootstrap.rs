@@ -201,9 +201,9 @@ fn profile(
             HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
             AdapterRegistrationV2 {
                 adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
-                protocol: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
-                adapter_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
-                executable_identity: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+                protocol: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2.to_owned(),
+                adapter_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+                executable_identity: SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
                 bounded_arguments: vec![],
             },
         )]),
@@ -473,15 +473,15 @@ fn closed_bootstrap_plan_and_exact_graph_validate() {
     assert_eq!(adapter.adapter_id, HOLDING_QUALIFICATION_PRODUCER_ID);
     assert_eq!(
         adapter.protocol,
-        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+        DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
     );
     assert_eq!(
         adapter.adapter_version,
-        HOLDING_QUALIFICATION_PRODUCER_VERSION
+        SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
     );
     assert_eq!(
         adapter.executable_identity,
-        HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+        SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256
     );
     assert!(adapter.bounded_arguments.is_empty());
     let raw = canonical(&value.plan);
@@ -574,7 +574,7 @@ fn graph_substitution_and_topology_cases_fail_closed() {
     substituted.protocol = "substituted.protocol/v1".to_owned();
     substituted_adapters.push(substituted);
     let mut substituted = exact.clone();
-    substituted.adapter_version = "v2".to_owned();
+    substituted.adapter_version = "v3".to_owned();
     substituted_adapters.push(substituted);
     let mut substituted = exact.clone();
     substituted.executable_identity = format!("sha256:{}", "f".repeat(64));
@@ -1338,14 +1338,15 @@ fn golden_record_unavailable(
         "non_admission_proven": true,
         "retry_after": retry_after,
         "observed_at": observed_at,
+        "provider_execution": null,
     }));
-    let mut evidence = DeterministicProviderAdmissionEvidenceV1 {
-        schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+    let mut evidence = DeterministicProviderAdmissionEvidenceV2 {
+        schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2.to_owned(),
         evidence_digest: placeholder(),
         producer_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
-        producer_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
-        executable_id: HOLDING_QUALIFICATION_EXECUTABLE_ID.to_owned(),
-        executable_sha256: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+        producer_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        executable_id: SECOND_WATCH_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+        executable_sha256: SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
         work_attempt_id: opened.dispatch.work_attempt_id.clone(),
         dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
         provider_request_occurrence_id: format!(
@@ -1354,12 +1355,13 @@ fn golden_record_unavailable(
         ),
         provider_id: opened.dispatch.selection.provider_id.clone(),
         model_id: opened.dispatch.selection.model_id.clone(),
-        outcome: DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable,
+        outcome: DeterministicProviderAdmissionOutcomeV2::ProviderUnavailable,
         response_created: false,
         non_admission_proven: true,
         retry_after: Some(retry_after),
         observed_at,
         received_at,
+        provider_execution: None,
         raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
             "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
             &raw,
@@ -1370,7 +1372,7 @@ fn golden_record_unavailable(
     evidence.seal().unwrap();
     let evidence_bytes = canonical(&evidence);
     let mut disposition = ProviderAdmissionDispositionV1 {
-        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2.to_owned(),
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3.to_owned(),
         disposition_digest: placeholder(),
         dispatch_digest: opened.dispatch.dispatch_digest.clone(),
         requirement_digest: value.availability_requirement.requirement_digest.clone(),
@@ -1395,7 +1397,7 @@ fn golden_record_unavailable(
         acquisition_complete: true,
         provider_retry_after: Some(retry_after),
         provider_execution: None,
-        mapper_snapshot_schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+        mapper_snapshot_schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2.to_owned(),
         mapper_snapshot_digest: evidence.evidence_digest.clone(),
         mapper_snapshot: ExactMapperSnapshotV1::from_qualification_evidence_bytes(&evidence_bytes)
             .unwrap(),
@@ -1415,7 +1417,7 @@ fn golden_record_unavailable(
         expires_at: received_at + Duration::minutes(1),
         state: ExecutionAvailabilityStateV1::ProviderUnavailable,
         source_identity: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
-        source_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        source_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
         provider_retry_after: Some(retry_after),
         exact_evidence: Some(evidence.raw_evidence),
         authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
@@ -1466,155 +1468,68 @@ fn golden_record_unavailable(
         .unwrap()
 }
 
-fn golden_replace_strings(value: &mut Value, replacements: &[(&str, &str)]) {
-    match value {
-        Value::String(text) => {
-            if let Some((_, replacement)) =
-                replacements.iter().find(|(candidate, _)| text == candidate)
-            {
-                *text = (*replacement).to_owned();
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                golden_replace_strings(value, replacements);
-            }
-        }
-        Value::Object(values) => {
-            for value in values.values_mut() {
-                golden_replace_strings(value, replacements);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn golden_seal_value(mut value: Value, field: &str, domain: &[u8]) -> Value {
-    value[field] = Value::String(placeholder());
-    let mut basis = value.clone();
-    basis.as_object_mut().unwrap().remove(field);
-    let mut digest = Sha256::new();
-    digest.update(domain);
-    digest.update(canonical(&basis));
-    value[field] = Value::String(format!("sha256:{:x}", digest.finalize()));
-    value
-}
-
-fn golden_completed_snapshot(opened: &OpenedProviderDispatchV1) -> Vec<u8> {
-    let mut snapshot: Value = serde_json::from_slice(include_bytes!(
-        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/switchyard-provider-completed.snapshot.v1.json"
-    ))
-    .unwrap();
-    let thread_id = format!("thread-{}", opened.dispatch.dispatch_occurrence_id);
-    let turn_id = format!("turn-{}", opened.dispatch.dispatch_occurrence_id);
-    let replacements = [
-        (
-            "attempt-holding-1",
-            opened.dispatch.work_attempt_id.as_str(),
-        ),
-        (
-            "dispatch-holding-1",
-            opened.dispatch.dispatch_occurrence_id.as_str(),
-        ),
-        (
-            "adapter-process-holding-1",
-            opened.dispatch.adapter_process_occurrence_id.as_str(),
-        ),
-        (
-            "fixture-estate-holding-1",
-            opened.dispatch.app_server_session_identity.as_str(),
-        ),
-        ("gpt-5.6-sol", opened.dispatch.selection.model_id.as_str()),
-        ("openai", opened.dispatch.selection.provider_id.as_str()),
-        ("thread-holding-1", thread_id.as_str()),
-        ("turn-holding-1", turn_id.as_str()),
-        (
-            "tests/fake_app_server.py",
-            HOLDING_QUALIFICATION_EXECUTABLE_ID,
-        ),
-        (
-            "sha256:cafa673ac58f60029fd6c1de229b4f57d9f42ba918b7ecb2a3bfb20cb2b41a31",
-            HOLDING_QUALIFICATION_EXECUTABLE_SHA256,
-        ),
-    ];
-    golden_replace_strings(&mut snapshot, &replacements);
-    for record in snapshot["records"].as_array_mut().unwrap() {
-        if !record["raw"].is_null() {
-            let bytes = hex::decode(record["raw"]["bytes_hex"].as_str().unwrap()).unwrap();
-            let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
-            golden_replace_strings(&mut wire, &replacements);
-            let mut exact = serde_json::to_vec(&wire).unwrap();
-            exact.push(b'\n');
-            record["raw"] = json!({
-                "representation": "EXACT_WIRE_BYTES_INCLUDING_LINE_TERMINATOR",
-                "byte_length": exact.len(),
-                "sha256": format!("sha256:{:x}", Sha256::digest(&exact)),
-                "encoding": "hex",
-                "bytes_hex": hex::encode(exact),
-            });
-        }
-    }
-    snapshot["binding"] = golden_seal_value(
-        snapshot["binding"].clone(),
-        "binding_digest",
-        b"switchyard.codex-provider-admission-binding.digest/v1\0",
-    );
-    let binding_digest = snapshot["binding"]["binding_digest"].clone();
-    for record in snapshot["records"].as_array_mut().unwrap() {
-        record["binding_digest"] = binding_digest.clone();
-        *record = golden_seal_value(
-            record.clone(),
-            "evidence_digest",
-            b"switchyard.codex-provider-admission-evidence.digest/v1\0",
-        );
-    }
-    snapshot = golden_seal_value(
-        snapshot,
-        "snapshot_digest",
-        b"switchyard.codex-provider-admission-snapshot.digest/v1\0",
-    );
-    canonical(&snapshot)
-}
-
 fn golden_record_completed(
     store: &ForemanStore,
     value: &Fixture,
     opened: &OpenedProviderDispatchV1,
     received_at: DateTime<Utc>,
 ) -> ProviderAdmissionDispositionV1 {
-    let snapshot_bytes = golden_completed_snapshot(opened);
-    let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
-    let identity = &snapshot["provider_execution_identity"];
+    let observed_at = received_at - Duration::seconds(1);
     let execution = ProviderExecutionIdentityV1 {
-        provider_id: identity["provider"].as_str().unwrap().to_owned(),
-        model_id: identity["model"].as_str().unwrap().to_owned(),
-        app_server_session_identity: identity["app_server_session_identity"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-        thread_id: identity["thread_id"].as_str().unwrap().to_owned(),
-        turn_id: identity["turn_id"].as_str().unwrap().to_owned(),
-        first_response_id: identity["first_response_id"].as_str().unwrap().to_owned(),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
+        thread_id: format!("thread-{}", opened.dispatch.dispatch_occurrence_id),
+        turn_id: format!("turn-{}", opened.dispatch.dispatch_occurrence_id),
+        first_response_id: format!("response-{}", opened.dispatch.dispatch_occurrence_id),
     };
-    let source = snapshot["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|record| record["kind"] == "PROVIDER_EXECUTION_STEP")
-        .unwrap();
-    let observed_at = DateTime::<Utc>::from_timestamp_millis(
-        source["normalized"]["observed_at_ms"].as_i64().unwrap(),
-    )
-    .unwrap();
-    let request_occurrence_id = snapshot["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find_map(|record| record["normalized"]["request_occurrence_id"].as_str())
-        .unwrap()
-        .to_owned();
+    let raw = canonical(&json!({
+        "outcome": "EXECUTION_COMPLETED",
+        "response_created": true,
+        "non_admission_proven": false,
+        "retry_after": null,
+        "observed_at": observed_at,
+        "provider_execution": execution,
+    }));
+    let mut evidence = DeterministicProviderAdmissionEvidenceV2 {
+        schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2.to_owned(),
+        evidence_digest: placeholder(),
+        producer_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        producer_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        executable_id: SECOND_WATCH_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+        executable_sha256: SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+        work_attempt_id: opened.dispatch.work_attempt_id.clone(),
+        dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
+        provider_request_occurrence_id: format!(
+            "qualification-request-{}",
+            opened.dispatch.dispatch_occurrence_id
+        ),
+        provider_id: opened.dispatch.selection.provider_id.clone(),
+        model_id: opened.dispatch.selection.model_id.clone(),
+        outcome: DeterministicProviderAdmissionOutcomeV2::ExecutionCompleted,
+        response_created: true,
+        non_admission_proven: false,
+        retry_after: None,
+        observed_at,
+        received_at,
+        provider_execution: Some(execution.clone()),
+        raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
+            "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+            &raw,
+        )
+        .unwrap(),
+        authority_effect: "QUALIFICATION_MECHANISM_EVIDENCE_ONLY".to_owned(),
+    };
+    evidence.seal().unwrap();
+    let mut substituted_evidence = evidence.clone();
+    substituted_evidence.producer_version = HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    assert!(substituted_evidence.seal().is_err());
+    let mut substituted_evidence = evidence.clone();
+    substituted_evidence.executable_sha256 = HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned();
+    assert!(substituted_evidence.seal().is_err());
+    let evidence_bytes = canonical(&evidence);
     let mut disposition = ProviderAdmissionDispositionV1 {
-        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1.to_owned(),
+        schema: PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3.to_owned(),
         disposition_digest: placeholder(),
         dispatch_digest: opened.dispatch.dispatch_digest.clone(),
         requirement_digest: value.availability_requirement.requirement_digest.clone(),
@@ -1626,7 +1541,7 @@ fn golden_record_completed(
         dispatch_occurrence_id: opened.dispatch.dispatch_occurrence_id.clone(),
         provider_id: opened.dispatch.selection.provider_id.clone(),
         model_id: opened.dispatch.selection.model_id.clone(),
-        provider_request_occurrence_id: request_occurrence_id,
+        provider_request_occurrence_id: evidence.provider_request_occurrence_id.clone(),
         adapter_process_occurrence_id: opened.dispatch.adapter_process_occurrence_id.clone(),
         app_server_session_identity: opened.dispatch.app_server_session_identity.clone(),
         thread_id: execution.thread_id.clone(),
@@ -1639,15 +1554,15 @@ fn golden_record_completed(
         acquisition_complete: true,
         provider_retry_after: None,
         provider_execution: Some(execution),
-        mapper_snapshot_schema: "switchyard.codex-provider-admission-snapshot/v1".to_owned(),
-        mapper_snapshot_digest: snapshot["snapshot_digest"].as_str().unwrap().to_owned(),
-        mapper_snapshot: ExactMapperSnapshotV1::from_bytes(&snapshot_bytes).unwrap(),
+        mapper_snapshot_schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2.to_owned(),
+        mapper_snapshot_digest: evidence.evidence_digest.clone(),
+        mapper_snapshot: ExactMapperSnapshotV1::from_qualification_evidence_bytes(&evidence_bytes)
+            .unwrap(),
         approval_response_sent: false,
         protected_effect_absent: true,
         authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
     };
     disposition.seal().unwrap();
-    let raw: ExactAvailabilityEvidenceV1 = serde_json::from_value(source["raw"].clone()).unwrap();
     let mut observation = ExecutionAvailabilityObservationV1 {
         schema: EXECUTION_AVAILABILITY_OBSERVATION_SCHEMA_V1.to_owned(),
         observation_digest: placeholder(),
@@ -1658,13 +1573,34 @@ fn golden_record_completed(
         received_at,
         expires_at: received_at + Duration::minutes(1),
         state: ExecutionAvailabilityStateV1::Available,
-        source_identity: "switchyard:provider-admission".to_owned(),
-        source_version: "v1".to_owned(),
+        source_identity: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        source_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
         provider_retry_after: None,
-        exact_evidence: Some(raw),
+        exact_evidence: Some(evidence.raw_evidence),
         authority_effect: "SCHEDULING_MECHANISM_EVIDENCE_ONLY".to_owned(),
     };
     observation.seal().unwrap();
+    let mut substituted_requirement = value.availability_requirement.clone();
+    substituted_requirement.adapter_protocol = "switchyard.codex-app-server/v2".to_owned();
+    substituted_requirement.seal().unwrap();
+    let mut substituted_dispatch = opened.dispatch.clone();
+    substituted_dispatch.requirement_digest = substituted_requirement.requirement_digest.clone();
+    substituted_dispatch.adapter_protocol = "switchyard.codex-app-server/v2".to_owned();
+    substituted_dispatch.seal().unwrap();
+    let mut substituted_disposition = disposition.clone();
+    substituted_disposition.requirement_digest = substituted_requirement.requirement_digest.clone();
+    substituted_disposition.dispatch_digest = substituted_dispatch.dispatch_digest.clone();
+    substituted_disposition.seal().unwrap();
+    assert!(validate_execution_availability_graph(
+        &substituted_requirement,
+        &value.availability_policy,
+        &substituted_dispatch,
+        &observation,
+        &substituted_disposition,
+        &[],
+        None,
+    )
+    .is_err());
     let observation_bytes = canonical(&observation);
     let disposition_bytes = canonical(&disposition);
     store
@@ -1699,7 +1635,7 @@ fn golden_terminal(
         work_item_id: opened.dispatch.work_item_id.clone(),
         attempt_id: opened.dispatch.work_attempt_id.clone(),
         adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
-        adapter_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+        adapter_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
         provider_identity: execution.provider_id.clone(),
         model_identity: execution.model_id.clone(),
         session_identity: Some(execution.app_server_session_identity.clone()),
@@ -1747,6 +1683,13 @@ fn golden_terminal(
 
 #[test]
 fn second_watch_self_hosted_golden_journey_is_restartable_and_query_only() {
+    let fake_v2 = include_bytes!(
+        "../../../qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/deterministic-fake-adapter-v2.py"
+    );
+    assert_eq!(
+        format!("sha256:{:x}", Sha256::digest(fake_v2)),
+        SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256
+    );
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("foreman.sqlite3");
     let value = fixture();

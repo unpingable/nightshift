@@ -27,8 +27,12 @@ pub const PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1: &str =
     "nightshift.provider-admission-disposition/v1";
 pub const PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2: &str =
     "nightshift.provider-admission-disposition/v2";
+pub const PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3: &str =
+    "nightshift.provider-admission-disposition/v3";
 pub const DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1: &str =
     "nightshift.holding-deterministic-provider-admission-evidence/v1";
+pub const DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2: &str =
+    "nightshift.holding-deterministic-provider-admission-evidence/v2";
 pub const DEFERRED_PROVIDER_DISPATCH_SCHEMA_V1: &str = "nightshift.deferred-provider-dispatch/v1";
 pub const WORKER_START_REQUEST_SCHEMA_V3: &str = "nightshift.worker-start-request/v3";
 
@@ -53,8 +57,11 @@ const REQUIREMENT_DOMAIN: &[u8] =
 const DISPATCH_DOMAIN: &[u8] = b"nightshift.provider-dispatch-occurrence.digest/v1\0";
 const DISPOSITION_DOMAIN: &[u8] = b"nightshift.provider-admission-disposition.digest/v1\0";
 const DISPOSITION_DOMAIN_V2: &[u8] = b"nightshift.provider-admission-disposition.digest/v2\0";
+const DISPOSITION_DOMAIN_V3: &[u8] = b"nightshift.provider-admission-disposition.digest/v3\0";
 const QUALIFICATION_EVIDENCE_DOMAIN: &[u8] =
     b"nightshift.holding-deterministic-provider-admission-evidence.digest/v1\0";
+const QUALIFICATION_EVIDENCE_DOMAIN_V2: &[u8] =
+    b"nightshift.holding-deterministic-provider-admission-evidence.digest/v2\0";
 const DEFERRED_DOMAIN: &[u8] = b"nightshift.deferred-provider-dispatch.digest/v1\0";
 const WORKER_START_REQUEST_DOMAIN_V3: &[u8] = b"nightshift.worker-start-request.digest/v3\0";
 const SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_BYTES: &[u8] =
@@ -67,6 +74,11 @@ pub const HOLDING_QUALIFICATION_EXECUTABLE_ID: &str =
     "campaign:holding-pattern:deterministic-fake-adapter:v1";
 pub const HOLDING_QUALIFICATION_EXECUTABLE_SHA256: &str =
     "sha256:e8a310d46cb40b0aef6399a8da6c97ac99f0fc5eab6a78c5e7007600d5cbfa82";
+pub const SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION: &str = "v2";
+pub const SECOND_WATCH_QUALIFICATION_EXECUTABLE_ID: &str =
+    "campaign:second-watch:deterministic-fake-adapter:v2";
+pub const SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256: &str =
+    "sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,6 +294,170 @@ impl DeterministicProviderAdmissionEvidenceV1 {
                 if self.non_admission_proven || self.retry_after.is_some() {
                     return Err(ContractError::InvalidField(
                         "qualified indeterminate admission",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DeterministicProviderAdmissionOutcomeV2 {
+    ProviderUnavailable,
+    ExecutionCompleted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeterministicProviderAdmissionEvidenceV2 {
+    pub schema: String,
+    pub evidence_digest: String,
+    pub producer_id: String,
+    pub producer_version: String,
+    pub executable_id: String,
+    pub executable_sha256: String,
+    pub work_attempt_id: String,
+    pub dispatch_occurrence_id: String,
+    pub provider_request_occurrence_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub outcome: DeterministicProviderAdmissionOutcomeV2,
+    pub response_created: bool,
+    pub non_admission_proven: bool,
+    pub retry_after: Option<DateTime<Utc>>,
+    pub observed_at: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub provider_execution: Option<ProviderExecutionIdentityV1>,
+    pub raw_evidence: ExactAvailabilityEvidenceV1,
+    pub authority_effect: String,
+}
+
+impl DeterministicProviderAdmissionEvidenceV2 {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self, ContractError> {
+        let value: Value = parse(bytes)?;
+        for field in ["observed_at", "received_at"] {
+            canonical_timestamp(&value, field)?;
+        }
+        canonical_optional_timestamp(&value, "retry_after")?;
+        serde_json::from_value(value).map_err(json_error)
+    }
+
+    pub fn seal(&mut self) -> Result<(), ContractError> {
+        self.evidence_digest =
+            digest_without(self, "evidence_digest", QUALIFICATION_EVIDENCE_DOMAIN_V2)?;
+        self.validate()
+    }
+
+    pub fn validate(&self) -> Result<(), ContractError> {
+        schema(
+            &self.schema,
+            DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2,
+        )?;
+        sealed_digest(
+            self,
+            "evidence_digest",
+            &self.evidence_digest,
+            QUALIFICATION_EVIDENCE_DOMAIN_V2,
+        )?;
+        for (field, value) in [
+            ("producer_id", &self.producer_id),
+            ("producer_version", &self.producer_version),
+            ("executable_id", &self.executable_id),
+            ("work_attempt_id", &self.work_attempt_id),
+            ("dispatch_occurrence_id", &self.dispatch_occurrence_id),
+            (
+                "provider_request_occurrence_id",
+                &self.provider_request_occurrence_id,
+            ),
+            ("provider_id", &self.provider_id),
+            ("model_id", &self.model_id),
+        ] {
+            id(field, value)?;
+        }
+        digest("executable_sha256", &self.executable_sha256)?;
+        let raw = self.raw_evidence.validate()?;
+        if self.producer_id != HOLDING_QUALIFICATION_PRODUCER_ID
+            || self.producer_version != SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
+            || self.executable_id != SECOND_WATCH_QUALIFICATION_EXECUTABLE_ID
+            || self.executable_sha256 != SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256
+            || self.raw_evidence.representation != "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES"
+            || self.observed_at > self.received_at
+            || self
+                .retry_after
+                .is_some_and(|value| value < self.received_at)
+            || self.authority_effect != "QUALIFICATION_MECHANISM_EVIDENCE_ONLY"
+        {
+            return Err(ContractError::InvalidField(
+                "deterministic provider execution evidence boundary",
+            ));
+        }
+        let raw_value: Value = parse(&raw)?;
+        if serde_jcs::to_vec(&raw_value).map_err(json_error)? != raw {
+            return Err(ContractError::InvalidField(
+                "deterministic provider execution raw canonical bytes",
+            ));
+        }
+        let raw_object = raw_value.as_object().ok_or(ContractError::InvalidField(
+            "deterministic provider execution raw object",
+        ))?;
+        let expected_keys = [
+            "outcome",
+            "response_created",
+            "non_admission_proven",
+            "retry_after",
+            "observed_at",
+            "provider_execution",
+        ];
+        if raw_object.len() != expected_keys.len()
+            || expected_keys
+                .iter()
+                .any(|key| !raw_object.contains_key(*key))
+            || raw_object.get("outcome")
+                != Some(&serde_json::to_value(self.outcome).map_err(json_error)?)
+            || raw_object.get("response_created") != Some(&Value::Bool(self.response_created))
+            || raw_object.get("non_admission_proven")
+                != Some(&Value::Bool(self.non_admission_proven))
+            || raw_object.get("retry_after")
+                != Some(&serde_json::to_value(self.retry_after).map_err(json_error)?)
+            || raw_object.get("observed_at")
+                != Some(&serde_json::to_value(self.observed_at).map_err(json_error)?)
+            || raw_object.get("provider_execution")
+                != Some(&serde_json::to_value(&self.provider_execution).map_err(json_error)?)
+        {
+            return Err(ContractError::InvalidField(
+                "deterministic provider execution raw binding",
+            ));
+        }
+        match self.outcome {
+            DeterministicProviderAdmissionOutcomeV2::ProviderUnavailable => {
+                if self.response_created
+                    || !self.non_admission_proven
+                    || self.provider_execution.is_some()
+                    || self.retry_after.is_none()
+                {
+                    return Err(ContractError::InvalidField(
+                        "qualified v2 explicit non-admission",
+                    ));
+                }
+            }
+            DeterministicProviderAdmissionOutcomeV2::ExecutionCompleted => {
+                let execution =
+                    self.provider_execution
+                        .as_ref()
+                        .ok_or(ContractError::InvalidField(
+                            "qualified v2 execution identity",
+                        ))?;
+                execution.validate()?;
+                if !self.response_created
+                    || self.non_admission_proven
+                    || self.retry_after.is_some()
+                    || execution.provider_id != self.provider_id
+                    || execution.model_id != self.model_id
+                {
+                    return Err(ContractError::InvalidField(
+                        "qualified v2 completed execution",
                     ));
                 }
             }
@@ -735,17 +911,22 @@ impl WorkerStartRequestV3 {
         let selection = selections
             .get(usize::from(selected_model_ordinal))
             .ok_or(ContractError::InvalidField("V3 selected model ordinal"))?;
-        let qualification_fake = predecessor.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+        let qualification_protocol = if predecessor.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
             && predecessor.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
-            && predecessor.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1;
+            && predecessor.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+        {
+            Some(DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1)
+        } else if predecessor.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+            && predecessor.adapter_version == SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
+            && predecessor.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
+        {
+            Some(DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2)
+        } else {
+            None
+        };
         let (admission_protocol, binding_schema, evidence_schema, snapshot_schema) =
-            if qualification_fake {
-                (
-                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
-                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
-                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
-                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
-                )
+            if let Some(protocol) = qualification_protocol {
+                (protocol, protocol, protocol, protocol)
             } else {
                 (
                     "switchyard.codex-app-server/v2",
@@ -823,9 +1004,17 @@ impl WorkerStartRequestV3 {
             .get(&execution.adapter_id)
             .ok_or(ContractError::InvalidField("V3 profile adapter"))?;
         let qualification_adapter = self.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID;
+        let exact_qualification_executable = match self.adapter_version.as_str() {
+            HOLDING_QUALIFICATION_PRODUCER_VERSION => {
+                adapter.executable_identity == HOLDING_QUALIFICATION_EXECUTABLE_SHA256
+            }
+            SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION => {
+                adapter.executable_identity == SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256
+            }
+            _ => false,
+        };
         if qualification_adapter
-            && (adapter.executable_identity != HOLDING_QUALIFICATION_EXECUTABLE_SHA256
-                || !adapter.bounded_arguments.is_empty())
+            && (!exact_qualification_executable || !adapter.bounded_arguments.is_empty())
         {
             return Err(ContractError::InvalidField(
                 "V3 qualification adapter executable binding",
@@ -1006,7 +1195,8 @@ impl WorkerStartRequestV3 {
             id(field, value)?;
         }
         let predecessor = self.predecessor_v2()?;
-        let switchyard_binding = self.adapter_protocol == "switchyard.codex-app-server/v2"
+        let switchyard_binding = self.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID
+            && self.adapter_protocol == "switchyard.codex-app-server/v2"
             && self.provider_admission_adapter_protocol == self.adapter_protocol
             && self.provider_admission_binding_schema
                 == "switchyard.codex-provider-admission-binding/v1"
@@ -1014,9 +1204,16 @@ impl WorkerStartRequestV3 {
                 == "switchyard.codex-provider-admission-evidence/v1"
             && self.provider_admission_snapshot_schema
                 == "switchyard.codex-provider-admission-snapshot/v1";
-        let qualification_binding = self.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+        let qualification_binding_v1 = self.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
             && self.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
             && self.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+            && self.provider_admission_adapter_protocol == self.adapter_protocol
+            && self.provider_admission_binding_schema == self.adapter_protocol
+            && self.provider_admission_evidence_schema == self.adapter_protocol
+            && self.provider_admission_snapshot_schema == self.adapter_protocol;
+        let qualification_binding_v2 = self.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+            && self.adapter_version == SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
+            && self.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
             && self.provider_admission_adapter_protocol == self.adapter_protocol
             && self.provider_admission_binding_schema == self.adapter_protocol
             && self.provider_admission_evidence_schema == self.adapter_protocol
@@ -1042,7 +1239,7 @@ impl WorkerStartRequestV3 {
             || self.expected_receipt_schema != predecessor.expected_receipt_schema
             || self.model_class != self.provider_model_class
             || self.selected_model_ordinal >= 16
-            || !(switchyard_binding || qualification_binding)
+            || !(switchyard_binding || qualification_binding_v1 || qualification_binding_v2)
             || self.codex_owner_head != ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD
             || self.switchyard_owner_head != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD
             || self.switchyard_schema_sha256 != ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_SCHEMA_SHA256
@@ -1256,6 +1453,7 @@ impl ProviderAdmissionDispositionV1 {
         let domain = match self.schema.as_str() {
             PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1 => DISPOSITION_DOMAIN,
             PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 => DISPOSITION_DOMAIN_V2,
+            PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 => DISPOSITION_DOMAIN_V3,
             _ => return Err(ContractError::ForeignSchema(self.schema.clone())),
         };
         self.disposition_digest = digest_without(self, "disposition_digest", domain)?;
@@ -1265,6 +1463,7 @@ impl ProviderAdmissionDispositionV1 {
         let domain = match self.schema.as_str() {
             PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1 => DISPOSITION_DOMAIN,
             PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 => DISPOSITION_DOMAIN_V2,
+            PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 => DISPOSITION_DOMAIN_V3,
             _ => return Err(ContractError::ForeignSchema(self.schema.clone())),
         };
         sealed_digest(self, "disposition_digest", &self.disposition_digest, domain)?;
@@ -1363,6 +1562,18 @@ impl ProviderAdmissionDispositionV1 {
                     ));
                 }
             }
+            PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 => {
+                if self.mapper_snapshot_schema
+                    != DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
+                    || self.mapper_snapshot.representation
+                        != "RFC8785_NIGHTSHIFT_QUALIFICATION_FAKE_ADAPTER_EVIDENCE"
+                {
+                    return Err(ContractError::InvalidField(
+                        "qualification execution evidence schema",
+                    ));
+                }
+                validate_qualification_v2_disposition(self, &raw)?;
+            }
             _ => unreachable!(),
         }
         if self.will_retry || self.approval_response_sent || !self.protected_effect_absent {
@@ -1425,13 +1636,55 @@ impl ProviderAdmissionDispositionV1 {
 
     pub fn permits_automatic_park(&self) -> bool {
         self.disposition.permits_automatic_park()
-            || (self.schema == PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2
-                && matches!(
-                    self.disposition,
-                    ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable
-                        | ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited
-                ))
+            || (matches!(
+                self.schema.as_str(),
+                PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 | PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3
+            ) && matches!(
+                self.disposition,
+                ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable
+                    | ProviderAdmissionDispositionKindV1::NotAdmittedRateLimited
+            ))
     }
+}
+
+fn validate_qualification_v2_disposition(
+    disposition: &ProviderAdmissionDispositionV1,
+    raw: &[u8],
+) -> Result<(), ContractError> {
+    let evidence = DeterministicProviderAdmissionEvidenceV2::from_slice(raw)?;
+    evidence.validate()?;
+    if disposition.mapper_snapshot_digest != evidence.evidence_digest
+        || disposition.work_attempt_id != evidence.work_attempt_id
+        || disposition.dispatch_occurrence_id != evidence.dispatch_occurrence_id
+        || disposition.provider_request_occurrence_id != evidence.provider_request_occurrence_id
+        || disposition.provider_id != evidence.provider_id
+        || disposition.model_id != evidence.model_id
+        || disposition.received_at != evidence.received_at
+        || disposition.response_created != evidence.response_created
+        || disposition.provider_retry_after != evidence.retry_after
+        || disposition.provider_execution != evidence.provider_execution
+        || !disposition.acquisition_complete
+    {
+        return Err(ContractError::InvalidField(
+            "qualification execution evidence disposition binding",
+        ));
+    }
+    let expected = match evidence.outcome {
+        DeterministicProviderAdmissionOutcomeV2::ProviderUnavailable => (
+            ProviderAdmissionDispositionKindV1::NotAdmittedProviderUnavailable,
+            ProviderMechanismStateV1::ParkedNotAdmitted,
+        ),
+        DeterministicProviderAdmissionOutcomeV2::ExecutionCompleted => (
+            ProviderAdmissionDispositionKindV1::ExecutionAdmitted,
+            ProviderMechanismStateV1::ProviderCompleted,
+        ),
+    };
+    if (disposition.disposition, disposition.mechanism_state) != expected {
+        return Err(ContractError::InvalidField(
+            "qualification execution evidence outcome binding",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -4209,6 +4462,28 @@ pub fn validate_execution_availability_graph(
     {
         return Err(ContractError::InvalidField("dispatch disposition graph"));
     }
+    let disposition_family_matches_dispatch = match disposition.schema.as_str() {
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1 => {
+            dispatch.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID
+                && dispatch.adapter_protocol == "switchyard.codex-app-server/v2"
+        }
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 => {
+            dispatch.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+                && dispatch.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
+                && dispatch.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+        }
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 => {
+            dispatch.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+                && dispatch.adapter_version == SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
+                && dispatch.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
+        }
+        _ => false,
+    };
+    if !disposition_family_matches_dispatch {
+        return Err(ContractError::InvalidField(
+            "dispatch disposition owner-family graph",
+        ));
+    }
     let source = disposition_source_observation(disposition)?;
     if observation.provider_id != dispatch.selection.provider_id
         || observation.model_id != dispatch.selection.model_id
@@ -4437,6 +4712,16 @@ fn disposition_source_observation(
     disposition: &ProviderAdmissionDispositionV1,
 ) -> Result<DispositionSourceObservation, ContractError> {
     let raw = disposition.mapper_snapshot.validate()?;
+    if disposition.schema == PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 {
+        let evidence = DeterministicProviderAdmissionEvidenceV2::from_slice(&raw)?;
+        evidence.validate()?;
+        return Ok(DispositionSourceObservation {
+            evidence: Some(evidence.raw_evidence),
+            observed_at: evidence.observed_at,
+            identity: HOLDING_QUALIFICATION_PRODUCER_ID,
+            version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION,
+        });
+    }
     if disposition.schema == PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 {
         let evidence = DeterministicProviderAdmissionEvidenceV1::from_slice(&raw)?;
         evidence.validate()?;

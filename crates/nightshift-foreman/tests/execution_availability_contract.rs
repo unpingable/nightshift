@@ -2231,7 +2231,12 @@ fn qualification_only_owner_closes_outcomes_and_substitutions() {
         assert_eq!(schema["additionalProperties"], false);
     }
     let policy = policy();
-    let requirement = requirement(&policy);
+    let mut requirement = requirement(&policy);
+    requirement.adapter_id = HOLDING_QUALIFICATION_PRODUCER_ID.to_owned();
+    requirement.adapter_protocol = DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned();
+    requirement.adapter_version = HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    requirement.adapter_executable_identity = HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned();
+    requirement.seal().unwrap();
     let dispatch = dispatch(&requirement);
     for (outcome, response_created) in [
         (DeterministicProviderAdmissionOutcomeV1::RateLimited, false),

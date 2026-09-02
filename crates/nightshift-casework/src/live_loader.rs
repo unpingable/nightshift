@@ -511,22 +511,23 @@ pub(crate) mod test_support {
 
     use chrono::{Duration, TimeZone as _};
     use nightshift_foreman::{
-        AdapterRegistrationV2, CapacityAdmissionEvidenceV1, CapacityCostClassV1,
-        DeferredProviderDispatchV1, DeferredWakeBasisV1, DeterministicProviderAdmissionEvidenceV1,
-        DeterministicProviderAdmissionOutcomeV1, ExactAvailabilityEvidenceV1,
-        ExactMapperSnapshotV1, ExecutionAvailabilityObservationV1, ExecutionAvailabilityPolicyV1,
-        ExecutionAvailabilityStateV1, ExecutionProfileV2, ForemanAdmissionV1,
-        ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1,
+        AdapterEventKindV1, AdapterEventV1, AdapterRegistrationV2, CapacityAdmissionEvidenceV1,
+        CapacityCostClassV1, DeferredProviderDispatchV1, DeferredWakeBasisV1,
+        DeterministicProviderAdmissionEvidenceV1, DeterministicProviderAdmissionOutcomeV1,
+        ExactAvailabilityEvidenceV1, ExactMapperSnapshotV1, ExecutionAvailabilityObservationV1,
+        ExecutionAvailabilityPolicyV1, ExecutionAvailabilityStateV1, ExecutionProfileV2,
+        ForemanAdmissionV1, ForemanCapacityAdmissionV1, ForemanCapacityRequirementV1,
         ForemanExecutionAvailabilityRequirementV1, ForemanStore, NotStartedReceiptV1,
         ParkedResourceLockPolicyV1, ProviderAdmissionDispositionKindV1,
         ProviderAdmissionDispositionV1, ProviderAdmissionOwnerPinsV1,
         ProviderDispositionEvidenceV1, ProviderExecutionIdentityV1, ProviderMechanismStateV1,
-        ProviderModelSelectionV1, WorkItemExecutionV1,
+        ProviderModelSelectionV1, ReceiptRepositoryV1, TeardownDeclarationV1, WorkItemExecutionV1,
         DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
         EXECUTION_AVAILABILITY_POLICY_SCHEMA_V1, FOREMAN_ADMISSION_SCHEMA_V1,
         FOREMAN_CAPACITY_ADMISSION_SCHEMA_V1, FOREMAN_CAPACITY_REQUIREMENT_SCHEMA_V1,
         FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
-        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2, WORKER_ADAPTER_EVENT_SCHEMA_V1,
+        WORKER_TERMINAL_RECEIPT_SCHEMA_V1, WORK_ITEM_NOT_STARTED_RECEIPT_SCHEMA_V1,
     };
 
     use nightshift_provider_capacity::{
@@ -619,8 +620,26 @@ pub(crate) mod test_support {
         (directory, path, admission.run_id)
     }
 
-    fn recorded_execution_requirement_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+    fn recorded_execution_requirement_fixture_with_adapter(
+        qualification_adapter: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf, String) {
         let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
+        let (adapter_id, adapter_protocol, adapter_version, executable_identity) =
+            if qualification_adapter {
+                (
+                    nightshift_foreman::HOLDING_QUALIFICATION_PRODUCER_ID,
+                    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+                    nightshift_foreman::HOLDING_QUALIFICATION_PRODUCER_VERSION,
+                    nightshift_foreman::HOLDING_QUALIFICATION_EXECUTABLE_SHA256,
+                )
+            } else {
+                (
+                    "switchyard-codex",
+                    "switchyard.codex-app-server/v2",
+                    "2.0.0",
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                )
+            };
         let mut admission = ForemanAdmissionV1 {
             schema: FOREMAN_ADMISSION_SCHEMA_V1.to_owned(),
             admission_digest: format!("sha256:{}", "0".repeat(64)),
@@ -631,7 +650,7 @@ pub(crate) mod test_support {
             expires_at: instant() + Duration::hours(1),
             local_runtime_identity: "holding-casework-fixture".to_owned(),
             maximum_concurrent_workers: 2,
-            allowed_adapter_ids: vec!["switchyard-codex".to_owned()],
+            allowed_adapter_ids: vec![adapter_id.to_owned()],
             allowed_provider_model_classes: packet
                 .work_items
                 .iter()
@@ -651,7 +670,7 @@ pub(crate) mod test_support {
                 (
                     item.id.clone(),
                     WorkItemExecutionV1 {
-                        adapter_id: "switchyard-codex".to_owned(),
+                        adapter_id: adapter_id.to_owned(),
                         workspace_identity: format!("workspace:{}", item.id),
                         resource_lock_keys: vec![format!("resource:{}", item.id)],
                         provider_model_class: item.model_routing.class.clone(),
@@ -665,12 +684,12 @@ pub(crate) mod test_support {
             packet_digest: packet.packet_digest.clone(),
             admission_digest: admission.admission_digest.clone(),
             adapters: BTreeMap::from([(
-                "switchyard-codex".to_owned(),
+                adapter_id.to_owned(),
                 AdapterRegistrationV2 {
-                    adapter_id: "switchyard-codex".to_owned(),
-                    protocol: "switchyard.codex-app-server/v2".to_owned(),
-                    adapter_version: "2.0.0".to_owned(),
-                    executable_identity: format!("sha256:{}", "b".repeat(64)),
+                    adapter_id: adapter_id.to_owned(),
+                    protocol: adapter_protocol.to_owned(),
+                    adapter_version: adapter_version.to_owned(),
+                    executable_identity: executable_identity.to_owned(),
                     bounded_arguments: vec![],
                 },
             )]),
@@ -721,7 +740,7 @@ pub(crate) mod test_support {
                 )
             })
             .collect();
-        let adapter = &profile.adapters["switchyard-codex"];
+        let adapter = &profile.adapters[adapter_id];
         let mut requirement = ForemanExecutionAvailabilityRequirementV1 {
             schema: FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1.to_owned(),
             requirement_digest: format!("sha256:{}", "0".repeat(64)),
@@ -757,8 +776,43 @@ pub(crate) mod test_support {
         (directory, path, admission.run_id)
     }
 
+    fn recorded_execution_requirement_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        recorded_execution_requirement_fixture_with_adapter(false)
+    }
+
+    fn recorded_qualification_execution_requirement_fixture(
+    ) -> (tempfile::TempDir, std::path::PathBuf, String) {
+        recorded_execution_requirement_fixture_with_adapter(true)
+    }
+
     fn recorded_execution_dispatch_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
         let (directory, path, run_id) = recorded_execution_requirement_fixture();
+        let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
+        let work_item_id = packet
+            .work_items
+            .iter()
+            .find(|item| item.dependencies.is_empty())
+            .unwrap()
+            .id
+            .clone();
+        ForemanStore::open(&path)
+            .unwrap()
+            .prepare_provider_attempt(
+                &run_id,
+                &work_item_id,
+                "casework-dispatch-1",
+                "casework-process-1",
+                "casework-session-1",
+                0,
+                instant() - Duration::minutes(30),
+            )
+            .unwrap();
+        (directory, path, run_id)
+    }
+
+    fn recorded_qualification_execution_dispatch_fixture(
+    ) -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (directory, path, run_id) = recorded_qualification_execution_requirement_fixture();
         let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
         let work_item_id = packet
             .work_items
@@ -1294,7 +1348,7 @@ pub(crate) mod test_support {
     }
 
     fn recorded_execution_parked_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
-        let (directory, path, run_id) = recorded_execution_dispatch_fixture();
+        let (directory, path, run_id) = recorded_qualification_execution_dispatch_fixture();
         let snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
         let history = snapshot.execution_availability.unwrap();
         let opened = nightshift_foreman::OpenedProviderDispatchV1 {
@@ -1787,6 +1841,118 @@ pub(crate) mod test_support {
 
         let (_owned, path, _) = fixture();
         assert!(load_live_run_at(&path, "substituted-run", instant()).is_err());
+    }
+
+    #[test]
+    fn canonical_accepted_receipt_content_mutation_refuses_casework_projection() {
+        let (_directory, path, run_id, _) = closed_fixture();
+        let mut snapshot = nightshift_foreman::read_only_run_snapshot(&path, &run_id).unwrap();
+        let receipt_row = snapshot.terminal_receipts.first_mut().unwrap();
+        let mut receipt = NotStartedReceiptV1::from_slice(&receipt_row.raw_bytes).unwrap();
+        receipt.next_lawful_action = "canonical content mutation without resealing".to_owned();
+        receipt_row.raw_bytes = serde_jcs::to_vec(&receipt).unwrap();
+        assert!(accepted_receipt_questions(receipt_row).is_err());
+    }
+
+    #[test]
+    fn same_question_id_with_disagreeing_receipt_and_mechanism_refuses() {
+        let (_directory, path, run_id) = fixture();
+        let packet = NightshiftPacketV1::from_slice(PACKET).unwrap();
+        let work_item_id = packet
+            .work_items
+            .iter()
+            .find(|item| item.dependencies.is_empty())
+            .unwrap()
+            .id
+            .clone();
+        let store = ForemanStore::open(&path).unwrap();
+        let request = store
+            .prepare_attempt(&run_id, &work_item_id, instant())
+            .unwrap();
+        store
+            .record_dispatch_requested(&run_id, &work_item_id, &request.attempt_id, instant())
+            .unwrap();
+        let mechanism_question = HumanQuestionV1 {
+            question_id: "question:receipt-mechanism-agreement".to_owned(),
+            question: "Which exact local qualification basis applies?".to_owned(),
+            exhausted_evidence: "The retained mechanism evidence is complete.".to_owned(),
+            safe_default: "Keep the lane stopped.".to_owned(),
+            consequences: "No protected effect occurs.".to_owned(),
+            resume_point: "Create a successor occurrence after exact evidence exists.".to_owned(),
+        };
+        let mut event = AdapterEventV1 {
+            schema: WORKER_ADAPTER_EVENT_SCHEMA_V1.to_owned(),
+            event_digest: format!("sha256:{}", "0".repeat(64)),
+            event_id: "casework-question-event".to_owned(),
+            packet_digest: packet.packet_digest.clone(),
+            run_id: run_id.clone(),
+            work_item_id: work_item_id.clone(),
+            attempt_id: request.attempt_id.clone(),
+            adapter_id: "fixture-adapter".to_owned(),
+            adapter_version: "fixture.adapter/v1".to_owned(),
+            occurred_at: instant(),
+            kind: AdapterEventKindV1::HumanQuestion,
+            provider_identity: Some("provider:fixture".to_owned()),
+            model_identity: Some("model:fixture".to_owned()),
+            session_identity: Some("session:fixture".to_owned()),
+            thread_identity: None,
+            turn_identity: None,
+            queue_identity: None,
+            message: None,
+            human_question: Some(mechanism_question.clone()),
+            extensions: BTreeMap::new(),
+        };
+        event.seal().unwrap();
+        store
+            .accept_adapter_event(&serde_jcs::to_vec(&event).unwrap())
+            .unwrap();
+
+        let mut receipt_question = mechanism_question;
+        receipt_question.safe_default = "Disagreeing substituted safe default.".to_owned();
+        let mut receipt = TerminalReceiptV1 {
+            schema: WORKER_TERMINAL_RECEIPT_SCHEMA_V1.to_owned(),
+            receipt_digest: format!("sha256:{}", "0".repeat(64)),
+            packet_digest: packet.packet_digest.clone(),
+            run_id: run_id.clone(),
+            work_item_id: work_item_id.clone(),
+            attempt_id: request.attempt_id.clone(),
+            adapter_id: "fixture-adapter".to_owned(),
+            adapter_version: "fixture.adapter/v1".to_owned(),
+            provider_identity: "provider:fixture".to_owned(),
+            model_identity: "model:fixture".to_owned(),
+            session_identity: Some("session:fixture".to_owned()),
+            thread_identity: None,
+            turn_identity: None,
+            queue_identity: None,
+            started_at: instant(),
+            ended_at: instant() + Duration::seconds(1),
+            state: "BLOCKED-HUMAN-EXACT".to_owned(),
+            result_classification: "SECOND-WATCH-QUESTION".to_owned(),
+            repositories: vec![ReceiptRepositoryV1 {
+                repository: "nightshift".to_owned(),
+                branch: "campaign/second-watch-fixture".to_owned(),
+                head: "f".repeat(40),
+                push_status: "sole-local fixture".to_owned(),
+            }],
+            tests: vec!["question disagreement fixture".to_owned()],
+            evidence: vec!["exact receipt question".to_owned()],
+            live_or_production_mutations: Vec::new(),
+            remaining_trigger: "exact question agreement".to_owned(),
+            next_lawful_action: "inspect the exact disagreement".to_owned(),
+            human_questions: vec![receipt_question],
+            teardown: TeardownDeclarationV1 {
+                live_runtime: "none".to_owned(),
+                secrets: "none".to_owned(),
+                teardown: "none".to_owned(),
+            },
+            extensions: BTreeMap::new(),
+        };
+        receipt.seal().unwrap();
+        store
+            .accept_terminal_receipt(&serde_jcs::to_vec(&receipt).unwrap())
+            .unwrap();
+        drop(store);
+        assert!(load_live_run_at(&path, &run_id, instant() + Duration::seconds(1)).is_err());
     }
 
     #[test]

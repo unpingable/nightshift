@@ -20,6 +20,8 @@ check_mechanism() {
   rg -q 'HOLDING_QUALIFICATION_EXECUTABLE_SHA256' "$tree/execution_availability.rs" || return 1
   test -f "$root/schemas/nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json" || return 1
   test -f "$root/schemas/nightshift.provider-admission-disposition.v2.schema.json" || return 1
+  test -f "$root/schemas/nightshift.holding-deterministic-provider-admission-evidence.v2.schema.json" || return 1
+  test -f "$root/schemas/nightshift.provider-admission-disposition.v3.schema.json" || return 1
   if rg -n 'holding-pattern-deterministic-fake-adapter' "$root/crates/nightshiftd" >/dev/null; then
     return 1
   fi

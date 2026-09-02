@@ -9,8 +9,8 @@ use nightshift_foreman::{
     FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1, FOREMAN_EXECUTION_PROFILE_SCHEMA_V2,
     HOLDING_QUALIFICATION_EXECUTABLE_SHA256, HOLDING_QUALIFICATION_PRODUCER_ID,
     HOLDING_QUALIFICATION_PRODUCER_VERSION, PROVIDER_DISPATCH_OCCURRENCE_SCHEMA_V1,
-    WORKER_START_REQUEST_SCHEMA_V2, WORKER_START_REQUEST_SCHEMA_V3,
-    WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
+    SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION, WORKER_START_REQUEST_SCHEMA_V2,
+    WORKER_START_REQUEST_SCHEMA_V3, WORKER_TERMINAL_RECEIPT_SCHEMA_V1,
 };
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
@@ -466,6 +466,50 @@ fn v3_qualification_branch_is_exactly_the_accepted_fake_tuple() {
         &changed_profile,
         &changed_requirement,
         "dispatch-holding-qualification-3",
+        0,
+    )
+    .is_err());
+}
+
+#[test]
+fn reserved_qualification_id_cannot_coherently_migrate_to_switchyard_family() {
+    let (mut predecessor, mut profile, mut requirement, _) = qualification_v3_graph();
+    predecessor.adapter_protocol = "switchyard.codex-app-server/v2".to_owned();
+    predecessor.seal().unwrap();
+    let adapter = profile
+        .adapters
+        .get_mut(HOLDING_QUALIFICATION_PRODUCER_ID)
+        .unwrap();
+    adapter.protocol = "switchyard.codex-app-server/v2".to_owned();
+    profile.seal().unwrap();
+    requirement.profile_digest = profile.profile_digest.clone();
+    requirement.adapter_protocol = "switchyard.codex-app-server/v2".to_owned();
+    requirement.seal().unwrap();
+    assert!(WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&predecessor),
+        &profile,
+        &requirement,
+        "dispatch-reserved-switchyard-refused",
+        0,
+    )
+    .is_err());
+
+    predecessor.adapter_version = SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    predecessor.seal().unwrap();
+    let adapter = profile
+        .adapters
+        .get_mut(HOLDING_QUALIFICATION_PRODUCER_ID)
+        .unwrap();
+    adapter.adapter_version = SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    profile.seal().unwrap();
+    requirement.profile_digest = profile.profile_digest.clone();
+    requirement.adapter_version = SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned();
+    requirement.seal().unwrap();
+    assert!(WorkerStartRequestV3::from_v2_for_dispatch(
+        &canonical(&predecessor),
+        &profile,
+        &requirement,
+        "dispatch-reserved-switchyard-v2-refused",
         0,
     )
     .is_err());

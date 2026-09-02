@@ -1,6 +1,9 @@
 """Executable closure checks for provider execution-availability contracts."""
 
 import copy
+import hashlib
+import subprocess
+import sys
 import json
 import unittest
 from pathlib import Path
@@ -15,7 +18,9 @@ NAMES = [
     "nightshift.provider-dispatch-occurrence.v1.schema.json",
     "nightshift.provider-admission-disposition.v1.schema.json",
     "nightshift.provider-admission-disposition.v2.schema.json",
+    "nightshift.provider-admission-disposition.v3.schema.json",
     "nightshift.holding-deterministic-provider-admission-evidence.v1.schema.json",
+    "nightshift.holding-deterministic-provider-admission-evidence.v2.schema.json",
     "nightshift.deferred-provider-dispatch.v1.schema.json",
 ]
 SWITCHYARD_SCHEMA = "vendor/switchyard.codex-provider-admission.v1.schema.json"
@@ -151,6 +156,182 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
             disposition["$defs"]["snapshot"]["properties"]["byte_length"]["maximum"],
             16 * 1024 * 1024,
         )
+
+    def test_second_watch_fake_v2_schema_closes_completed_execution(self):
+        evidence = {
+            "schema": "nightshift.holding-deterministic-provider-admission-evidence/v2",
+            "evidence_digest": D,
+            "producer_id": "nightshift:holding-pattern-deterministic-fake-adapter",
+            "producer_version": "v2",
+            "executable_id": "campaign:second-watch:deterministic-fake-adapter:v2",
+            "executable_sha256": "sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb",
+            "work_attempt_id": "attempt-1",
+            "dispatch_occurrence_id": "dispatch-1",
+            "provider_request_occurrence_id": "request-1",
+            "provider_id": "fixture-provider",
+            "model_id": "fixture-model",
+            "outcome": "EXECUTION_COMPLETED",
+            "response_created": True,
+            "non_admission_proven": False,
+            "retry_after": None,
+            "observed_at": "2026-08-31T12:01:01Z",
+            "received_at": "2026-08-31T12:01:02Z",
+            "provider_execution": {
+                "provider_id": "fixture-provider",
+                "model_id": "fixture-model",
+                "app_server_session_identity": "estate-1",
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "first_response_id": "response-1",
+            },
+            "raw_evidence": {
+                "representation": "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+                "byte_length": 2,
+                "sha256": D,
+                "encoding": "hex",
+                "bytes_hex": "7b7d",
+            },
+            "authority_effect": "QUALIFICATION_MECHANISM_EVIDENCE_ONLY",
+        }
+        validator = Draft202012Validator(
+            load("nightshift.holding-deterministic-provider-admission-evidence.v2.schema.json"),
+            format_checker=FormatChecker(),
+        )
+        validator.validate(evidence)
+        for field, replacement in (
+            ("producer_version", "v1"),
+            ("executable_sha256", "sha256:" + "1" * 64),
+            ("outcome", "RATE_LIMITED"),
+            ("response_created", False),
+            ("non_admission_proven", True),
+            ("provider_execution", None),
+        ):
+            changed = copy.deepcopy(evidence)
+            changed[field] = replacement
+            with self.assertRaises(ValidationError):
+                validator.validate(changed)
+
+    def test_second_watch_fake_v2_executable_is_exact_and_closed(self):
+        path = FIXTURES / "deterministic-fake-adapter-v2.py"
+        self.assertEqual(
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            "c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb",
+        )
+        for value in (
+            {
+                "outcome": "PROVIDER_UNAVAILABLE",
+                "response_created": False,
+                "non_admission_proven": True,
+                "retry_after": "2026-08-31T12:01:07Z",
+                "observed_at": "2026-08-31T12:01:01Z",
+                "provider_execution": None,
+            },
+            {
+                "outcome": "EXECUTION_COMPLETED",
+                "response_created": True,
+                "non_admission_proven": False,
+                "retry_after": None,
+                "observed_at": "2026-08-31T12:01:01Z",
+                "provider_execution": {
+                    "provider_id": "fixture-provider",
+                    "model_id": "fixture-model",
+                    "app_server_session_identity": "estate-1",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "first_response_id": "response-1",
+                },
+            },
+        ):
+            raw = json.dumps(value, ensure_ascii=False).encode()
+            completed = subprocess.run(
+                [sys.executable, str(path)],
+                input=raw,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            self.assertEqual(json.loads(completed.stdout), value)
+        invalid = {
+            "outcome": "EXECUTION_COMPLETED",
+            "response_created": False,
+            "non_admission_proven": True,
+            "retry_after": None,
+            "observed_at": "2026-08-31T12:01:01Z",
+            "provider_execution": None,
+        }
+        completed = subprocess.run(
+            [sys.executable, str(path)],
+            input=json.dumps(invalid).encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+
+    def test_second_watch_disposition_v3_schema_closes_owner_family(self):
+        execution = {
+            "provider_id": "fixture-provider",
+            "model_id": "fixture-model",
+            "app_server_session_identity": "estate-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "first_response_id": "response-1",
+        }
+        disposition = {
+            "schema": "nightshift.provider-admission-disposition/v3",
+            "disposition_digest": D,
+            "dispatch_digest": D,
+            "requirement_digest": D,
+            "policy_digest": D,
+            "packet_digest": D,
+            "run_id": "run-1",
+            "work_item_id": "work-1",
+            "work_attempt_id": "attempt-1",
+            "dispatch_occurrence_id": "dispatch-1",
+            "provider_id": "fixture-provider",
+            "model_id": "fixture-model",
+            "provider_request_occurrence_id": "request-1",
+            "adapter_process_occurrence_id": "process-1",
+            "app_server_session_identity": "estate-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "disposition": "EXECUTION_ADMITTED",
+            "mechanism_state": "PROVIDER_COMPLETED",
+            "received_at": "2026-08-31T12:01:02Z",
+            "response_created": True,
+            "will_retry": False,
+            "acquisition_complete": True,
+            "provider_retry_after": None,
+            "provider_execution": execution,
+            "mapper_snapshot_schema": "nightshift.holding-deterministic-provider-admission-evidence/v2",
+            "mapper_snapshot_digest": D,
+            "mapper_snapshot": {
+                "representation": "RFC8785_NIGHTSHIFT_QUALIFICATION_FAKE_ADAPTER_EVIDENCE",
+                "byte_length": 2,
+                "sha256": D,
+                "encoding": "hex",
+                "bytes_hex": "7b7d",
+            },
+            "approval_response_sent": False,
+            "protected_effect_absent": True,
+            "authority_effect": "SCHEDULING_MECHANISM_EVIDENCE_ONLY",
+        }
+        validator = Draft202012Validator(
+            load("nightshift.provider-admission-disposition.v3.schema.json"),
+            format_checker=FormatChecker(),
+        )
+        validator.validate(disposition)
+        for field, replacement in (
+            ("schema", "nightshift.provider-admission-disposition/v2"),
+            ("mapper_snapshot_schema", "switchyard.codex-provider-admission-snapshot/v1"),
+            ("mechanism_state", "PARKED_NOT_ADMITTED"),
+            ("response_created", False),
+            ("provider_execution", None),
+        ):
+            changed = copy.deepcopy(disposition)
+            changed[field] = replacement
+            with self.assertRaises(ValidationError):
+                validator.validate(changed)
 
     def test_canonical_time_lowercase_digest_and_evidence_representation(self):
         requirement = {

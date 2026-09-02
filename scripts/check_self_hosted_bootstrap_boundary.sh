@@ -10,8 +10,12 @@ schema="$root/schemas/nightshift.self-hosted-foreman-bootstrap.v1.schema.json"
 architecture="$root/docs/architecture/SELF_HOSTED_FOREMAN_BOOTSTRAP_V1.md"
 topology="$root/qualification/nightshift-self-hosted-foreman-bootstrap-v1-20260831/PRE-MUTATION-TOPOLOGY.md"
 schema_test="$root/tests/test_self_hosted_bootstrap_schema.py"
+availability_file="$root/crates/nightshift-foreman/src/execution_availability.rs"
+fake_v2_schema="$root/schemas/nightshift.holding-deterministic-provider-admission-evidence.v2.schema.json"
+disposition_v3_schema="$root/schemas/nightshift.provider-admission-disposition.v3.schema.json"
+fake_v2_fixture="$root/qualification/provider-execution-availability-and-deferred-dispatch-v1-20260831/fixtures/deterministic-fake-adapter-v2.py"
 
-for required in "$source_file" "$store_file" "$cli_file" "$schema" "$driver_schema" "$architecture" "$topology" "$schema_test"; do
+for required in "$source_file" "$store_file" "$cli_file" "$schema" "$driver_schema" "$architecture" "$topology" "$schema_test" "$availability_file" "$fake_v2_schema" "$disposition_v3_schema" "$fake_v2_fixture"; do
   if [[ ! -f "$required" ]]; then
     echo "SECOND-WATCH boundary: missing contract artifact"
     exit 1
@@ -29,10 +33,11 @@ required_source=(
   'HOLDING_QUALIFICATION_PRODUCER_VERSION'
   'HOLDING_QUALIFICATION_EXECUTABLE_SHA256'
   '> packet.worker_budget.maximum_concurrent_mutating_workers'
-  'adapter.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID'
-  'adapter.protocol != DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1'
-  'adapter.adapter_version != HOLDING_QUALIFICATION_PRODUCER_VERSION'
-  'adapter.executable_identity != HOLDING_QUALIFICATION_EXECUTABLE_SHA256'
+  'let exact_v1 = adapter.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID'
+  'let exact_v2 = adapter.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID'
+  'DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2'
+  'SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION'
+  'SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256'
   '|| !adapter.bounded_arguments.is_empty()'
   '|| self.approval_response_authorized'
   '|| self.protected_effect_authorized'
@@ -94,6 +99,21 @@ for needle in "${required_cli[@]}"; do
   fi
 done
 
+required_availability=(
+  'self.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID'
+  'qualification_binding_v1'
+  'qualification_binding_v2'
+  'dispatch disposition owner-family graph'
+  'PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3'
+)
+
+for needle in "${required_availability[@]}"; do
+  if ! rg -Fq -- "$needle" "$availability_file"; then
+    echo "SECOND-WATCH boundary: missing owner-family law $needle"
+    exit 1
+  fi
+done
+
 if rg -q 'std::process|Command::new|TcpListener|TcpStream|reqwest|hyper::|tokio::' "$source_file" "$store_file" "$cli_file"; then
   echo "SECOND-WATCH boundary: runtime stage gained process, network, or listener machinery"
   exit 1
@@ -115,12 +135,12 @@ if [[ "${1:-}" == "--self-test-inject" ]]; then
     exit 1
   fi
   injected_adapter="$fixture/bootstrap-adapter.rs"
-  sed 's/adapter.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID/false/' "$source_file" >"$injected_adapter"
+  sed 's/let exact_v1 =/let omitted_exact_v1 =/' "$source_file" >"$injected_adapter"
   if env NIGHTSHIFT_SECOND_WATCH_BOOTSTRAP_SOURCE="$injected_adapter" "$0" >"$fixture/adapter-output" 2>&1; then
     echo "SECOND-WATCH boundary negative control did not refuse missing adapter guard"
     exit 1
   fi
-  if ! rg -q 'missing closed law.*adapter.adapter_id' "$fixture/adapter-output"; then
+  if ! rg -q 'missing closed law.*let exact_v1 =' "$fixture/adapter-output"; then
     cat "$fixture/adapter-output"
     echo "SECOND-WATCH adapter negative control failed without exact disposition"
     exit 1

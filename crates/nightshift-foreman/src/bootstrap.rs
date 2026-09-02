@@ -17,8 +17,10 @@ use crate::{
     ForemanCapacityRequirementV1, ForemanExecutionAvailabilityRequirementV1,
     ACCEPTED_CODEX_PROVIDER_ADMISSION_OWNER_HEAD,
     ACCEPTED_SWITCHYARD_PROVIDER_ADMISSION_OWNER_HEAD,
-    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1, HOLDING_QUALIFICATION_EXECUTABLE_SHA256,
+    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1,
+    DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2, HOLDING_QUALIFICATION_EXECUTABLE_SHA256,
     HOLDING_QUALIFICATION_PRODUCER_ID, HOLDING_QUALIFICATION_PRODUCER_VERSION,
+    SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256, SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION,
 };
 
 pub const SELF_HOSTED_FOREMAN_BOOTSTRAP_SCHEMA_V1: &str =
@@ -429,12 +431,15 @@ impl SelfHostedForemanBootstrapV1 {
         {
             return Err(ContractError::InvalidField("bootstrap adapter closure"));
         }
-        if adapter.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID
-            || adapter.protocol != DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
-            || adapter.adapter_version != HOLDING_QUALIFICATION_PRODUCER_VERSION
-            || adapter.executable_identity != HOLDING_QUALIFICATION_EXECUTABLE_SHA256
-            || !adapter.bounded_arguments.is_empty()
-        {
+        let exact_v1 = adapter.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+            && adapter.protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+            && adapter.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
+            && adapter.executable_identity == HOLDING_QUALIFICATION_EXECUTABLE_SHA256;
+        let exact_v2 = adapter.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+            && adapter.protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
+            && adapter.adapter_version == SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
+            && adapter.executable_identity == SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256;
+        if !(exact_v1 || exact_v2) || !adapter.bounded_arguments.is_empty() {
             return Err(ContractError::InvalidField(
                 "bootstrap accepted qualification adapter",
             ));

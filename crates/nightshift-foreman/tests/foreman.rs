@@ -1649,6 +1649,14 @@ fn checked_in_contract_schemas_are_closed_json_documents() {
             "../../../schemas/nightshift.provider-admission-disposition.v2.schema.json"
         )
         .as_slice(),
+        include_bytes!(
+            "../../../schemas/nightshift.holding-deterministic-provider-admission-evidence.v2.schema.json"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../schemas/nightshift.provider-admission-disposition.v3.schema.json"
+        )
+        .as_slice(),
     ] {
         let schema: Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
@@ -3750,7 +3758,8 @@ fn holding_requirement(
             )
         })
         .collect();
-    let adapter = &profile.adapters["switchyard-codex"];
+    let adapter_id = &profile.work_items["work-a"].adapter_id;
+    let adapter = &profile.adapters[adapter_id];
     let mut value = ForemanExecutionAvailabilityRequirementV1 {
         schema: FOREMAN_EXECUTION_AVAILABILITY_REQUIREMENT_SCHEMA_V1.to_owned(),
         requirement_digest: holding_placeholder(),
@@ -3867,6 +3876,59 @@ fn holding_setup() -> (
 ) {
     let (directory, path, packet, admission, profile, policy, requirement) =
         holding_fixture_contracts();
+    let store = ForemanStore::open(&path).unwrap();
+    store
+        .admit_with_execution_availability(
+            &packet.canonical_bytes().unwrap(),
+            &holding_canonical(&admission),
+            &holding_canonical(&profile),
+            &holding_canonical(&requirement),
+            &holding_canonical(&policy),
+            admission.admitted_at,
+        )
+        .unwrap();
+    (
+        directory,
+        path,
+        store,
+        packet,
+        admission,
+        profile,
+        policy,
+        requirement,
+    )
+}
+
+fn holding_setup_qualification_v1() -> (
+    TempDir,
+    PathBuf,
+    ForemanStore,
+    NightshiftPacketV1,
+    ForemanAdmissionV1,
+    ExecutionProfileV2,
+    ExecutionAvailabilityPolicyV1,
+    ForemanExecutionAvailabilityRequirementV1,
+) {
+    let (directory, path, packet, mut admission, mut profile, policy, _) =
+        holding_fixture_contracts();
+    admission.allowed_adapter_ids = vec![HOLDING_QUALIFICATION_PRODUCER_ID.to_owned()];
+    admission.seal().unwrap();
+    for work in profile.work_items.values_mut() {
+        work.adapter_id = HOLDING_QUALIFICATION_PRODUCER_ID.to_owned();
+    }
+    profile.adapters = BTreeMap::from([(
+        HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+        AdapterRegistrationV2 {
+            adapter_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+            protocol: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1.to_owned(),
+            adapter_version: HOLDING_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+            executable_identity: HOLDING_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+            bounded_arguments: vec![],
+        },
+    )]);
+    profile.admission_digest = admission.admission_digest.clone();
+    profile.seal().unwrap();
+    let requirement = holding_requirement(&packet, &admission, &profile, &policy);
     let store = ForemanStore::open(&path).unwrap();
     store
         .admit_with_execution_availability(
@@ -4477,7 +4539,7 @@ fn holding_qualification_owner_uses_common_store_transition_for_closed_outcomes(
         ),
     ] {
         let (_directory, path, store, _packet, _admission, _profile, policy, requirement) =
-            holding_setup();
+            holding_setup_qualification_v1();
         let (attempt, opened) = holding_open_initial(&store);
         let (disposition, observation) =
             holding_qualification_records(&requirement, &opened, outcome, response_created);
@@ -4525,26 +4587,27 @@ fn holding_qualification_owner_uses_common_store_transition_for_closed_outcomes(
                     holding_time("2026-08-31T12:01:07Z"),
                 )
                 .unwrap();
-            let completed = holding_record(
-                &store,
-                &requirement,
-                &policy,
-                &next,
-                "completed",
-                holding_time("2026-08-31T12:01:09Z"),
-                None,
-            );
+            assert_eq!(next.dispatch.dispatch_ordinal, 2);
             assert_eq!(
-                completed.mechanism_state,
-                ProviderMechanismStateV1::ProviderCompleted
+                next.dispatch.adapter_protocol,
+                DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+            );
+            let history = ForemanStore::open_read_only(&path)
+                .unwrap()
+                .read_only_run_snapshot("run-holding-store")
+                .unwrap()
+                .execution_availability
+                .unwrap();
+            assert_eq!(history.dispositions.len(), 1);
+            assert_eq!(history.dispatches.len(), 2);
+        } else {
+            assert_holding_generic_transitions_refuse_without_mutation(
+                &path,
+                &store,
+                &attempt,
+                "qualification owner state cannot use legacy transition",
             );
         }
-        assert_holding_generic_transitions_refuse_without_mutation(
-            &path,
-            &store,
-            &attempt,
-            "qualification owner state cannot use legacy transition",
-        );
     }
 }
 

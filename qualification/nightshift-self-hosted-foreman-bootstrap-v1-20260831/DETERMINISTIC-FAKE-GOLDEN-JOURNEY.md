@@ -3,20 +3,25 @@
 This qualification extends the accepted and published SECOND-WATCH runtime/store
 head 1973480531470c6bb3c9ea96bc372c82c427b0eb without rewriting it.
 
-The first attempted dispatch refused before mutation because the accepted
-bootstrap profile used the exact HOLDING deterministic-fake adapter while the
-HOLDING V3 start constructor accepted only the ordinary Switchyard protocol.
-The non-rewriting correction adds one qualification-only V3 branch pinned to:
+The accepted HOLDING qualification fake v1 remains limited to refusal and
+admission-indeterminate testimony; it cannot claim execution. SECOND-WATCH adds
+a narrow qualification-only successor owner family pinned to:
 
 - adapter ID nightshift:holding-pattern-deterministic-fake-adapter;
-- protocol nightshift.holding-deterministic-provider-admission-evidence/v1;
-- version v1;
-- executable SHA-256 sha256:e8a310d46cb40b0aef6399a8da6c97ac99f0fc5eab6a78c5e7007600d5cbfa82;
+- protocol nightshift.holding-deterministic-provider-admission-evidence/v2;
+- version v2;
+- executable ID campaign:second-watch:deterministic-fake-adapter:v2;
+- executable SHA-256 sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb;
 - empty bounded arguments.
 
-The ordinary switchyard.codex-app-server/v2 branch and its accepted owner pins
-remain unchanged. Mixed or substituted adapter/protocol/version/schema/
-executable/argument graphs refuse.
+Its closed outcome vocabulary is PROVIDER_UNAVAILABLE or
+EXECUTION_COMPLETED. The first proves exact pre-admission refusal; the second
+retains a complete provider/session/thread/turn/response execution identity.
+The ordinary switchyard.codex-app-server/v2 branch and fake v1 remain unchanged.
+The V3 runtime and schema form an exclusive three-way owner-family branch, and
+the execution-availability graph binds each dispatch adapter/protocol exactly to
+its disposition/evidence family. Mixed or substituted identity/protocol/
+version/schema/executable/argument graphs refuse.
 
 The deterministic journey covers four work items, two disjoint starts, exact
 FUEL admissions, qualification-fake pre-admission provider-unavailable
@@ -39,11 +44,11 @@ checkpoint after the final replay.
 ## Replay results
 
 - full locked Rust workspace: PASS;
-- nightshift-foreman: 102 passed, 0 failed;
-- nightshift-casework: 56 passed, 0 failed, 3 explicitly ignored installed-browser/fixture emitters;
-- focused worker-start V3 graph: 6 passed, including exact fake positive and coherent substitutions;
+- nightshift-foreman: 103 passed, 0 failed;
+- nightshift-casework: 58 passed, 0 failed, 3 explicitly ignored installed-browser/fixture emitters;
+- focused worker-start V3 graph: 7 passed, including exact fake positive and coherent substitutions;
 - focused self-hosted bootstrap: 16 passed, including the complete golden journey;
-- selected executable schema suites: 24 passed;
+- executable schema discovery: 66 passed;
 - all-feature/all-target warnings-denied Clippy: PASS;
 - rustfmt check: PASS;
 - SECOND-WATCH boundary and deterministic substitution control: PASS;

@@ -79,6 +79,7 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
             [
                 "switchyard.codex-app-server/v2",
                 "nightshift.holding-deterministic-provider-admission-evidence/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v2",
             ],
         )
         self.assertEqual(
@@ -86,6 +87,7 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
             [
                 "switchyard.codex-provider-admission-binding/v1",
                 "nightshift.holding-deterministic-provider-admission-evidence/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v2",
             ],
         )
         self.assertEqual(
@@ -93,6 +95,7 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
             [
                 "switchyard.codex-provider-admission-evidence/v1",
                 "nightshift.holding-deterministic-provider-admission-evidence/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v2",
             ],
         )
         self.assertEqual(
@@ -100,6 +103,7 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
             [
                 "switchyard.codex-provider-admission-snapshot/v1",
                 "nightshift.holding-deterministic-provider-admission-evidence/v1",
+                "nightshift.holding-deterministic-provider-admission-evidence/v2",
             ],
         )
         v2_bundle = json.loads(
@@ -169,6 +173,43 @@ class WorkerStartV3SchemaTest(unittest.TestCase):
             "provider_admission_snapshot_schema",
         ):
             changed = copy.deepcopy(fake)
+            changed[field] = value()[field]
+            with self.assertRaises(ValidationError):
+                self.validator.validate(changed)
+
+    def test_reserved_fake_id_cannot_migrate_to_switchyard_and_v2_is_closed(self):
+        reserved_switchyard = copy.deepcopy(value())
+        reserved_switchyard["adapter_id"] = (
+            "nightshift:holding-pattern-deterministic-fake-adapter"
+        )
+        reserved_switchyard["adapter_version"] = "v1"
+        with self.assertRaises(ValidationError):
+            self.validator.validate(reserved_switchyard)
+
+        fake_v2 = copy.deepcopy(value())
+        fake_v2["adapter_id"] = (
+            "nightshift:holding-pattern-deterministic-fake-adapter"
+        )
+        fake_v2["adapter_version"] = "v2"
+        protocol = "nightshift.holding-deterministic-provider-admission-evidence/v2"
+        for field in (
+            "adapter_protocol",
+            "provider_admission_adapter_protocol",
+            "provider_admission_binding_schema",
+            "provider_admission_evidence_schema",
+            "provider_admission_snapshot_schema",
+        ):
+            fake_v2[field] = protocol
+        self.validator.validate(fake_v2)
+        for field in (
+            "adapter_version",
+            "adapter_protocol",
+            "provider_admission_adapter_protocol",
+            "provider_admission_binding_schema",
+            "provider_admission_evidence_schema",
+            "provider_admission_snapshot_schema",
+        ):
+            changed = copy.deepcopy(fake_v2)
             changed[field] = value()[field]
             with self.assertRaises(ValidationError):
                 self.validator.validate(changed)
