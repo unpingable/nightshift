@@ -11,16 +11,18 @@ a narrow qualification-only successor owner family pinned to:
 - protocol nightshift.holding-deterministic-provider-admission-evidence/v2;
 - version v2;
 - executable ID campaign:second-watch:deterministic-fake-adapter:v2;
-- executable SHA-256 sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb;
+- executable SHA-256 sha256:bcfea17f0aff021d6b69f2b3d924e7606bf74941671a5a7af13e2d1e3d43edd4;
 - empty bounded arguments.
 
 Its closed outcome vocabulary is PROVIDER_UNAVAILABLE or
-EXECUTION_COMPLETED. The first proves exact pre-admission refusal; the second
-retains a complete provider/session/thread/turn/response execution identity.
+EXECUTION_COMPLETED. The first proves exact pre-admission refusal and carries a
+non-null retry-after; the second requires a null retry-after and retains a complete provider/session/thread/turn/response
+execution identity.
 The ordinary switchyard.codex-app-server/v2 branch and fake v1 remain unchanged.
 The V3 runtime and schema form an exclusive three-way owner-family branch, and
 the execution-availability graph binds each dispatch adapter/protocol exactly to
-its disposition/evidence family. Mixed or substituted identity/protocol/
+its disposition/evidence family for the current dispatch and every prior-history
+triplet. Mixed or substituted identity/protocol/
 version/schema/executable/argument graphs refuse.
 
 The deterministic journey covers four work items, two disjoint starts, exact
@@ -44,7 +46,7 @@ checkpoint after the final replay.
 ## Replay results
 
 - full locked Rust workspace: PASS;
-- nightshift-foreman: 103 passed, 0 failed;
+- nightshift-foreman: 104 passed, 0 failed;
 - nightshift-casework: 58 passed, 0 failed, 3 explicitly ignored installed-browser/fixture emitters;
 - focused worker-start V3 graph: 7 passed, including exact fake positive and coherent substitutions;
 - focused self-hosted bootstrap: 16 passed, including the complete golden journey;

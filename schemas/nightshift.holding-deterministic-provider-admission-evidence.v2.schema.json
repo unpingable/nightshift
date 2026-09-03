@@ -11,7 +11,7 @@
     "producer_id":{"const":"nightshift:holding-pattern-deterministic-fake-adapter"},
     "producer_version":{"const":"v2"},
     "executable_id":{"const":"campaign:second-watch:deterministic-fake-adapter:v2"},
-    "executable_sha256":{"const":"sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb"},
+    "executable_sha256":{"const":"sha256:bcfea17f0aff021d6b69f2b3d924e7606bf74941671a5a7af13e2d1e3d43edd4"},
     "work_attempt_id":{"$ref":"#/$defs/id"},
     "dispatch_occurrence_id":{"$ref":"#/$defs/id"},
     "provider_request_occurrence_id":{"$ref":"#/$defs/id"},
@@ -28,7 +28,7 @@
     "authority_effect":{"const":"QUALIFICATION_MECHANISM_EVIDENCE_ONLY"}
   },
   "allOf":[
-    {"if":{"properties":{"outcome":{"const":"PROVIDER_UNAVAILABLE"}}},"then":{"properties":{"response_created":{"const":false},"non_admission_proven":{"const":true},"provider_execution":{"type":"null"}}}},
+    {"if":{"properties":{"outcome":{"const":"PROVIDER_UNAVAILABLE"}}},"then":{"properties":{"response_created":{"const":false},"non_admission_proven":{"const":true},"retry_after":{"$ref":"#/$defs/time"},"provider_execution":{"type":"null"}}}},
     {"if":{"properties":{"outcome":{"const":"EXECUTION_COMPLETED"}}},"then":{"properties":{"response_created":{"const":true},"non_admission_proven":{"const":false},"retry_after":{"type":"null"},"provider_execution":{"$ref":"#/$defs/execution"}}}}
   ],
   "$defs":{

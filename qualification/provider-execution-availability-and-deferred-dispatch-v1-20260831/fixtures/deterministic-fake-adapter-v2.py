@@ -60,9 +60,19 @@ def main() -> int:
     ):
         raise ValueError("closed provider execution identity does not match")
     if value["outcome"] == "PROVIDER_UNAVAILABLE":
-        if value["response_created"] or not value["non_admission_proven"] or execution is not None:
+        if (
+            value["response_created"]
+            or not value["non_admission_proven"]
+            or value["retry_after"] is None
+            or execution is not None
+        ):
             raise ValueError("provider unavailable must prove exact non-admission")
-    elif not value["response_created"] or value["non_admission_proven"] or execution is None:
+    elif (
+        not value["response_created"]
+        or value["non_admission_proven"]
+        or value["retry_after"] is not None
+        or execution is None
+    ):
         raise ValueError("execution completed must retain exact execution identity")
     sys.stdout.write(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     return 0

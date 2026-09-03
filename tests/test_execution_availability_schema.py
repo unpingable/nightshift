@@ -164,7 +164,7 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
             "producer_id": "nightshift:holding-pattern-deterministic-fake-adapter",
             "producer_version": "v2",
             "executable_id": "campaign:second-watch:deterministic-fake-adapter:v2",
-            "executable_sha256": "sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb",
+            "executable_sha256": "sha256:bcfea17f0aff021d6b69f2b3d924e7606bf74941671a5a7af13e2d1e3d43edd4",
             "work_attempt_id": "attempt-1",
             "dispatch_occurrence_id": "dispatch-1",
             "provider_request_occurrence_id": "request-1",
@@ -211,11 +211,29 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validator.validate(changed)
 
+        unavailable = copy.deepcopy(evidence)
+        unavailable.update(
+            outcome="PROVIDER_UNAVAILABLE",
+            response_created=False,
+            non_admission_proven=True,
+            retry_after="2026-08-31T12:01:07Z",
+            provider_execution=None,
+        )
+        validator.validate(unavailable)
+        missing_retry_after = copy.deepcopy(unavailable)
+        missing_retry_after["retry_after"] = None
+        with self.assertRaises(ValidationError):
+            validator.validate(missing_retry_after)
+        completed_with_retry_after = copy.deepcopy(evidence)
+        completed_with_retry_after["retry_after"] = "2026-08-31T12:01:07Z"
+        with self.assertRaises(ValidationError):
+            validator.validate(completed_with_retry_after)
+
     def test_second_watch_fake_v2_executable_is_exact_and_closed(self):
         path = FIXTURES / "deterministic-fake-adapter-v2.py"
         self.assertEqual(
             hashlib.sha256(path.read_bytes()).hexdigest(),
-            "c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb",
+            "bcfea17f0aff021d6b69f2b3d924e7606bf74941671a5a7af13e2d1e3d43edd4",
         )
         for value in (
             {
@@ -251,22 +269,40 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
                 check=True,
             )
             self.assertEqual(json.loads(completed.stdout), value)
-        invalid = {
-            "outcome": "EXECUTION_COMPLETED",
-            "response_created": False,
-            "non_admission_proven": True,
-            "retry_after": None,
-            "observed_at": "2026-08-31T12:01:01Z",
-            "provider_execution": None,
-        }
-        completed = subprocess.run(
-            [sys.executable, str(path)],
-            input=json.dumps(invalid).encode(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        invalid_cases = (
+            {
+                "outcome": "PROVIDER_UNAVAILABLE",
+                "response_created": False,
+                "non_admission_proven": True,
+                "retry_after": None,
+                "observed_at": "2026-08-31T12:01:01Z",
+                "provider_execution": None,
+            },
+            {
+                "outcome": "EXECUTION_COMPLETED",
+                "response_created": True,
+                "non_admission_proven": False,
+                "retry_after": "2026-08-31T12:01:07Z",
+                "observed_at": "2026-08-31T12:01:01Z",
+                "provider_execution": {
+                    "provider_id": "fixture-provider",
+                    "model_id": "fixture-model",
+                    "app_server_session_identity": "estate-1",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "first_response_id": "response-1",
+                },
+            },
         )
-        self.assertNotEqual(completed.returncode, 0)
+        for invalid in invalid_cases:
+            completed = subprocess.run(
+                [sys.executable, str(path)],
+                input=json.dumps(invalid).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
 
     def test_second_watch_disposition_v3_schema_closes_owner_family(self):
         execution = {
@@ -332,6 +368,19 @@ class ExecutionAvailabilitySchemaTest(unittest.TestCase):
             changed[field] = replacement
             with self.assertRaises(ValidationError):
                 validator.validate(changed)
+
+        unavailable = copy.deepcopy(disposition)
+        unavailable.update(
+            disposition="NOT_ADMITTED_PROVIDER_UNAVAILABLE",
+            mechanism_state="PARKED_NOT_ADMITTED",
+            response_created=False,
+            provider_retry_after="2026-08-31T12:01:07Z",
+            provider_execution=None,
+        )
+        validator.validate(unavailable)
+        unavailable["provider_retry_after"] = None
+        with self.assertRaises(ValidationError):
+            validator.validate(unavailable)
 
     def test_canonical_time_lowercase_digest_and_evidence_representation(self):
         requirement = {

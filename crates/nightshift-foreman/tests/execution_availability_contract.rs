@@ -909,6 +909,39 @@ fn cumulative_multi_deferral_history_is_explicit_and_bounded() {
     )
     .unwrap();
 
+    let (_, cross_family_disposition, _) = qualification_disposition(
+        &requirement,
+        &first_dispatch,
+        DeterministicProviderAdmissionOutcomeV1::ProviderUnavailable,
+        false,
+    );
+    let mut cross_family_history = first_history.clone();
+    cross_family_history.disposition = cross_family_disposition;
+    cross_family_history.deferred.disposition_digest =
+        cross_family_history.disposition.disposition_digest.clone();
+    cross_family_history.deferred.provider_retry_after =
+        cross_family_history.disposition.provider_retry_after;
+    cross_family_history.deferred.wake_at = cross_family_history
+        .disposition
+        .provider_retry_after
+        .unwrap();
+    cross_family_history.deferred.backoff_seconds = 5;
+    cross_family_history.deferred.seal().unwrap();
+    assert_eq!(
+        validate_execution_availability_graph(
+            &requirement,
+            &policy,
+            &second_dispatch,
+            &admitted_observation,
+            &admitted_disposition,
+            &[cross_family_history],
+            None,
+        )
+        .unwrap_err()
+        .to_string(),
+        "invalid field: dispatch disposition owner-family graph"
+    );
+
     let mut mismatched_history = first_history.clone();
     mismatched_history.deferred.disposition_digest = placeholder();
     mismatched_history.deferred.seal().unwrap();
@@ -2326,4 +2359,95 @@ fn qualification_only_owner_closes_outcomes_and_substitutions() {
             ExactMapperSnapshotV1::from_qualification_evidence_bytes(&bytes).unwrap();
         split.seal().unwrap_err();
     }
+}
+
+#[test]
+fn second_watch_qualification_owner_retry_after_matrix_is_exact() {
+    let received_at = time("2026-08-31T12:01:02Z");
+    let observed_at = time("2026-08-31T12:01:01Z");
+    let retry_after = time("2026-08-31T12:01:07Z");
+    let execution = ProviderExecutionIdentityV1 {
+        provider_id: "fixture-provider".to_owned(),
+        model_id: "fixture-model".to_owned(),
+        app_server_session_identity: "fixture-session".to_owned(),
+        thread_id: "fixture-thread".to_owned(),
+        turn_id: "fixture-turn".to_owned(),
+        first_response_id: "fixture-response".to_owned(),
+    };
+    let make =
+        |outcome, response_created, non_admission_proven, retry_after, provider_execution| {
+            let raw = canonical(&json!({
+                "outcome": outcome,
+                "response_created": response_created,
+                "non_admission_proven": non_admission_proven,
+                "retry_after": retry_after,
+                "observed_at": observed_at,
+                "provider_execution": provider_execution,
+            }));
+            let mut evidence = DeterministicProviderAdmissionEvidenceV2 {
+                schema: DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2.to_owned(),
+                evidence_digest: placeholder(),
+                producer_id: HOLDING_QUALIFICATION_PRODUCER_ID.to_owned(),
+                producer_version: SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION.to_owned(),
+                executable_id: SECOND_WATCH_QUALIFICATION_EXECUTABLE_ID.to_owned(),
+                executable_sha256: SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256.to_owned(),
+                work_attempt_id: "fixture-attempt".to_owned(),
+                dispatch_occurrence_id: "fixture-dispatch".to_owned(),
+                provider_request_occurrence_id: "fixture-request".to_owned(),
+                provider_id: "fixture-provider".to_owned(),
+                model_id: "fixture-model".to_owned(),
+                outcome,
+                response_created,
+                non_admission_proven,
+                retry_after,
+                observed_at,
+                received_at,
+                provider_execution,
+                raw_evidence: ExactAvailabilityEvidenceV1::from_bytes(
+                    "EXACT_PROVIDER_AVAILABILITY_SOURCE_BYTES",
+                    &raw,
+                )
+                .unwrap(),
+                authority_effect: "QUALIFICATION_MECHANISM_EVIDENCE_ONLY".to_owned(),
+            };
+            let result = evidence.seal();
+            (evidence, result)
+        };
+
+    assert!(make(
+        DeterministicProviderAdmissionOutcomeV2::ProviderUnavailable,
+        false,
+        true,
+        Some(retry_after),
+        None,
+    )
+    .1
+    .is_ok());
+    assert!(make(
+        DeterministicProviderAdmissionOutcomeV2::ExecutionCompleted,
+        true,
+        false,
+        None,
+        Some(execution.clone()),
+    )
+    .1
+    .is_ok());
+    assert!(make(
+        DeterministicProviderAdmissionOutcomeV2::ProviderUnavailable,
+        false,
+        true,
+        None,
+        None,
+    )
+    .1
+    .is_err());
+    assert!(make(
+        DeterministicProviderAdmissionOutcomeV2::ExecutionCompleted,
+        true,
+        false,
+        Some(retry_after),
+        Some(execution),
+    )
+    .1
+    .is_err());
 }

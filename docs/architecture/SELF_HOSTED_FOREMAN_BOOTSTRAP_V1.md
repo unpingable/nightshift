@@ -100,13 +100,15 @@ requires exactly one owner-family tuple, always with adapter ID
 - SECOND-WATCH fake v2: protocol
   `nightshift.holding-deterministic-provider-admission-evidence/v2`, version
   `v2`, executable SHA-256
-  `sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb`;
-  its closed outcomes are provider-unavailable or exact execution-completed.
+  `sha256:bcfea17f0aff021d6b69f2b3d924e7606bf74941671a5a7af13e2d1e3d43edd4`;
+  its closed outcomes are provider-unavailable with a non-null retry-after or
+  exact execution-completed with a null retry-after.
 
 The ordinary Switchyard family excludes the reserved qualification adapter ID.
 WorkerStart V3 and its schema enforce an exclusive owner-family branch, and the
 execution-availability graph binds dispatch family to disposition/evidence
-family. Cross-family coherent resealing refuses.
+family for the current dispatch and every retained prior-history triplet.
+Cross-family coherent resealing refuses.
 
 All of this occurs before a SQLite path is admitted or created. A pathname is
 not contract identity. Future runtime work must preserve the existing

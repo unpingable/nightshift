@@ -11,7 +11,7 @@
     "mapper_snapshot_schema":{"const":"nightshift.holding-deterministic-provider-admission-evidence/v2"},"mapper_snapshot_digest":{"$ref":"#/$defs/digest"},"mapper_snapshot":{"$ref":"#/$defs/snapshot"},"approval_response_sent":{"const":false},"protected_effect_absent":{"const":true},"authority_effect":{"const":"SCHEDULING_MECHANISM_EVIDENCE_ONLY"}
   },
   "allOf":[
-    {"if":{"properties":{"disposition":{"const":"NOT_ADMITTED_PROVIDER_UNAVAILABLE"}}},"then":{"properties":{"mechanism_state":{"const":"PARKED_NOT_ADMITTED"},"response_created":{"const":false},"provider_execution":{"type":"null"}}}},
+    {"if":{"properties":{"disposition":{"const":"NOT_ADMITTED_PROVIDER_UNAVAILABLE"}}},"then":{"properties":{"mechanism_state":{"const":"PARKED_NOT_ADMITTED"},"response_created":{"const":false},"provider_retry_after":{"$ref":"#/$defs/time"},"provider_execution":{"type":"null"}}}},
     {"if":{"properties":{"disposition":{"const":"EXECUTION_ADMITTED"}}},"then":{"properties":{"mechanism_state":{"const":"PROVIDER_COMPLETED"},"response_created":{"const":true},"provider_retry_after":{"type":"null"},"provider_execution":{"$ref":"#/$defs/execution"}}}}
   ],
   "$defs":{

@@ -78,7 +78,7 @@ pub const SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION: &str = "v2";
 pub const SECOND_WATCH_QUALIFICATION_EXECUTABLE_ID: &str =
     "campaign:second-watch:deterministic-fake-adapter:v2";
 pub const SECOND_WATCH_QUALIFICATION_EXECUTABLE_SHA256: &str =
-    "sha256:c67f1c3f116d0e62097cb86941198f9ce98117d8cf9b3009f5d65687bf0e00bb";
+    "sha256:bcfea17f0aff021d6b69f2b3d924e7606bf74941671a5a7af13e2d1e3d43edd4";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4409,6 +4409,35 @@ fn exact_deferral_seconds(
     Ok(expected_seconds)
 }
 
+fn validate_dispatch_disposition_owner_family(
+    dispatch: &ProviderDispatchOccurrenceV1,
+    disposition: &ProviderAdmissionDispositionV1,
+) -> Result<(), ContractError> {
+    let matches = match disposition.schema.as_str() {
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1 => {
+            dispatch.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID
+                && dispatch.adapter_protocol == "switchyard.codex-app-server/v2"
+        }
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 => {
+            dispatch.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+                && dispatch.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
+                && dispatch.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
+        }
+        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 => {
+            dispatch.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
+                && dispatch.adapter_version == SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
+                && dispatch.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
+        }
+        _ => false,
+    };
+    if !matches {
+        return Err(ContractError::InvalidField(
+            "dispatch disposition owner-family graph",
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_execution_availability_graph(
     requirement: &ForemanExecutionAvailabilityRequirementV1,
     policy: &ExecutionAvailabilityPolicyV1,
@@ -4462,28 +4491,7 @@ pub fn validate_execution_availability_graph(
     {
         return Err(ContractError::InvalidField("dispatch disposition graph"));
     }
-    let disposition_family_matches_dispatch = match disposition.schema.as_str() {
-        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V1 => {
-            dispatch.adapter_id != HOLDING_QUALIFICATION_PRODUCER_ID
-                && dispatch.adapter_protocol == "switchyard.codex-app-server/v2"
-        }
-        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V2 => {
-            dispatch.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
-                && dispatch.adapter_version == HOLDING_QUALIFICATION_PRODUCER_VERSION
-                && dispatch.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V1
-        }
-        PROVIDER_ADMISSION_DISPOSITION_SCHEMA_V3 => {
-            dispatch.adapter_id == HOLDING_QUALIFICATION_PRODUCER_ID
-                && dispatch.adapter_version == SECOND_WATCH_QUALIFICATION_PRODUCER_VERSION
-                && dispatch.adapter_protocol == DETERMINISTIC_PROVIDER_ADMISSION_EVIDENCE_SCHEMA_V2
-        }
-        _ => false,
-    };
-    if !disposition_family_matches_dispatch {
-        return Err(ContractError::InvalidField(
-            "dispatch disposition owner-family graph",
-        ));
-    }
+    validate_dispatch_disposition_owner_family(dispatch, disposition)?;
     let source = disposition_source_observation(disposition)?;
     if observation.provider_id != dispatch.selection.provider_id
         || observation.model_id != dispatch.selection.model_id
@@ -4558,6 +4566,7 @@ pub fn validate_execution_availability_graph(
         let prior_dispatch = &entry.dispatch;
         let prior_disposition = &entry.disposition;
         let prior = &entry.deferred;
+        validate_dispatch_disposition_owner_family(prior_dispatch, prior_disposition)?;
         let prior_selection = selections
             .get(usize::from(prior.selected_model_ordinal))
             .ok_or(ContractError::InvalidField("prior deferred model ordinal"))?;
