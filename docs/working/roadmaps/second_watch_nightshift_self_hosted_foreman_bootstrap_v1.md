@@ -3,8 +3,8 @@
 > **Track:** `nightshift-self-hosting`
 > **Codename:** `SECOND-WATCH`
 > **Canonical slug:** `nightshift-self-hosted-foreman-bootstrap-v1`
-> **Status:** **ACTIVE IMPLEMENTATION — accepted contract; bounded runtime/store checkpoint under qualification**
-> **Result classification:** none
+> **Status:** **QUALIFIED — deterministic local scheduling/custody independence**
+> **Result classification:** independent dimensions recorded; no aggregate result
 > **Filed:** 2026-08-30
 > **Codename collision search:** clear in local Nightshift source, local and remote branch names, and established remote heads at filing time.
 > **Authority:** direct operator successor authorization; activation follows qualified HOLDING-PATTERN and the prerequisite set below without another operator question. This record does not amend, reseal, widen, or add an edge to the current sealed nine-item V2 packet.
@@ -249,5 +249,6 @@ local scheduling/custody independence demonstrated by the golden journey.
 
 The accepted bootstrap contract and bounded runtime/store checkpoint do not by
 themselves qualify the full golden journey. Until complete closeout,
-SECOND-WATCH remains **ACTIVE IMPLEMENTATION**, with no aggregate classification.
+SECOND-WATCH is **QUALIFIED** for deterministic local scheduling/custody
+independence. Independent NOT_RUN dimensions remain explicit; no aggregate classification exists.
 
