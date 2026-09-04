@@ -73,10 +73,12 @@ and deterministic aggregate-field substitution control both pass.
 
 ## Custody and teardown
 
-No provider connection, authentication-profile read or copy, subprocess,
-listener, timer, service, browser, protected effect, production route, or
-default-branch change occurred. Disposable stores and generated caches were
-removed. No campaign process, listener, provider session, mutable store,
+No real provider connection, authentication-profile read or copy, Codex App
+Server worker process, listener, timer, service, browser, protected effect,
+production route, or default-branch change occurred. Build and test subprocesses
+and ignored caches are not campaign runtime. The disposable golden-journey store
+and emitted artifact directory were removed. No campaign process, listener,
+provider session, mutable store,
 credential artifact, or teardown obligation remains.
 
 No new operator question was opened. The historical TUNNEL real-provider

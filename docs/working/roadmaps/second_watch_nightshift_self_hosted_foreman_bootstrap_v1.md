@@ -248,7 +248,7 @@ views, tests, skipped dimensions, and teardown census. A result may claim only
 local scheduling/custody independence demonstrated by the golden journey.
 
 The accepted bootstrap contract and bounded runtime/store checkpoint do not by
-themselves qualify the full golden journey. Until complete closeout,
+themselves qualify the full golden journey. With this complete closeout,
 SECOND-WATCH is **QUALIFIED** for deterministic local scheduling/custody
 independence. Independent NOT_RUN dimensions remain explicit; no aggregate classification exists.
 
