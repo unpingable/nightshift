@@ -50,7 +50,7 @@ checkpoint after the final replay.
 - nightshift-casework: 58 passed, 0 failed, 3 explicitly ignored installed-browser/fixture emitters;
 - focused worker-start V3 graph: 7 passed, including exact fake positive and coherent substitutions;
 - focused self-hosted bootstrap: 16 passed, including the complete golden journey;
-- executable schema discovery: 66 passed;
+- executable schema discovery: 70 passed;
 - all-feature/all-target warnings-denied Clippy: PASS;
 - rustfmt check: PASS;
 - SECOND-WATCH boundary and deterministic substitution control: PASS;
